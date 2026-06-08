@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AGV Hardware Control</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    background: #16213e;
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    border-bottom: 2px solid #0f3460;
+  }
+  header h1 { font-size: 1.3rem; font-weight: 600; color: #e94560; }
+  .ros2-badge {
+    font-size: 0.75rem; padding: 3px 10px; border-radius: 12px;
+    font-weight: 600; letter-spacing: 0.5px;
+  }
+  .ros2-badge.connected { background: #0d7c1f; color: #a8f5b5; }
+  .ros2-badge.disconnected { background: #7c1919; color: #f5a8a8; }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 600px 1fr;
+    grid-template-rows: auto auto;
+    gap: 16px;
+    padding: 16px;
+    flex: 1;
+  }
+
+  /* ── Grid panel ────────────────────────────────────────────────────── */
+  .grid-panel {
+    grid-row: 1 / 3;
+    background: #16213e;
+    border-radius: 8px;
+    padding: 16px;
+    border: 1px solid #0f3460;
+  }
+  .grid-panel h2 {
+    font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px;
+    color: #8899aa; margin-bottom: 12px;
+  }
+
+  #agv-grid {
+    display: block;
+    max-width: 100%;
+  }
+
+  /* SVG node circles */
+  .node-circle {
+    cursor: pointer;
+    transition: r 0.1s;
+  }
+  .node-circle:hover { opacity: 0.85; }
+  .node-label {
+    font-size: 9px; fill: #ccc; text-anchor: middle; dominant-baseline: middle;
+    pointer-events: none; user-select: none;
+  }
+  .depot-label {
+    font-size: 9px; fill: #1a1a2e; text-anchor: middle; dominant-baseline: middle;
+    font-weight: 700; pointer-events: none;
+  }
+
+  /* ── Route builder ─────────────────────────────────────────────────── */
+  .route-panel {
+    background: #16213e;
+    border-radius: 8px;
+    padding: 16px;
+    border: 1px solid #0f3460;
+  }
+  .route-panel h2 {
+    font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px;
+    color: #8899aa; margin-bottom: 12px;
+  }
+
+  .dest-list {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;
+    min-height: 32px;
+  }
+  .dest-chip {
+    background: #0f3460; border-radius: 14px; padding: 4px 10px;
+    font-size: 0.8rem; display: flex; align-items: center; gap: 6px;
+  }
+  .dest-chip button {
+    background: none; border: none; color: #e94560; cursor: pointer;
+    font-size: 1rem; line-height: 1; padding: 0;
+  }
+
+  .param-row {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .param-row label { font-size: 0.8rem; color: #aaa; white-space: nowrap; }
+  .param-row input[type=number] {
+    background: #0f3460; border: 1px solid #1e4a80; border-radius: 4px;
+    color: #e0e0e0; padding: 4px 8px; width: 80px; font-size: 0.85rem;
+  }
+  .param-row select {
+    background: #0f3460; border: 1px solid #1e4a80; border-radius: 4px;
+    color: #e0e0e0; padding: 4px 8px; font-size: 0.85rem;
+  }
+
+  .btn {
+    padding: 7px 18px; border-radius: 5px; border: none; cursor: pointer;
+    font-size: 0.85rem; font-weight: 600; transition: opacity 0.15s;
+  }
+  .btn:hover { opacity: 0.85; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-primary { background: #e94560; color: #fff; }
+  .btn-secondary { background: #0f3460; color: #e0e0e0; }
+  .btn-danger { background: #7c1919; color: #f5a8a8; }
+  .btn-success { background: #0d7c1f; color: #a8f5b5; }
+
+  .action-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+
+  /* ── AGV telemetry cards ────────────────────────────────────────────── */
+  .telemetry-panel {
+    background: #16213e;
+    border-radius: 8px;
+    padding: 16px;
+    border: 1px solid #0f3460;
+  }
+  .telemetry-panel h2 {
+    font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px;
+    color: #8899aa; margin-bottom: 12px;
+  }
+
+  .agv-cards { display: flex; gap: 12px; flex-wrap: wrap; }
+
+  .agv-card {
+    flex: 1; min-width: 160px;
+    background: #0f1f3c;
+    border-radius: 6px;
+    padding: 12px;
+    border: 2px solid #0f3460;
+    transition: border-color 0.3s;
+  }
+  .agv-card.online  { border-color: #0d7c1f; }
+  .agv-card.moving  { border-color: #e94560; }
+  .agv-card.arrived { border-color: #f5a021; }
+  .agv-card.offline { border-color: #444; opacity: 0.6; }
+
+  .agv-card-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 8px;
+  }
+  .agv-name { font-weight: 700; font-size: 0.95rem; }
+  .agv-state-badge {
+    font-size: 0.65rem; padding: 2px 7px; border-radius: 10px;
+    font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .state-IDLE     { background: #1a3a5c; color: #7ab3e0; }
+  .state-MOVING   { background: #5c1a1a; color: #e07a7a; }
+  .state-ARRIVED  { background: #3a3a1a; color: #e0d07a; }
+  .state-NOT_READY { background: #2a1a3a; color: #b07ae0; }
+  .state-OFFLINE  { background: #2a2a2a; color: #888; }
+
+  .telem-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 3px 8px;
+    font-size: 0.75rem;
+  }
+  .telem-label { color: #778; }
+  .telem-value { color: #e0e0e0; font-family: monospace; }
+
+  .sensor-bar-row { margin-top: 6px; }
+  .sensor-bar-label { font-size: 0.68rem; color: #778; margin-bottom: 2px; }
+  .sensor-bars { display: flex; gap: 3px; }
+  .sensor-bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 1px; }
+  .sensor-bar-bg {
+    width: 100%; height: 24px; background: #0a1525; border-radius: 3px;
+    display: flex; align-items: flex-end; overflow: hidden;
+  }
+  .sensor-bar-fill { width: 100%; background: #2a7ae0; transition: height 0.2s; border-radius: 3px 3px 0 0; }
+  .sensor-bar-name { font-size: 0.6rem; color: #556; }
+
+  .tof-row { margin-top: 6px; }
+  .tof-bars { display: flex; gap: 3px; }
+  .tof-bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 1px; }
+  .tof-bar-bg {
+    width: 100%; height: 20px; background: #0a1525; border-radius: 3px;
+    display: flex; align-items: flex-end; overflow: hidden;
+  }
+  .tof-bar-fill { width: 100%; background: #20a060; transition: height 0.2s; border-radius: 3px 3px 0 0; }
+  .tof-bar-name { font-size: 0.6rem; color: #556; }
+
+  .obj-indicator {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: #333; margin-right: 4px; vertical-align: middle;
+  }
+  .obj-indicator.detected { background: #e94560; box-shadow: 0 0 4px #e94560; }
+
+  .bat-bar-bg {
+    width: 100%; height: 7px; background: #0a1525; border-radius: 4px; margin-top: 4px; overflow: hidden;
+  }
+  .bat-bar-fill { height: 100%; border-radius: 4px; transition: width 0.5s; }
+
+  .color-swatch {
+    display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+    border: 1px solid #555; vertical-align: middle; margin-right: 4px;
+  }
+
+  /* ── Log status bar ─────────────────────────────────────────────────── */
+  .log-bar {
+    background: #0d1a2e; border-top: 1px solid #0f3460;
+    padding: 6px 16px; display: flex; align-items: center; gap: 12px;
+    font-size: 0.75rem; color: #667;
+  }
+  .log-active { color: #0d7; }
+  .log-path { font-family: monospace; font-size: 0.7rem; color: #556; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AGV Hardware Control</h1>
+  <span id="ros2-badge" class="ros2-badge disconnected">ROS2 DISCONNECTED</span>
+  <span id="demo-badge" style="display:none; font-size:0.75rem; color:#f5a021;">DEMO MODE</span>
+</header>
+
+<div class="layout">
+
+  <!-- ── Grid panel ──────────────────────────────────────────────────── -->
+  <div class="grid-panel">
+    <h2>Warehouse Grid (click to select destinations)</h2>
+    <svg id="agv-grid" viewBox="0 0 560 560" width="560" height="560"></svg>
+    <div style="margin-top:8px; font-size:0.75rem; color:#556;">
+      Node&nbsp;0&nbsp;=&nbsp;depot&nbsp;(bottom-left)&nbsp;&nbsp;|&nbsp;&nbsp;
+      <span style="color:#f5a021;">&#9632;</span>&nbsp;Depot&nbsp;&nbsp;
+      <span style="color:#2a7ae0;">&#9679;</span>&nbsp;Available&nbsp;&nbsp;
+      <span style="color:#e94560;">&#9679;</span>&nbsp;Selected&nbsp;&nbsp;
+      <span style="color:#0d7c1f;">&#9679;</span>&nbsp;AGV&nbsp;position
+    </div>
+  </div>
+
+  <!-- ── Route builder ───────────────────────────────────────────────── -->
+  <div class="route-panel">
+    <h2>Route Builder</h2>
+
+    <div style="font-size:0.8rem; color:#8899aa; margin-bottom:6px;">
+      Click nodes on the grid to add stops. The AGV will visit them in order, then return to depot.
+    </div>
+
+    <div class="dest-list" id="dest-list">
+      <span style="color:#445; font-size:0.8rem; align-self:center;" id="dest-placeholder">No destinations selected.</span>
+    </div>
+
+    <div class="param-row">
+      <label>AGV:</label>
+      <select id="agv-select">
+        <option value="agv_1">AGV 1</option>
+        <option value="agv_2">AGV 2</option>
+        <option value="agv_3">AGV 3</option>
+      </select>
+    </div>
+
+    <div class="param-row">
+      <label>Dwell time at each stop (s):</label>
+      <input type="number" id="proc-time" value="0" min="0" max="300" step="1">
+    </div>
+
+    <div class="action-row">
+      <button class="btn btn-primary" id="dispatch-btn" onclick="dispatchRoute()">Send Route</button>
+      <button class="btn btn-secondary" onclick="clearDestinations()">Clear</button>
+      <button class="btn btn-danger" id="stop-btn" onclick="stopAll()">STOP ALL</button>
+    </div>
+
+    <div id="dispatch-msg" style="margin-top:8px; font-size:0.8rem; color:#a8f5b5; display:none;"></div>
+  </div>
+
+  <!-- ── Telemetry cards ──────────────────────────────────────────────── -->
+  <div class="telemetry-panel">
+    <h2>Live Telemetry</h2>
+    <div class="agv-cards" id="agv-cards">
+      <!-- Populated by JS -->
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Log status bar ───────────────────────────────────────────────────── -->
+<div class="log-bar">
+  <span id="log-status-text">Logging off</span>
+  <button class="btn btn-success" id="log-btn" onclick="toggleLog()" style="padding:3px 12px; font-size:0.75rem;">Start Log</button>
+  <span class="log-path" id="log-path-text"></span>
+</div>
+
+<script>
+// ── Grid constants ──────────────────────────────────────────────────────
+const ROWS = 8, COLS = 8;
+const MARGIN = 40, CELL = 60;
+const W = MARGIN * 2 + (COLS - 1) * CELL;   // 560
+const H = MARGIN * 2 + (ROWS - 1) * CELL;   // 560
+const NODE_R = 14;   // circle radius
+
+// ── State ───────────────────────────────────────────────────────────────
+const selectedNodes = new Set();  // user-selected destination node ids
+const agvPositions = {};          // agv_key -> {node or null, x_cm, y_cm}
+const agvStates = {};             // agv_key -> state string
+
+// ── Coord conversion ────────────────────────────────────────────────────
+// Node n: physical_row = n//8, col = n%8
+// SVG: x = MARGIN + col*CELL,  y = MARGIN + (7 - phys_row)*CELL  (flip y)
+function nodeToSVG(n) {
+  const phys_row = Math.floor(n / COLS);
+  const col      = n % COLS;
+  return {
+    cx: MARGIN + col * CELL,
+    cy: MARGIN + (ROWS - 1 - phys_row) * CELL
+  };
+}
+
+// ── Color map for floor colors ──────────────────────────────────────────
+const COLOR_SWATCHES = {
+  WHITE: '#f0f0f0', BLACK: '#222', RED: '#e04040',
+  BLUE: '#4080e0', GREEN: '#40b060', YELLOW: '#e0d040',
+  ORANGE: '#e08020', PURPLE: '#9040c0'
+};
+
+// ── Build SVG grid ──────────────────────────────────────────────────────
+function buildGrid() {
+  const svg = document.getElementById('agv-grid');
+  svg.innerHTML = '';
+
+  const ns = 'http://www.w3.org/2000/svg';
+
+  function el(tag, attrs) {
+    const e = document.createElementNS(ns, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    return e;
+  }
+
+  // Background
+  svg.appendChild(el('rect', {x:0, y:0, width:W, height:H, fill:'#0d1525'}));
+
+  // Grid lines (tape)
+  for (let r = 0; r < ROWS; r++) {
+    const y = MARGIN + r * CELL;
+    svg.appendChild(el('line', {x1:MARGIN, y1:y, x2:MARGIN+(COLS-1)*CELL, y2:y,
+                                 stroke:'#1a3a5c', 'stroke-width':'8'}));
+  }
+  for (let c = 0; c < COLS; c++) {
+    const x = MARGIN + c * CELL;
+    svg.appendChild(el('line', {x1:x, y1:MARGIN, x2:x, y2:MARGIN+(ROWS-1)*CELL,
+                                 stroke:'#1a3a5c', 'stroke-width':'8'}));
+  }
+
+  // Axis labels (physical row/col numbering)
+  for (let r = 0; r < ROWS; r++) {
+    const phys_row = ROWS - 1 - r;   // r=0=top → phys_row=7; r=7=bottom → phys_row=0
+    const y = MARGIN + r * CELL;
+    svg.appendChild(Object.assign(el('text', {x:MARGIN-18, y:y, fill:'#445',
+      'font-size':'10', 'text-anchor':'middle', 'dominant-baseline':'middle'}),
+      {textContent: phys_row}));
+  }
+  for (let c = 0; c < COLS; c++) {
+    svg.appendChild(Object.assign(el('text', {x:MARGIN+c*CELL, y:MARGIN+(ROWS-1)*CELL+18,
+      fill:'#445', 'font-size':'10', 'text-anchor':'middle'}), {textContent: c}));
+  }
+
+  // Nodes
+  for (let n = 0; n < ROWS * COLS; n++) {
+    const {cx, cy} = nodeToSVG(n);
+    const isDepot = n === 0;
+
+    if (isDepot) {
+      // Depot: golden square
+      const size = NODE_R * 1.6;
+      const rect = el('rect', {
+        x: cx - size/2, y: cy - size/2, width: size, height: size,
+        fill: '#f5a021', rx: 3, id: `node-shape-${n}`, class: 'node-circle'
+      });
+      rect.addEventListener('click', () => nodeClick(n));
+      svg.appendChild(rect);
+      svg.appendChild(Object.assign(el('text', {
+        x: cx, y: cy, class: 'depot-label'
+      }), {textContent: 'D'}));
+    } else {
+      const circle = el('circle', {
+        cx, cy, r: NODE_R, fill: '#1e4a80',
+        id: `node-shape-${n}`, class: 'node-circle'
+      });
+      circle.addEventListener('click', () => nodeClick(n));
+      svg.appendChild(circle);
+      svg.appendChild(Object.assign(el('text', {
+        x: cx, y: cy, class: 'node-label', id: `node-label-${n}`
+      }), {textContent: n}));
+    }
+  }
+
+  // AGV overlay layer (on top)
+  for (let i = 1; i <= 3; i++) {
+    const key = `agv_${i}`;
+    const g = el('g', {id: `agv-overlay-${key}`, display: 'none'});
+    // AGV circle
+    g.appendChild(el('circle', {cx:0, cy:0, r:10, fill:'#0d7c1f', opacity:'0.85',
+                                  id:`agv-dot-${key}`}));
+    g.appendChild(Object.assign(el('text', {x:0, y:0, fill:'#fff',
+      'font-size':'9', 'text-anchor':'middle', 'dominant-baseline':'middle',
+      'font-weight':'bold', 'pointer-events':'none'}), {textContent: i}));
+    svg.appendChild(g);
+  }
+}
+
+// ── Node interaction ────────────────────────────────────────────────────
+function nodeClick(n) {
+  if (n === 0) return;  // depot not selectable
+  if (selectedNodes.has(n)) {
+    selectedNodes.delete(n);
+  } else {
+    selectedNodes.add(n);
+  }
+  updateNodeColors();
+  updateDestList();
+}
+
+function updateNodeColors() {
+  for (let n = 1; n < ROWS * COLS; n++) {
+    const el = document.getElementById(`node-shape-${n}`);
+    if (!el) continue;
+    if (selectedNodes.has(n)) {
+      el.setAttribute('fill', '#e94560');
+    } else {
+      el.setAttribute('fill', '#1e4a80');
+    }
+  }
+}
+
+function updateDestList() {
+  const list = document.getElementById('dest-list');
+  const ph   = document.getElementById('dest-placeholder');
+  list.querySelectorAll('.dest-chip').forEach(e => e.remove());
+
+  if (selectedNodes.size === 0) {
+    ph.style.display = '';
+    return;
+  }
+  ph.style.display = 'none';
+
+  for (const n of [...selectedNodes].sort((a,b)=>a-b)) {
+    const chip = document.createElement('div');
+    chip.className = 'dest-chip';
+    chip.innerHTML = `Node&nbsp;${n} <button onclick="removeNode(${n})">×</button>`;
+    list.appendChild(chip);
+  }
+}
+
+function removeNode(n) {
+  selectedNodes.delete(n);
+  updateNodeColors();
+  updateDestList();
+}
+
+function clearDestinations() {
+  selectedNodes.clear();
+  updateNodeColors();
+  updateDestList();
+}
+
+// ── Move AGV overlay ────────────────────────────────────────────────────
+function moveAGVOverlay(agv_key, cx, cy, show) {
+  const g = document.getElementById(`agv-overlay-${agv_key}`);
+  if (!g) return;
+  if (!show) { g.setAttribute('display', 'none'); return; }
+  g.setAttribute('display', '');
+  g.setAttribute('transform', `translate(${cx},${cy})`);
+}
+
+// ── SocketIO ────────────────────────────────────────────────────────────
+const socket = io();
+
+socket.on('connect', () => console.log('SocketIO connected'));
+
+socket.on('init', data => {
+  setROS2Status(data.ros2);
+  if (data.ros2 && !data.demo) {
+    document.getElementById('demo-badge').style.display = 'none';
+  }
+  buildAgvCards(data.agv_names);
+});
+
+socket.on('ros2_status', data => {
+  setROS2Status(data.connected);
+});
+
+socket.on('agv_status', data => {
+  updateAgvCard(data);
+  if (data.demo) document.getElementById('demo-badge').style.display = '';
+});
+
+socket.on('factory_status', data => {
+  const s = data.status || '';
+  if (s.startsWith('SIMPLE_ROUTE_COMPLETE')) {
+    const agv = s.split(' ')[1] || 'AGV';
+    showMsg(`${agv} returned to depot — route complete.`, 5000);
+    document.getElementById('dispatch-btn').disabled = false;
+  } else if (s === 'DISPATCH_COMPLETE') {
+    showMsg('Dispatch complete — all AGVs returned to depot.', 4000);
+    document.getElementById('dispatch-btn').disabled = false;
+  }
+});
+
+socket.on('route_sent', data => {
+  showMsg(`Route sent to ${data.agv_key}: ${data.num_nodes} stop(s). AGV is executing…`);
+  document.getElementById('dispatch-btn').disabled = true;
+  clearDestinations();
+});
+
+socket.on('stopped', () => showMsg('STOP sent to all AGVs.'));
+
+socket.on('error', data => showMsg('Error: ' + data.msg, 5000, true));
+
+socket.on('log_status', data => {
+  logActive = data.active;
+  document.getElementById('log-status-text').textContent = logActive ? 'Logging ACTIVE' : 'Logging off';
+  document.getElementById('log-status-text').className = logActive ? 'log-active' : '';
+  document.getElementById('log-btn').textContent = logActive ? 'Stop Log' : 'Start Log';
+  document.getElementById('log-btn').className = logActive ? 'btn btn-danger' : 'btn btn-success';
+  document.getElementById('log-path-text').textContent = data.path || '';
+});
+
+// ── UI helpers ──────────────────────────────────────────────────────────
+function setROS2Status(connected) {
+  const badge = document.getElementById('ros2-badge');
+  badge.textContent = connected ? 'ROS2 CONNECTED' : 'ROS2 DISCONNECTED';
+  badge.className = 'ros2-badge ' + (connected ? 'connected' : 'disconnected');
+}
+
+function showMsg(msg, duration=3000, isError=false) {
+  const el = document.getElementById('dispatch-msg');
+  el.textContent = msg;
+  el.style.color = isError ? '#f5a8a8' : '#a8f5b5';
+  el.style.display = '';
+  setTimeout(() => { el.style.display = 'none'; }, duration);
+}
+
+// ── AGV card rendering ──────────────────────────────────────────────────
+function buildAgvCards(agvNames) {
+  const container = document.getElementById('agv-cards');
+  container.innerHTML = '';
+  for (const [key, name] of Object.entries(agvNames)) {
+    const card = document.createElement('div');
+    card.className = 'agv-card offline';
+    card.id = `card-${key}`;
+    card.innerHTML = agvCardHTML(key, name, null);
+    container.appendChild(card);
+  }
+}
+
+function agvCardHTML(key, name, data) {
+  if (!data) {
+    return `
+      <div class="agv-card-header">
+        <span class="agv-name">${name}</span>
+        <span class="agv-state-badge state-OFFLINE">OFFLINE</span>
+      </div>
+      <div style="font-size:0.75rem;color:#445;margin-top:4px;">No signal</div>`;
+  }
+
+  const state  = data.state || 'UNKNOWN';
+  const step   = data.step  || 0;
+  const total  = data.total || 0;
+  const x      = (data.x   || 0).toFixed(1);
+  const y      = (data.y   || 0).toFixed(1);
+  const yaw    = (data.yaw || 0).toFixed(0);
+  const L      = data.L    || 0;
+  const C      = data.C    || 0;
+  const R      = data.R    || 0;
+  const tof    = data.tof  || [0,0,0,0,0];
+  const obj    = data.obj  || 0;
+  const bat    = data.bat  != null ? data.bat : 100;
+  const color  = data.color || 'WHITE';
+
+  // Sensor bars (0-1023)
+  const lh = Math.round(L / 1023 * 100);
+  const ch = Math.round(C / 1023 * 100);
+  const rh = Math.round(R / 1023 * 100);
+
+  // TOF bars (0-100cm → bar)
+  const tofMax = 100;
+  const tofH = tof.map(v => Math.round(Math.min(v, tofMax) / tofMax * 100));
+
+  // Battery color
+  const batColor = bat > 50 ? '#0d7c1f' : bat > 20 ? '#e0a020' : '#e04040';
+
+  // Color swatch
+  const swatchColor = COLOR_SWATCHES[color] || '#888';
+
+  const stateClass = 'state-' + (
+    ['IDLE','MOVING','ARRIVED','NOT_READY'].includes(state) ? state : 'OFFLINE'
+  );
+
+  return `
+    <div class="agv-card-header">
+      <span class="agv-name">${name}</span>
+      <span class="agv-state-badge ${stateClass}">${state}</span>
+    </div>
+    <div class="telem-grid">
+      <span class="telem-label">Pos</span>
+      <span class="telem-value">${x},${y} cm</span>
+      <span class="telem-label">Yaw</span>
+      <span class="telem-value">${yaw}°</span>
+      <span class="telem-label">Step</span>
+      <span class="telem-value">${step}/${total}</span>
+      <span class="telem-label">Color</span>
+      <span class="telem-value">
+        <span class="color-swatch" style="background:${swatchColor}"></span>${color}
+      </span>
+    </div>
+
+    <div class="sensor-bar-row">
+      <div class="sensor-bar-label">Line sensors (L / C / R)</div>
+      <div class="sensor-bars">
+        ${['L','C','R'].map((lbl, i) => {
+          const h = [lh, ch, rh][i];
+          return `<div class="sensor-bar-wrap">
+            <div class="sensor-bar-bg"><div class="sensor-bar-fill" style="height:${h}%"></div></div>
+            <div class="sensor-bar-name">${lbl}</div></div>`;
+        }).join('')}
+      </div>
+    </div>
+
+    <div class="tof-row">
+      <div class="sensor-bar-label">TOF (FL/FCL/FC/FCR/FR)</div>
+      <div class="tof-bars">
+        ${['FL','FCL','FC','FCR','FR'].map((lbl, i) => {
+          return `<div class="tof-bar-wrap">
+            <div class="tof-bar-bg"><div class="tof-bar-fill" style="height:${tofH[i]}%"></div></div>
+            <div class="tof-bar-name">${lbl}</div></div>`;
+        }).join('')}
+      </div>
+    </div>
+
+    <div style="margin-top:6px; font-size:0.75rem; display:flex; justify-content:space-between; align-items:center;">
+      <span>
+        <span class="obj-indicator ${obj ? 'detected' : ''}"></span>
+        ${obj ? 'Object!' : 'Clear'}
+      </span>
+      <span style="color:#8899aa;">Bat ${bat.toFixed(0)}%</span>
+    </div>
+    <div class="bat-bar-bg">
+      <div class="bat-bar-fill" style="width:${bat}%;background:${batColor}"></div>
+    </div>`;
+}
+
+function updateAgvCard(data) {
+  const key  = data.agv_key;
+  const card = document.getElementById(`card-${key}`);
+  if (!card) return;
+
+  const state = data.state || '';
+
+  // Card border class
+  card.className = 'agv-card ' + (
+    state === 'MOVING'  ? 'moving'  :
+    state === 'ARRIVED' ? 'arrived' :
+    (state === 'IDLE' || state === 'NOT_READY') ? 'online' : 'offline'
+  );
+
+  // Find hardware name from the init data (stored on card)
+  const nameEl = card.querySelector('.agv-name');
+  const name = nameEl ? nameEl.textContent : key;
+  card.innerHTML = agvCardHTML(key, name, data);
+
+  // Update AGV overlay on grid if we have odometry
+  const x_cm = data.x || 0;
+  const y_cm = data.y || 0;
+  // x_cm / y_cm are in cm from depot. Each cell ≈ known physical distance.
+  // Simple approximate mapping using grid cell = CELL pixels
+  // Without real calibration, show at depot for IDLE, or skip overlay
+  const online = state !== 'OFFLINE' && state !== '';
+  if (online) {
+    // Show near depot until we have calibrated physical coordinates
+    const {cx, cy} = nodeToSVG(0);
+    moveAGVOverlay(key, cx, cy, true);
+  } else {
+    moveAGVOverlay(key, 0, 0, false);
+  }
+}
+
+// ── Actions ─────────────────────────────────────────────────────────────
+function dispatchRoute() {
+  if (selectedNodes.size === 0) {
+    showMsg('Select at least one destination node.', 3000, true);
+    return;
+  }
+
+  const agvKey    = document.getElementById('agv-select').value;
+  const dwellTime = parseFloat(document.getElementById('proc-time').value) || 0;
+  const nodes     = [...selectedNodes].sort((a, b) => a - b);
+
+  socket.emit('simple_route', { agv_key: agvKey, nodes, dwell_time: dwellTime });
+}
+
+function stopAll() {
+  socket.emit('stop_all');
+}
+
+let logActive = false;
+function toggleLog() {
+  if (logActive) {
+    socket.emit('stop_log');
+    logActive = false;
+  } else {
+    socket.emit('start_log');
+    logActive = true;
+  }
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────
+buildGrid();
+</script>
+</body>
+</html>
