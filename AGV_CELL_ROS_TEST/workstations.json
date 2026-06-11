@@ -1,0 +1,109 @@
+{
+  "units": "in",
+  "coordinate_frames": {
+    "map": {
+      "description": "Measured physical map coordinates as X_map, Y_map."
+    },
+    "agv": {
+      "description": "AGV planner coordinates as X_agv, Y_agv, where X_agv = Y_map and Y_agv = X_map."
+    }
+  },
+  "workstations": [
+    {
+      "id": "WS01",
+      "bay": "B_R01_C01",
+      "map_xy": [4.5, 10.0],
+      "agv_xy": [10.0, 4.5],
+      "entry_side": "N",
+      "dock_heading": "S"
+    },
+    {
+      "id": "WS02",
+      "bay": "B_R01_C05",
+      "map_xy": [44.5, 10.0],
+      "agv_xy": [10.0, 44.5],
+      "entry_side": "N",
+      "dock_heading": "S"
+    },
+    {
+      "id": "WS03",
+      "bay": "B_R02_C02",
+      "map_xy": [15.0, 19.75],
+      "agv_xy": [19.75, 15.0],
+      "entry_side": "N",
+      "dock_heading": "S"
+    },
+    {
+      "id": "WS04",
+      "bay": "B_R02_C03",
+      "map_xy": [24.5, 19.75],
+      "agv_xy": [19.75, 24.5],
+      "entry_side": "N",
+      "dock_heading": "S"
+    },
+    {
+      "id": "WS05",
+      "bay": "B_R02_C07",
+      "map_xy": [64.0, 19.75],
+      "agv_xy": [19.75, 64.0],
+      "entry_side": "N",
+      "dock_heading": "S"
+    },
+    {
+      "id": "WS06",
+      "bay": "B_R03_C03",
+      "map_xy": [25.0, 29.75],
+      "agv_xy": [29.75, 25.0],
+      "entry_side": "N",
+      "dock_heading": "S"
+    },
+    {
+      "id": "WS07",
+      "bay": "B_R04_C01",
+      "map_xy": [5.0, 40.0],
+      "agv_xy": [40.0, 5.0],
+      "entry_side": "N",
+      "dock_heading": "S"
+    },
+    {
+      "id": "WS08",
+      "bay": "B_R03_C04",
+      "map_xy": [24.5, 40.0],
+      "agv_xy": [40.0, 24.5],
+      "entry_side": "N",
+      "dock_heading": "S"
+    },
+    {
+      "id": "WS09",
+      "bay": "B_R04_C06",
+      "map_xy": [54.5, 40.0],
+      "agv_xy": [40.0, 54.5],
+      "entry_side": "N",
+      "dock_heading": "S"
+    },
+    {
+      "id": "WS10",
+      "bay": "B_R05_C02",
+      "map_xy": [15.0, 49.5],
+      "agv_xy": [49.5, 15.0],
+      "entry_side": "N",
+      "dock_heading": "S"
+    },
+    {
+      "id": "WS11",
+      "bay": "B_R05_C03",
+      "map_xy": [25.0, 49.5],
+      "agv_xy": [49.5, 25.0],
+      "entry_side": "N",
+      "dock_heading": "S"
+    },
+    {
+      "id": "WS12",
+      "bay": "B_R06_C07",
+      "map_xy": [64.0, 59.5],
+      "agv_xy": [59.5, 64.0],
+      "entry_side": "N",
+      "dock_heading": "S"
+    }
+  ]
+}
