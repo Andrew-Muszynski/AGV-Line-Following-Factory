@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.agents/
+.codex/
+.claude/
+vrp_rpd/results/
+vrp_rpd/paper_results/
+vrp_rpd/agv_testbed/datasets/
+vrp_rpd/agv_testbed/results/
+*.zip
+*.pdf

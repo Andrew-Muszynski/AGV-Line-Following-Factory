@@ -1,0 +1,33 @@
+{
+  "meta": {
+    "dataset": "manual_test",
+    "variant": "base",
+    "seed": 42,
+    "num_agents": 1,
+    "resources_per_agent": 1
+  },
+  "cell_nodes": [1],
+  "processing_times": [5.0],
+  "makespan": 20.0,
+  "agents": {
+    "0": {
+      "completion_time": 20.0,
+      "visit_sequence": [65, 65],
+      "events": [
+        [65, "D", 0],
+        [65, "P", 0]
+      ]
+    }
+  },
+  "customer_timing": {
+    "65": {
+      "grid_node": 1,
+      "dropoff_time": 5.0,
+      "pickup_time": 10.0,
+      "processing_time": 5.0
+    }
+  },
+  "mapf_paths": {
+    "0": [[0, 0], [1, 0], [1, 1], [1, 1], [1, 1], [1, 0], [0, 0]]
+  }
+}

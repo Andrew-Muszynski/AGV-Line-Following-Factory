@@ -1,0 +1,271 @@
+\documentclass[12pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{parskip}
+\usepackage{fancyhdr}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    urlcolor=blue
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{Technical Disclosure --- Confidential}
+\lhead{Sodhi \& Prasad, URI}
+\rfoot{Page \thepage}
+
+\titleformat{\section}{\large\bfseries}{}{0em}{}[\titlerule]
+\titleformat{\subsection}{\normalsize\bfseries}{}{0em}{}
+
+\begin{document}
+
+%% -------------------------------------------------------
+%%  HEADER BLOCK
+%% -------------------------------------------------------
+\begin{center}
+    {\LARGE\bfseries Technical Disclosure Document}\\[6pt]
+    {\large Invention for Patent Application}\\[18pt]
+    \begin{tabular}{ll}
+        \textbf{Date:}        & April 22, 2026 \\
+        \textbf{Inventors:}   & Manbir Sodhi; Romesh Prasad \\
+        \textbf{Institution:} & Department of Mechanical, Industrial and Systems Engineering \\
+                              & University of Rhode Island \\
+        \textbf{Contact:}     & prasadromesh19@gmail.com \\
+    \end{tabular}
+\end{center}
+
+\vspace{12pt}
+\hrule
+\vspace{18pt}
+
+%% -------------------------------------------------------
+%%  1. TITLE
+%% -------------------------------------------------------
+\section{Title}
+
+\textbf{System and Method for Multi-Agent Resource Transport with Cross-Agent Handoff and Joint Task-Path Optimization}
+
+%% -------------------------------------------------------
+%%  2. FIELD OF THE INVENTION
+%% -------------------------------------------------------
+\section{Field of the Invention}
+
+This invention relates to autonomous multi-agent systems for transporting discrete resources through a physical facility, and more specifically to systems that jointly optimize task assignment and collision-free path planning for a fleet of mobile agents operating in a shared environment, where the agent that delivers a resource to a service location need not be the same agent that retrieves it after service.
+
+%% -------------------------------------------------------
+%%  3. BACKGROUND AND PROBLEM STATEMENT
+%% -------------------------------------------------------
+\section{Background and Problem Statement}
+
+\subsection{3.1 \quad General Problem}
+
+In any large-scale facility where mobile agents transport discrete resources---warehouses, fulfillment centers, manufacturing floors, hospitals, disaster response sites---two sub-problems must be solved simultaneously:
+
+\begin{enumerate}[leftmargin=2em]
+    \item \textbf{Task Assignment and Routing:} Which agent carries which resource, in what order, along which path?
+    \item \textbf{Collision-Free Navigation:} How do multiple agents move through a shared physical space without colliding or deadlocking?
+\end{enumerate}
+
+Existing systems treat these as separate problems. Task assignment is solved first; collision avoidance is handled independently at execution time. This decoupled approach produces suboptimal outcomes because the routing layer has no knowledge of physical conflicts, and the navigation layer has no authority to reassign tasks.
+
+\subsection{3.2 \quad The Same-Agent Constraint in Prior Art}
+
+All known prior systems impose what we term the \textbf{same-agent constraint}: the mobile agent that delivers a resource to a service node must also retrieve it after service is complete. The agent waits idle at the service node during the entire processing interval.
+
+The Amazon Kiva system (US Patent 20140100690A1) exemplifies this constraint. FIG.~17, step~742 explicitly shows the same Mobile Drive Unit (MDU) returning the shelf to storage. FIG.~11, step~660 shows the MDU waiting at the picking station during processing. This constraint wastes agent capacity at scale, particularly when service durations are long or variable.
+
+\subsection{3.3 \quad The Gap}
+
+No existing system:
+\begin{itemize}[leftmargin=2em]
+    \item Allows a different agent to retrieve a resource than the one that delivered it (cross-agent handoff);
+    \item Jointly optimizes task assignment and collision-free path planning in a single integrated architecture; or
+    \item Uses physical conflict information from the path planning layer to surgically repair only the conflicting portions of the task assignment solution.
+\end{itemize}
+
+%% -------------------------------------------------------
+%%  4. SUMMARY OF THE INVENTION
+%% -------------------------------------------------------
+\section{Summary of the Invention}
+
+The invention is a \textbf{system and method} for coordinating a fleet of $M$ mobile agents transporting $N$ discrete resources to $P$ service nodes in a physical facility, where:
+
+\begin{enumerate}[leftmargin=2em]
+    \item A first agent may deliver a resource to a service node, and upon completion of service, a \textbf{second, different agent} may retrieve that resource---freeing the first agent to begin a new task during the service interval.
+
+    \item Task assignment and routing (which agent carries what, in what order) and collision-free path planning (how agents physically navigate the facility) are \textbf{jointly optimized} through an iterative two-layer architecture.
+
+    \item When the path planning layer detects physical conflicts, it returns a \textbf{conflict set} identifying the specific agents, route segments, and timesteps involved. The task assignment layer uses this conflict set to perform \textbf{targeted repair}---destroying and re-optimizing only the conflicting segments---rather than discarding and recomputing the full solution.
+
+    \item Priority in conflict resolution is derived from the system's \textbf{critical path}: the agent whose task sequence determines total completion time receives highest navigation priority, ensuring that conflict resolution never extends overall makespan.
+\end{enumerate}
+
+%% -------------------------------------------------------
+%%  5. DETAILED DESCRIPTION
+%% -------------------------------------------------------
+\section{Detailed Description of the Invention}
+
+\subsection{5.1 \quad Core Concept: Cross-Agent Handoff}
+
+Define a \textbf{transport task} as a triple $(r,\, d,\, w)$: a mobile agent picks up resource $r$ from depot $d$ and delivers it to service node $w$, where $r$ undergoes processing of duration $\tau$ (which may be stochastic). After processing, $r$ must be returned to a depot.
+
+In all prior systems, the agent that executes the delivery leg also executes the retrieval leg, waiting idle at $w$ for duration $\tau$. In the present invention, the delivery leg and retrieval leg are \textbf{treated as separable tasks} that may be assigned to different agents. This decoupling creates a new degree of freedom in the optimization: during the processing interval, the delivering agent is released to begin a new task.
+
+\subsection{5.2 \quad Two-Layer Architecture}
+
+The system comprises two coupled computational layers.
+
+\medskip
+\noindent\textbf{Layer~1 --- Task Assignment and Routing Layer (Upper Layer):}
+Receives as input the set of resources, depots, service nodes, agent fleet, and facility layout. Produces as output a complete task assignment and tentative route sequence for each agent. This layer is implemented using a metaheuristic optimizer (in one embodiment: a Biased Random-Key Genetic Algorithm warm-started from an Adaptive Large Neighborhood Search incumbent). The upper layer objective is to minimize total makespan---the time at which all tasks are completed.
+
+\medskip
+\noindent\textbf{Layer~2 --- Multi-Agent Path Planning Layer (Lower Layer):}
+Receives as input the tentative route sequences from Layer~1 and the physical facility graph. Produces as output either (a) a set of collision-free, deadlock-free physical paths confirming the Layer~1 solution is executable, or (b) a \textbf{conflict set} $C = \{(\text{agent } i,\, \text{segment } \ell,\, \text{timestep } t)\}$ identifying all space-time conflicts in the tentative solution. This layer is implemented using a complete multi-agent path finding solver (in one embodiment: Conflict-Based Search).
+
+\subsection{5.3 \quad Iterative Conflict-Driven Feedback Loop}
+
+The two layers operate in an iterative loop, shown in Algorithm~\ref{alg:main}.
+
+\begin{algorithm}[H]
+\caption{Multi-Agent Resource Transport with Cross-Agent Handoff}\label{alg:main}
+\begin{algorithmic}[1]
+\State Layer~1 computes task assignment and tentative routes $\{\pi_1, \ldots, \pi_M\}$
+\State Layer~2 checks $\{\pi_1, \ldots, \pi_M\}$ for physical conflicts
+\If{no conflicts}
+    \State \textbf{output} solution; \textbf{terminate}
+\EndIf
+\State Layer~2 returns conflict set $C$ to Layer~1
+\State Layer~1 identifies conflicting segments $S \subseteq \{\pi_1, \ldots, \pi_M\}$
+\State Layer~1 destroys $S$ and repairs under spatial-temporal constraints from $C$
+\State \textbf{goto} Step~2
+\end{algorithmic}
+\end{algorithm}
+
+The key innovation in Step~7 is \textbf{targeted destroy-repair}: only the conflicting segments are destroyed and re-optimized. Non-conflicting portions of the solution are preserved. Repair is permitted to reassign tasks across agents, enabling cross-agent handoff as a conflict resolution strategy.
+
+\subsection{5.4 \quad Critical-Path-Derived Navigation Priority}
+
+When Layer~2 detects a conflict between agents $i$ and $j$, it must determine which agent yields (is rerouted) and which proceeds (holds its path). In the present invention, this priority is derived from each agent's contribution to the system's makespan.
+
+Let $T_i$ denote the scheduled completion time of agent $i$'s task sequence under the current Layer~1 solution. Define the \textbf{critical agent}
+\[
+    i^* = \arg\max_i\; T_i,
+\]
+the agent whose completion time equals the system makespan. Critical agent $i^*$ receives navigation priority rank~1 and is never rerouted by the path planner. All other agents are ranked by $T_i$ in descending order. Conflicts are resolved by rerouting lower-priority agents, preserving slack in their schedules.
+
+This ensures that conflict resolution in the path planning layer never extends total makespan---delays are absorbed by agents with schedule slack, not by the agent on the critical path.
+
+%% -------------------------------------------------------
+%%  6. APPLICATION DOMAINS
+%% -------------------------------------------------------
+\section{Application Domains (Embodiments)}
+
+The invention is domain-agnostic. The following are embodiments of the same underlying system and method.
+
+\subsection{6.1 \quad Warehouse and Fulfillment Center Logistics}
+Mobile robots (cobots/AGVs) transport inventory shelves or storage bins from depot locations to fixed picking/processing workstations. Workstation processing duration is stochastic (depends on order complexity). A different robot retrieves the shelf after picking is complete. Facility is a 2D grid with navigation corridors.
+
+\subsection{6.2 \quad Hospital and Clinical Logistics}
+Mobile robots transport medications, laboratory samples, surgical supplies, or medical equipment from storage locations (pharmacies, supply rooms) to service nodes (operating rooms, nursing stations, laboratories). Service duration corresponds to procedure or treatment time. A different robot retrieves the cart or container after use. Critical-path priority ensures time-sensitive deliveries are never delayed by conflict resolution.
+
+\subsection{6.3 \quad Search and Rescue and Disaster Response}
+Autonomous ground or aerial vehicles transport supplies (food, water, medical kits, tools) to locations where survivors or responders are present. After resources are consumed or deployed, a different vehicle retrieves containers or equipment. The system optimizes task assignment under stochastic service times and handles collision avoidance in GPS-denied or constrained physical environments.
+
+\subsection{6.4 \quad Manufacturing and Assembly Floors}
+Autonomous vehicles transport parts, subassemblies, or tooling between storage buffers and assembly stations. Assembly duration is variable. A different vehicle retrieves the part carrier or fixture after the assembly step is complete. The system minimizes production makespan across the assembly sequence.
+
+\subsection{6.5 \quad Port and Intermodal Freight Terminals}
+Autonomous yard vehicles transport containers between storage stacks and loading/unloading berths. Processing time corresponds to crane loading/unloading duration. A different vehicle retrieves the container after loading. The system jointly optimizes container assignment and vehicle routing while avoiding collisions in the yard.
+
+%% -------------------------------------------------------
+%%  7. ADVANTAGES OVER PRIOR ART
+%% -------------------------------------------------------
+\section{Key Advantages Over Prior Art}
+
+\begin{center}
+\begin{tabular}{>{\raggedright}p{5cm} >{\centering}p{2.8cm} >{\centering}p{2.8cm} >{\centering\arraybackslash}p{2.8cm}}
+\toprule
+\textbf{Feature} & \textbf{Prior Systems (e.g., Kiva)} & \textbf{MAPF-Only Systems} & \textbf{Present Invention} \\
+\midrule
+Cross-agent handoff              & No --- same agent retrieves & Not applicable & Yes \\
+Joint task + path optimization   & No & No & Yes \\
+Conflict-driven targeted repair  & No & Internal to path layer only & Between layers \\
+Stochastic service times         & Not addressed & Not addressed & Supported \\
+Critical-path-derived priority   & No & No & Yes \\
+Domain-agnostic                  & No (warehouse only) & No & Yes \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%% -------------------------------------------------------
+%%  8. CLAIMS SUMMARY
+%% -------------------------------------------------------
+\section{Claims Summary (for Attorney Conversion)}
+
+The following are intended as claim seeds, not formal claims. The patent attorney should derive independent and dependent claims from these.
+
+\medskip
+\noindent\textbf{Independent Claim Candidates:}
+
+\begin{enumerate}[leftmargin=2em]
+    \item A method for coordinating a fleet of mobile agents wherein a first agent delivers a discrete resource to a service node and a second, different agent retrieves the resource after service---both agents selected by a joint task assignment optimizer.
+
+    \item A system comprising a task assignment and routing layer coupled to a multi-agent path planning layer through a conflict set interface, wherein the path planning layer returns conflict sets to the task assignment layer, and the task assignment layer performs targeted destroy-repair on conflicting route segments using spatial-temporal constraints derived from the conflict sets.
+
+    \item A method for assigning navigation priority among mobile agents in conflict, wherein priority rank is derived from each agent's contribution to system makespan, and the agent on the critical path receives highest priority and is never rerouted.
+
+    \item A system for multi-agent resource transport wherein task reassignment across agents is used as a conflict resolution strategy---enabling the retrieval of a resource to be assigned to a different agent than the one that delivered it as a result of path conflict resolution.
+\end{enumerate}
+
+\medskip
+\noindent\textbf{Dependent Claim Candidates (embodiment-specific):}
+
+\begin{itemize}[leftmargin=2em]
+    \item The method of claim~1, wherein service duration is stochastic.
+    \item The method of claim~1, wherein agents originate from multiple depot locations distributed across the facility.
+    \item The system of claim~2, wherein the task assignment layer is implemented using a metaheuristic search algorithm.
+    \item The system of claim~2, wherein the path planning layer is implemented using a complete multi-agent path finding algorithm.
+    \item The method of claim~3, wherein priority is updated at each iteration of the feedback loop.
+\end{itemize}
+
+%% -------------------------------------------------------
+%%  9. FIGURES
+%% -------------------------------------------------------
+\section{Figures Available}
+
+The following figures from the associated research are available to accompany this disclosure:
+
+\begin{itemize}[leftmargin=2em]
+    \item \texttt{warehouse\_grid\_basic.png} --- $10\times10$ facility grid with depot locations.
+    \item \texttt{warehouse\_grid\_workstations.png} --- facility grid with depot and service node locations.
+    \item Algorithm pseudocode (Algorithm~1 in \texttt{vrp\_rpd\_mapf.tex}): VRP-RPD/MAPF with Critical-Path Priority.
+\end{itemize}
+
+%% -------------------------------------------------------
+%%  10. RELATED PUBLICATION
+%% -------------------------------------------------------
+\section{Related Publication}
+
+Sodhi, M., Prasad, R., Saseendran, H. ``Vehicle Routing Problem with Resource-Constrained Pickup and Delivery: A Heuristic-Informed BRKGA with Pattern-Based Analysis.'' Accepted, GECCO 2026, Evolutionary Combinatorial Optimization and Metaheuristics track. Paper ID: pap551s2. \textbf{Not yet publicly available as of April 22, 2026.}
+
+\medskip
+\noindent\textit{Note to attorney: the paper is accepted but not yet published. Filing before public availability preserves all international patent rights under absolute novelty jurisdictions (Europe, China, Japan, etc.).}
+
+\vspace{24pt}
+\hrule
+\vspace{8pt}
+\noindent\small\textit{This document is a technical disclosure prepared for the URI Office of Research and Economic Development. It is intended to be converted into a formal patent application by a licensed patent attorney. Confidential --- do not distribute.}
+
+\end{document}

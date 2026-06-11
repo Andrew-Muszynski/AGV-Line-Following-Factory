@@ -1,0 +1,1264 @@
+{
+  "config": {
+    "datasets": [
+      "gr17",
+      "gr21",
+      "gr24",
+      "gr48",
+      "bays29",
+      "berlin52",
+      "eil51"
+    ],
+    "variants": [
+      "base",
+      "2x",
+      "5x"
+    ],
+    "seed": 42,
+    "max_iterations": 5
+  },
+  "results": [
+    {
+      "dataset": "gr17",
+      "variant": "base",
+      "num_agents": 3,
+      "resources_per_agent": 5,
+      "n_customers": 16,
+      "seed": 42,
+      "vrp_heuristic": "Greedy Defer",
+      "vrp_makespan": 901.0,
+      "vrp_agent_times": [
+        901.0,
+        878.0,
+        523.0
+      ],
+      "vrp_priority_order": [
+        0,
+        1,
+        2
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 48,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 901.0,
+          "n_dropoffs": 6,
+          "n_pickups": 6,
+          "mapf_steps": 49,
+          "mapf_done_t": 48
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 878.0,
+          "n_dropoffs": 6,
+          "n_pickups": 6,
+          "mapf_steps": 37,
+          "mapf_done_t": 36
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 523.0,
+          "n_dropoffs": 4,
+          "n_pickups": 4,
+          "mapf_steps": 40,
+          "mapf_done_t": 39
+        }
+      ],
+      "wall_time_s": 0.07,
+      "total_wait_steps": 1
+    },
+    {
+      "dataset": "gr17",
+      "variant": "2x",
+      "num_agents": 3,
+      "resources_per_agent": 5,
+      "n_customers": 16,
+      "seed": 42,
+      "vrp_heuristic": "Greedy Defer",
+      "vrp_makespan": 1750.0,
+      "vrp_agent_times": [
+        1750.0,
+        1736.0,
+        942.0
+      ],
+      "vrp_priority_order": [
+        0,
+        1,
+        2
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 52,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 1750.0,
+          "n_dropoffs": 6,
+          "n_pickups": 6,
+          "mapf_steps": 45,
+          "mapf_done_t": 44
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 1736.0,
+          "n_dropoffs": 6,
+          "n_pickups": 6,
+          "mapf_steps": 53,
+          "mapf_done_t": 52
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 942.0,
+          "n_dropoffs": 4,
+          "n_pickups": 4,
+          "mapf_steps": 36,
+          "mapf_done_t": 35
+        }
+      ],
+      "wall_time_s": 0.06,
+      "total_wait_steps": 1
+    },
+    {
+      "dataset": "gr17",
+      "variant": "5x",
+      "num_agents": 3,
+      "resources_per_agent": 5,
+      "n_customers": 16,
+      "seed": 42,
+      "vrp_heuristic": "Greedy Defer",
+      "vrp_makespan": 4309.0,
+      "vrp_agent_times": [
+        4309.0,
+        4262.0,
+        2328.0
+      ],
+      "vrp_priority_order": [
+        0,
+        1,
+        2
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 52,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 4309.0,
+          "n_dropoffs": 6,
+          "n_pickups": 6,
+          "mapf_steps": 45,
+          "mapf_done_t": 44
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 4262.0,
+          "n_dropoffs": 6,
+          "n_pickups": 6,
+          "mapf_steps": 53,
+          "mapf_done_t": 52
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 2328.0,
+          "n_dropoffs": 4,
+          "n_pickups": 4,
+          "mapf_steps": 36,
+          "mapf_done_t": 35
+        }
+      ],
+      "wall_time_s": 0.06,
+      "total_wait_steps": 1
+    },
+    {
+      "dataset": "gr21",
+      "variant": "base",
+      "num_agents": 3,
+      "resources_per_agent": 5,
+      "n_customers": 20,
+      "seed": 42,
+      "vrp_heuristic": "Max Regret",
+      "vrp_makespan": 909.0,
+      "vrp_agent_times": [
+        763.0,
+        909.0,
+        840.0
+      ],
+      "vrp_priority_order": [
+        1,
+        2,
+        0
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 98,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 763.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 99,
+          "mapf_done_t": 98
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 909.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 75,
+          "mapf_done_t": 74
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 840.0,
+          "n_dropoffs": 6,
+          "n_pickups": 6,
+          "mapf_steps": 76,
+          "mapf_done_t": 75
+        }
+      ],
+      "wall_time_s": 0.08,
+      "total_wait_steps": 3
+    },
+    {
+      "dataset": "gr21",
+      "variant": "2x",
+      "num_agents": 3,
+      "resources_per_agent": 5,
+      "n_customers": 20,
+      "seed": 42,
+      "vrp_heuristic": "Max Regret",
+      "vrp_makespan": 1770.0,
+      "vrp_agent_times": [
+        1490.0,
+        1770.0,
+        1656.0
+      ],
+      "vrp_priority_order": [
+        1,
+        2,
+        0
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 98,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 1490.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 99,
+          "mapf_done_t": 98
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 1770.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 75,
+          "mapf_done_t": 74
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 1656.0,
+          "n_dropoffs": 6,
+          "n_pickups": 6,
+          "mapf_steps": 76,
+          "mapf_done_t": 75
+        }
+      ],
+      "wall_time_s": 0.08,
+      "total_wait_steps": 3
+    },
+    {
+      "dataset": "gr21",
+      "variant": "5x",
+      "num_agents": 3,
+      "resources_per_agent": 5,
+      "n_customers": 20,
+      "seed": 42,
+      "vrp_heuristic": "Max Regret",
+      "vrp_makespan": 4355.0,
+      "vrp_agent_times": [
+        3671.0,
+        4355.0,
+        3688.0
+      ],
+      "vrp_priority_order": [
+        1,
+        2,
+        0
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 97,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 3671.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 98,
+          "mapf_done_t": 97
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 4355.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 75,
+          "mapf_done_t": 74
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 3688.0,
+          "n_dropoffs": 6,
+          "n_pickups": 6,
+          "mapf_steps": 80,
+          "mapf_done_t": 79
+        }
+      ],
+      "wall_time_s": 0.08,
+      "total_wait_steps": 2
+    },
+    {
+      "dataset": "gr24",
+      "variant": "base",
+      "num_agents": 4,
+      "resources_per_agent": 6,
+      "n_customers": 23,
+      "seed": 42,
+      "vrp_heuristic": "Greedy Defer",
+      "vrp_makespan": 479.0,
+      "vrp_agent_times": [
+        413.0,
+        382.0,
+        479.0,
+        385.0
+      ],
+      "vrp_priority_order": [
+        2,
+        0,
+        3,
+        1
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 57,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 413.0,
+          "n_dropoffs": 6,
+          "n_pickups": 6,
+          "mapf_steps": 58,
+          "mapf_done_t": 57
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 382.0,
+          "n_dropoffs": 6,
+          "n_pickups": 6,
+          "mapf_steps": 40,
+          "mapf_done_t": 39
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 479.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 49,
+          "mapf_done_t": 48
+        },
+        {
+          "agent_id": 3,
+          "completion_time": 385.0,
+          "n_dropoffs": 4,
+          "n_pickups": 4,
+          "mapf_steps": 21,
+          "mapf_done_t": 20
+        }
+      ],
+      "wall_time_s": 0.1,
+      "total_wait_steps": 1
+    },
+    {
+      "dataset": "gr24",
+      "variant": "2x",
+      "num_agents": 4,
+      "resources_per_agent": 6,
+      "n_customers": 23,
+      "seed": 42,
+      "vrp_heuristic": "Greedy Defer",
+      "vrp_makespan": 910.0,
+      "vrp_agent_times": [
+        794.0,
+        734.0,
+        910.0,
+        750.0
+      ],
+      "vrp_priority_order": [
+        2,
+        0,
+        3,
+        1
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 57,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 794.0,
+          "n_dropoffs": 6,
+          "n_pickups": 6,
+          "mapf_steps": 58,
+          "mapf_done_t": 57
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 734.0,
+          "n_dropoffs": 6,
+          "n_pickups": 6,
+          "mapf_steps": 40,
+          "mapf_done_t": 39
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 910.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 49,
+          "mapf_done_t": 48
+        },
+        {
+          "agent_id": 3,
+          "completion_time": 750.0,
+          "n_dropoffs": 4,
+          "n_pickups": 4,
+          "mapf_steps": 21,
+          "mapf_done_t": 20
+        }
+      ],
+      "wall_time_s": 0.1,
+      "total_wait_steps": 1
+    },
+    {
+      "dataset": "gr24",
+      "variant": "5x",
+      "num_agents": 4,
+      "resources_per_agent": 6,
+      "n_customers": 23,
+      "seed": 42,
+      "vrp_heuristic": "Greedy Defer",
+      "vrp_makespan": 2203.0,
+      "vrp_agent_times": [
+        1937.0,
+        1790.0,
+        2203.0,
+        1845.0
+      ],
+      "vrp_priority_order": [
+        2,
+        0,
+        3,
+        1
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 57,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 1937.0,
+          "n_dropoffs": 6,
+          "n_pickups": 6,
+          "mapf_steps": 58,
+          "mapf_done_t": 57
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 1790.0,
+          "n_dropoffs": 6,
+          "n_pickups": 6,
+          "mapf_steps": 40,
+          "mapf_done_t": 39
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 2203.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 49,
+          "mapf_done_t": 48
+        },
+        {
+          "agent_id": 3,
+          "completion_time": 1845.0,
+          "n_dropoffs": 4,
+          "n_pickups": 4,
+          "mapf_steps": 21,
+          "mapf_done_t": 20
+        }
+      ],
+      "wall_time_s": 0.1,
+      "total_wait_steps": 1
+    },
+    {
+      "dataset": "gr48",
+      "variant": "base",
+      "num_agents": 4,
+      "resources_per_agent": 6,
+      "n_customers": 47,
+      "seed": 42,
+      "vrp_heuristic": "Max Regret",
+      "vrp_makespan": 2294.0,
+      "vrp_agent_times": [
+        1209.0,
+        2294.0,
+        2003.0,
+        1557.0
+      ],
+      "vrp_priority_order": [
+        1,
+        2,
+        3,
+        0
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 150,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 1209.0,
+          "n_dropoffs": 12,
+          "n_pickups": 12,
+          "mapf_steps": 151,
+          "mapf_done_t": 150
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 2294.0,
+          "n_dropoffs": 12,
+          "n_pickups": 12,
+          "mapf_steps": 129,
+          "mapf_done_t": 128
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 2003.0,
+          "n_dropoffs": 12,
+          "n_pickups": 12,
+          "mapf_steps": 120,
+          "mapf_done_t": 119
+        },
+        {
+          "agent_id": 3,
+          "completion_time": 1557.0,
+          "n_dropoffs": 11,
+          "n_pickups": 11,
+          "mapf_steps": 121,
+          "mapf_done_t": 120
+        }
+      ],
+      "wall_time_s": 0.41,
+      "total_wait_steps": 5
+    },
+    {
+      "dataset": "gr48",
+      "variant": "2x",
+      "num_agents": 4,
+      "resources_per_agent": 6,
+      "n_customers": 47,
+      "seed": 42,
+      "vrp_heuristic": "Max Regret",
+      "vrp_makespan": 4522.0,
+      "vrp_agent_times": [
+        2274.0,
+        4522.0,
+        3864.0,
+        3076.0
+      ],
+      "vrp_priority_order": [
+        1,
+        2,
+        3,
+        0
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 150,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 2274.0,
+          "n_dropoffs": 12,
+          "n_pickups": 12,
+          "mapf_steps": 151,
+          "mapf_done_t": 150
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 4522.0,
+          "n_dropoffs": 12,
+          "n_pickups": 12,
+          "mapf_steps": 129,
+          "mapf_done_t": 128
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 3864.0,
+          "n_dropoffs": 12,
+          "n_pickups": 12,
+          "mapf_steps": 120,
+          "mapf_done_t": 119
+        },
+        {
+          "agent_id": 3,
+          "completion_time": 3076.0,
+          "n_dropoffs": 11,
+          "n_pickups": 11,
+          "mapf_steps": 121,
+          "mapf_done_t": 120
+        }
+      ],
+      "wall_time_s": 0.41,
+      "total_wait_steps": 5
+    },
+    {
+      "dataset": "gr48",
+      "variant": "5x",
+      "num_agents": 4,
+      "resources_per_agent": 6,
+      "n_customers": 47,
+      "seed": 42,
+      "vrp_heuristic": "Max Regret",
+      "vrp_makespan": 11206.0,
+      "vrp_agent_times": [
+        5469.0,
+        11206.0,
+        9447.0,
+        7633.0
+      ],
+      "vrp_priority_order": [
+        1,
+        2,
+        3,
+        0
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 150,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 5469.0,
+          "n_dropoffs": 12,
+          "n_pickups": 12,
+          "mapf_steps": 151,
+          "mapf_done_t": 150
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 11206.0,
+          "n_dropoffs": 12,
+          "n_pickups": 12,
+          "mapf_steps": 129,
+          "mapf_done_t": 128
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 9447.0,
+          "n_dropoffs": 12,
+          "n_pickups": 12,
+          "mapf_steps": 120,
+          "mapf_done_t": 119
+        },
+        {
+          "agent_id": 3,
+          "completion_time": 7633.0,
+          "n_dropoffs": 11,
+          "n_pickups": 11,
+          "mapf_steps": 121,
+          "mapf_done_t": 120
+        }
+      ],
+      "wall_time_s": 0.41,
+      "total_wait_steps": 5
+    },
+    {
+      "dataset": "bays29",
+      "variant": "base",
+      "num_agents": 4,
+      "resources_per_agent": 6,
+      "n_customers": 28,
+      "seed": 42,
+      "vrp_heuristic": "Max Regret",
+      "vrp_makespan": 576.0,
+      "vrp_agent_times": [
+        531.0,
+        532.0,
+        576.0,
+        431.0
+      ],
+      "vrp_priority_order": [
+        2,
+        1,
+        0,
+        3
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 95,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 531.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 65,
+          "mapf_done_t": 64
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 532.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 96,
+          "mapf_done_t": 95
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 576.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 81,
+          "mapf_done_t": 80
+        },
+        {
+          "agent_id": 3,
+          "completion_time": 431.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 84,
+          "mapf_done_t": 83
+        }
+      ],
+      "wall_time_s": 0.13,
+      "total_wait_steps": 1
+    },
+    {
+      "dataset": "bays29",
+      "variant": "2x",
+      "num_agents": 4,
+      "resources_per_agent": 6,
+      "n_customers": 28,
+      "seed": 42,
+      "vrp_heuristic": "Max Regret",
+      "vrp_makespan": 1518.0,
+      "vrp_agent_times": [
+        988.0,
+        1518.0,
+        816.0,
+        754.0
+      ],
+      "vrp_priority_order": [
+        1,
+        0,
+        2,
+        3
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 94,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 988.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 82,
+          "mapf_done_t": 81
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 1518.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 95,
+          "mapf_done_t": 94
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 816.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 80,
+          "mapf_done_t": 79
+        },
+        {
+          "agent_id": 3,
+          "completion_time": 754.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 92,
+          "mapf_done_t": 91
+        }
+      ],
+      "wall_time_s": 0.13,
+      "total_wait_steps": 2
+    },
+    {
+      "dataset": "bays29",
+      "variant": "5x",
+      "num_agents": 4,
+      "resources_per_agent": 6,
+      "n_customers": 28,
+      "seed": 42,
+      "vrp_heuristic": "Max Regret",
+      "vrp_makespan": 3726.0,
+      "vrp_agent_times": [
+        2377.0,
+        3726.0,
+        1977.0,
+        1828.0
+      ],
+      "vrp_priority_order": [
+        1,
+        0,
+        2,
+        3
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 94,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 2377.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 82,
+          "mapf_done_t": 81
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 3726.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 95,
+          "mapf_done_t": 94
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 1977.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 80,
+          "mapf_done_t": 79
+        },
+        {
+          "agent_id": 3,
+          "completion_time": 1828.0,
+          "n_dropoffs": 7,
+          "n_pickups": 7,
+          "mapf_steps": 92,
+          "mapf_done_t": 91
+        }
+      ],
+      "wall_time_s": 0.13,
+      "total_wait_steps": 2
+    },
+    {
+      "dataset": "berlin52",
+      "variant": "base",
+      "num_agents": 4,
+      "resources_per_agent": 6,
+      "n_customers": 51,
+      "seed": 42,
+      "vrp_heuristic": "Max Regret",
+      "vrp_makespan": 4960.0,
+      "vrp_agent_times": [
+        1691.0,
+        4960.0,
+        3063.0,
+        2191.0
+      ],
+      "vrp_priority_order": [
+        1,
+        2,
+        3,
+        0
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 171,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 1691.0,
+          "n_dropoffs": 13,
+          "n_pickups": 13,
+          "mapf_steps": 172,
+          "mapf_done_t": 171
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 4960.0,
+          "n_dropoffs": 13,
+          "n_pickups": 13,
+          "mapf_steps": 117,
+          "mapf_done_t": 116
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 3063.0,
+          "n_dropoffs": 13,
+          "n_pickups": 13,
+          "mapf_steps": 118,
+          "mapf_done_t": 117
+        },
+        {
+          "agent_id": 3,
+          "completion_time": 2191.0,
+          "n_dropoffs": 12,
+          "n_pickups": 12,
+          "mapf_steps": 127,
+          "mapf_done_t": 126
+        }
+      ],
+      "wall_time_s": 0.51,
+      "total_wait_steps": 5
+    },
+    {
+      "dataset": "berlin52",
+      "variant": "2x",
+      "num_agents": 4,
+      "resources_per_agent": 6,
+      "n_customers": 51,
+      "seed": 42,
+      "vrp_heuristic": "Max Regret",
+      "vrp_makespan": 9864.0,
+      "vrp_agent_times": [
+        3344.0,
+        9864.0,
+        6034.0,
+        4242.0
+      ],
+      "vrp_priority_order": [
+        1,
+        2,
+        3,
+        0
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 171,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 3344.0,
+          "n_dropoffs": 13,
+          "n_pickups": 13,
+          "mapf_steps": 172,
+          "mapf_done_t": 171
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 9864.0,
+          "n_dropoffs": 13,
+          "n_pickups": 13,
+          "mapf_steps": 117,
+          "mapf_done_t": 116
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 6034.0,
+          "n_dropoffs": 13,
+          "n_pickups": 13,
+          "mapf_steps": 118,
+          "mapf_done_t": 117
+        },
+        {
+          "agent_id": 3,
+          "completion_time": 4242.0,
+          "n_dropoffs": 12,
+          "n_pickups": 12,
+          "mapf_steps": 127,
+          "mapf_done_t": 126
+        }
+      ],
+      "wall_time_s": 0.5,
+      "total_wait_steps": 5
+    },
+    {
+      "dataset": "berlin52",
+      "variant": "5x",
+      "num_agents": 4,
+      "resources_per_agent": 6,
+      "n_customers": 51,
+      "seed": 42,
+      "vrp_heuristic": "Max Regret",
+      "vrp_makespan": 29793.0,
+      "vrp_agent_times": [
+        8303.0,
+        29793.0,
+        13697.0,
+        10395.0
+      ],
+      "vrp_priority_order": [
+        1,
+        2,
+        3,
+        0
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 171,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 8303.0,
+          "n_dropoffs": 13,
+          "n_pickups": 13,
+          "mapf_steps": 172,
+          "mapf_done_t": 171
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 29793.0,
+          "n_dropoffs": 13,
+          "n_pickups": 13,
+          "mapf_steps": 107,
+          "mapf_done_t": 106
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 13697.0,
+          "n_dropoffs": 13,
+          "n_pickups": 13,
+          "mapf_steps": 136,
+          "mapf_done_t": 135
+        },
+        {
+          "agent_id": 3,
+          "completion_time": 10395.0,
+          "n_dropoffs": 12,
+          "n_pickups": 12,
+          "mapf_steps": 130,
+          "mapf_done_t": 129
+        }
+      ],
+      "wall_time_s": 0.5,
+      "total_wait_steps": 10
+    },
+    {
+      "dataset": "eil51",
+      "variant": "base",
+      "num_agents": 4,
+      "resources_per_agent": 6,
+      "n_customers": 50,
+      "seed": 42,
+      "vrp_heuristic": "Max Regret",
+      "vrp_makespan": 291.0,
+      "vrp_agent_times": [
+        213.0,
+        291.0,
+        201.0,
+        216.0
+      ],
+      "vrp_priority_order": [
+        1,
+        3,
+        0,
+        2
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 161,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 213.0,
+          "n_dropoffs": 13,
+          "n_pickups": 13,
+          "mapf_steps": 162,
+          "mapf_done_t": 161
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 291.0,
+          "n_dropoffs": 13,
+          "n_pickups": 13,
+          "mapf_steps": 123,
+          "mapf_done_t": 122
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 201.0,
+          "n_dropoffs": 12,
+          "n_pickups": 12,
+          "mapf_steps": 108,
+          "mapf_done_t": 107
+        },
+        {
+          "agent_id": 3,
+          "completion_time": 216.0,
+          "n_dropoffs": 12,
+          "n_pickups": 12,
+          "mapf_steps": 95,
+          "mapf_done_t": 94
+        }
+      ],
+      "wall_time_s": 0.47,
+      "total_wait_steps": 1
+    },
+    {
+      "dataset": "eil51",
+      "variant": "2x",
+      "num_agents": 4,
+      "resources_per_agent": 6,
+      "n_customers": 50,
+      "seed": 42,
+      "vrp_heuristic": "Max Regret",
+      "vrp_makespan": 542.0,
+      "vrp_agent_times": [
+        274.0,
+        542.0,
+        368.0,
+        312.0
+      ],
+      "vrp_priority_order": [
+        1,
+        2,
+        3,
+        0
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 151,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 274.0,
+          "n_dropoffs": 13,
+          "n_pickups": 13,
+          "mapf_steps": 152,
+          "mapf_done_t": 151
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 542.0,
+          "n_dropoffs": 13,
+          "n_pickups": 13,
+          "mapf_steps": 117,
+          "mapf_done_t": 116
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 368.0,
+          "n_dropoffs": 12,
+          "n_pickups": 12,
+          "mapf_steps": 93,
+          "mapf_done_t": 92
+        },
+        {
+          "agent_id": 3,
+          "completion_time": 312.0,
+          "n_dropoffs": 12,
+          "n_pickups": 12,
+          "mapf_steps": 116,
+          "mapf_done_t": 115
+        }
+      ],
+      "wall_time_s": 0.48,
+      "total_wait_steps": 5
+    },
+    {
+      "dataset": "eil51",
+      "variant": "5x",
+      "num_agents": 4,
+      "resources_per_agent": 6,
+      "n_customers": 50,
+      "seed": 42,
+      "vrp_heuristic": "Max Regret",
+      "vrp_makespan": 1274.0,
+      "vrp_agent_times": [
+        502.0,
+        1274.0,
+        787.0,
+        734.0
+      ],
+      "vrp_priority_order": [
+        1,
+        2,
+        3,
+        0
+      ],
+      "mapf_converged": true,
+      "mapf_iterations": 1,
+      "mapf_max_timestep": 152,
+      "mapf_conflicts_remaining": 0,
+      "agents": [
+        {
+          "agent_id": 0,
+          "completion_time": 502.0,
+          "n_dropoffs": 13,
+          "n_pickups": 13,
+          "mapf_steps": 153,
+          "mapf_done_t": 152
+        },
+        {
+          "agent_id": 1,
+          "completion_time": 1274.0,
+          "n_dropoffs": 13,
+          "n_pickups": 13,
+          "mapf_steps": 125,
+          "mapf_done_t": 124
+        },
+        {
+          "agent_id": 2,
+          "completion_time": 787.0,
+          "n_dropoffs": 12,
+          "n_pickups": 12,
+          "mapf_steps": 94,
+          "mapf_done_t": 93
+        },
+        {
+          "agent_id": 3,
+          "completion_time": 734.0,
+          "n_dropoffs": 12,
+          "n_pickups": 12,
+          "mapf_steps": 100,
+          "mapf_done_t": 99
+        }
+      ],
+      "wall_time_s": 0.47,
+      "total_wait_steps": 2
+    }
+  ]
+}

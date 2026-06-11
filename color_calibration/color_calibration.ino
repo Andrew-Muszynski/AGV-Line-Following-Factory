@@ -48,6 +48,20 @@ void setup() {
     Serial.read();
   }
   alvik.color_calibration(12);
+
+  Serial.println("Place your robot on green and send a char");
+  while(Serial.available()==0);
+    while(Serial.available()>0){
+    Serial.read();
+  }
+  alvik.color_calibration(6);
+  
+  Serial.println("Place your robot on yellow and send a char");
+  while(Serial.available()==0);
+    while(Serial.available()>0){
+    Serial.read();
+  }
+  alvik.color_calibration(4);
 }
 
 void loop() {
