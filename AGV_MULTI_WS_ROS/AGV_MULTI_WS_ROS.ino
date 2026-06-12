@@ -257,6 +257,13 @@ int last_line_right = 0;
 float last_color_h = 0.0;
 float last_color_s = 0.0;
 float last_color_v = 0.0;
+float last_color_nr = 0.0;
+float last_color_ng = 0.0;
+float last_color_nb = 0.0;
+float last_color_chroma = 0.0;
+bool last_red_now = false;
+bool last_yellow_now = false;
+bool last_blue_now = false;
 
 unsigned long lost_line_start_ms = 0;
 unsigned long marker_ignore_until_ms = 0;
@@ -389,6 +396,7 @@ void setup() {
   Serial.begin(115200);
 
   alvik.begin();
+  alvik.set_illuminator(true);
   alvik.reset_pose(0, 0, 0, CM, DEG);
 
   snprintf(T_STATUS, sizeof(T_STATUS), "%s_status", ROBOT_NAME);
@@ -558,9 +566,16 @@ void processStartConfirmation() {
   last_color_h = h;
   last_color_s = s;
   last_color_v = v;
+  last_color_nr = 0.0;
+  last_color_ng = 0.0;
+  last_color_nb = 0.0;
+  last_color_chroma = 0.0;
 
   bool on_center_tape = center > TAPE_THRESHOLD;
   bool blue_now = isBlue(h, s, v);
+  last_red_now = false;
+  last_yellow_now = false;
+  last_blue_now = blue_now;
 
   if (on_center_tape && blue_now) {
     if (blue_confirm_start_ms == 0) {
@@ -1097,6 +1112,13 @@ bool driveForwardUntilColor(TargetColor target, float drive_speed) {
   bool red_now = isRed(h, s, v);
   bool yellow_now = isYellow(h, s, v, nr, ng, nb, left, center, right);
   bool blue_now = isBlue(h, s, v);
+  last_color_nr = nr;
+  last_color_ng = ng;
+  last_color_nb = nb;
+  last_color_chroma = colorChroma(nr, ng, nb);
+  last_red_now = red_now;
+  last_yellow_now = yellow_now;
+  last_blue_now = blue_now;
 
   if (targetColorDetectedStable(target, red_now, yellow_now, blue_now)) {
     alvik.brake();
@@ -1128,6 +1150,13 @@ bool reverseStraightUntilColor(TargetColor target) {
   bool red_now = isRed(h, s, v);
   bool yellow_now = isYellow(h, s, v, nr, ng, nb, left, center, right);
   bool blue_now = isBlue(h, s, v);
+  last_color_nr = nr;
+  last_color_ng = ng;
+  last_color_nb = nb;
+  last_color_chroma = colorChroma(nr, ng, nb);
+  last_red_now = red_now;
+  last_yellow_now = yellow_now;
+  last_blue_now = blue_now;
 
   if (targetColorDetectedStable(target, red_now, yellow_now, blue_now)) {
     alvik.brake();
@@ -1549,24 +1578,30 @@ bool isYellow(float h, float s, float v, float nr, float ng, float nb, int left,
     return false;
   }
 
-  // Accept the actual yellow sticker using hue + strong saturation + chroma.
-  // Do not require high V because the real marker can read V about 0.13 at the actual stop position.
+  // Accept the actual yellow sticker using hue, saturation, chroma, and RGB shape.
+  // Earlier real yellow samples included H about 33, S about 0.55 and H about 39,
+  // V about 0.13, so the gate cannot require S > 0.60 or high V.
   bool hue_yellow =
-    h > 32.0 && h < 50.0;
+    h > 28.0 && h < 55.0;
 
-  bool strongly_saturated =
-    s > 0.60;
+  bool saturated_enough =
+    s > 0.42;
 
   bool bright_enough =
-    v > 0.08;
+    v > 0.07;
 
   bool colorful_enough =
-    chroma > 0.075;
+    chroma > 0.060;
+
+  bool yellow_rgb_shape =
+    nr > nb + 0.03 &&
+    ng > nb + 0.02;
 
   return hue_yellow &&
-         strongly_saturated &&
+         saturated_enough &&
          bright_enough &&
-         colorful_enough;
+         colorful_enough &&
+         yellow_rgb_shape;
 }
 
 bool isBlue(float h, float s, float v) {
@@ -1831,7 +1866,7 @@ void publishStatus(unsigned long now) {
   alvik.get_pose(x, y, yaw, CM, DEG);
   formatMissionSequence(sequence_buf, sizeof(sequence_buf));
 
-  static char status_buf[720];
+  static char status_buf[960];
   snprintf(status_buf, sizeof(status_buf),
            "{\"state\":\"%s\",\"target\":\"%s\",\"mission_index\":%u,"
            "\"mission_total\":%u,\"sequence\":\"%s\","
@@ -1841,6 +1876,8 @@ void publishStatus(unsigned long now) {
            "\"transfer_red\":%d,\"transfer_needed\":%d,"
            "\"x\":%.2f,\"y\":%.2f,\"yaw\":%.1f,"
            "\"L\":%d,\"C\":%d,\"R\":%d,\"h\":%.1f,\"s\":%.3f,\"v\":%.3f,"
+           "\"nr\":%.3f,\"ng\":%.3f,\"nb\":%.3f,\"chroma\":%.3f,"
+           "\"red_now\":%d,\"yellow_now\":%d,\"blue_now\":%d,"
            "\"ros\":%d,\"ms\":%lu}",
            stateName(robot_state), activeTargetName(), mission_index,
            NUM_MISSION_STOPS, sequence_buf,
@@ -1852,6 +1889,8 @@ void publishStatus(unsigned long now) {
            x, y, yaw,
            last_line_left, last_line_center, last_line_right,
            last_color_h, last_color_s, last_color_v,
+           last_color_nr, last_color_ng, last_color_nb, last_color_chroma,
+           last_red_now ? 1 : 0, last_yellow_now ? 1 : 0, last_blue_now ? 1 : 0,
            ros_ready ? 1 : 0, now);
 
   msg_status.data.data = status_buf;
