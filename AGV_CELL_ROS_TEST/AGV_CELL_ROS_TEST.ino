@@ -30,7 +30,7 @@ rclc_executor_t executor;
 rcl_publisher_t pub_status;
 rcl_subscription_t sub_cmd;
 std_msgs__msg__String msg_status;
-char cmd_buf[512];
+char cmd_buf[1024];
 std_msgs__msg__String msg_cmd_in;
 
 bool ros_ready = false;
@@ -189,7 +189,7 @@ const unsigned long START_CONFIRM_MS = 1500;
 const unsigned long CLEAR_MARKER_MS = 500;
 const float CLEAR_MARKER_SPEED = 28.0;
 
-#define MAX_SCRIPT_OPS 80
+#define MAX_SCRIPT_OPS 192
 ScriptOp script_ops[MAX_SCRIPT_OPS];
 int script_len = 0;
 int script_idx = 0;
@@ -1482,9 +1482,9 @@ bool isRed(float h, float s, float v) {
 }
 
 bool isYellow(float h, float s, float v) {
-  bool hue_yellow = (h > 30.0 && h < 95.0);
-  bool saturated = s > 0.20;
-  bool bright_enough = v > 0.03;
+  bool hue_yellow = (h > 25.0 && h < 45.0);
+  bool saturated = s > 0.45;
+  bool bright_enough = v > 0.25;
 
   return hue_yellow && saturated && bright_enough;
 }
