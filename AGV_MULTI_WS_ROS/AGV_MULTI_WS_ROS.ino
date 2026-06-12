@@ -249,6 +249,12 @@ enum TargetColor {
 // =====================================================
 
 float x, y, yaw;
+int last_line_left = 0;
+int last_line_center = 0;
+int last_line_right = 0;
+float last_color_h = 0.0;
+float last_color_s = 0.0;
+float last_color_v = 0.0;
 
 unsigned long lost_line_start_ms = 0;
 unsigned long marker_ignore_until_ms = 0;
@@ -382,7 +388,6 @@ void setup() {
 
   alvik.begin();
   alvik.reset_pose(0, 0, 0, CM, DEG);
-  alvik.set_illuminator(true);
 
   snprintf(T_STATUS, sizeof(T_STATUS), "%s_status", ROBOT_NAME);
   snprintf(T_CMD, sizeof(T_CMD), "%s_cmd", ROBOT_NAME);
@@ -424,7 +429,7 @@ void loop() {
   unsigned long now = millis();
 
   if (ros_ready) {
-    rclc_executor_spin_some(&executor, RCL_MS_TO_NS(5));
+    rclc_executor_spin_some(&executor, RCL_MS_TO_NS(1));
     publishStatus(now);
   }
 
@@ -545,6 +550,12 @@ void processStartConfirmation() {
 
   alvik.get_line_sensors(left, center, right);
   alvik.get_color(h, s, v, HSV);
+  last_line_left = left;
+  last_line_center = center;
+  last_line_right = right;
+  last_color_h = h;
+  last_color_s = s;
+  last_color_v = v;
 
   bool on_center_tape = center > TAPE_THRESHOLD;
   bool blue_now = isBlue(h, s, v);
@@ -1073,6 +1084,12 @@ bool driveForwardUntilColor(TargetColor target, float drive_speed) {
   alvik.get_line_sensors(left, center, right);
   alvik.get_color(h, s, v, HSV);
   alvik.get_color(nr, ng, nb, RGB);
+  last_line_left = left;
+  last_line_center = center;
+  last_line_right = right;
+  last_color_h = h;
+  last_color_s = s;
+  last_color_v = v;
 
   bool tape_now = isOnTape(left, center, right);
   bool red_now = isRed(h, s, v);
@@ -1098,6 +1115,12 @@ bool reverseStraightUntilColor(TargetColor target) {
   alvik.get_line_sensors(left, center, right);
   alvik.get_color(h, s, v, HSV);
   alvik.get_color(nr, ng, nb, RGB);
+  last_line_left = left;
+  last_line_center = center;
+  last_line_right = right;
+  last_color_h = h;
+  last_color_s = s;
+  last_color_v = v;
 
   bool tape_now = isOnTape(left, center, right);
   bool red_now = isRed(h, s, v);
@@ -1801,12 +1824,8 @@ void publishStatus(unsigned long now) {
   if (now - last_status_ms < STATUS_PERIOD_MS) return;
   last_status_ms = now;
 
-  int left, center, right;
-  float h, s, v;
   char sequence_buf[64];
 
-  alvik.get_line_sensors(left, center, right);
-  alvik.get_color(h, s, v, HSV);
   alvik.get_pose(x, y, yaw, CM, DEG);
   formatMissionSequence(sequence_buf, sizeof(sequence_buf));
 
@@ -1828,7 +1847,9 @@ void publishStatus(unsigned long now) {
            RETURN_TO_DEPOT_AFTER_FINAL_WORKSTATION ? 1 : 0,
            northbound_red_count, eastbound_red_count, westbound_return_red_count,
            transfer_red_count, transfer_needed_reds,
-           x, y, yaw, left, center, right, h, s, v,
+           x, y, yaw,
+           last_line_left, last_line_center, last_line_right,
+           last_color_h, last_color_s, last_color_v,
            ros_ready ? 1 : 0, now);
 
   msg_status.data.data = status_buf;
