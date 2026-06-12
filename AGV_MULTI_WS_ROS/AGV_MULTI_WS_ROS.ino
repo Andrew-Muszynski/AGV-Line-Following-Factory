@@ -174,7 +174,9 @@ const float POST_TURN_EXIT_SPEED = 30.0;
 
 // Marker gating
 const int RED_STABLE_SAMPLES = 4;
-const int YELLOW_STABLE_SAMPLES = 6;
+// The stricter HSV/RGB yellow filter handles false positives; keep this low
+// enough that the AGV does not pass over a short yellow sticker before latching it.
+const int YELLOW_STABLE_SAMPLES = 2;
 const int BLUE_STABLE_SAMPLES = 16;
 
 const unsigned long MARKER_IGNORE_AFTER_TURN_MS = 600;
