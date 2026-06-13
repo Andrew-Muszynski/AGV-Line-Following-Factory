@@ -25,8 +25,8 @@ ORACLE_VM/
 
 | Requirement | Version tested |
 |---|---|
-| Ubuntu 22.04 (or WSL2 on Windows) | 22.04 LTS |
-| ROS 2 Humble | humble |
+| Ubuntu 24.04 (or WSL2 on Windows) | 24.04 LTS |
+| ROS 2 Jazzy | jazzy |
 | Python 3.10+ | 3.10 |
 | Python packages | `pyyaml` (`pip install pyyaml`) |
 | micro-ROS agent | see below |
@@ -130,7 +130,7 @@ Place each Alvik on its blue start sticker facing **north** (toward the grid). T
 ### 3. Source ROS 2 and start the dispatch node
 
 ```bash
-source /opt/ros/humble/setup.bash
+source /opt/ros/jazzy/setup.bash
 cd ~/VRP/ORACLE_VM          # or wherever you cloned the repo
 python dispatch_node.py
 ```
