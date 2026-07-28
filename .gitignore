@@ -1,0 +1,62 @@
+# AI-assistant metadata and prompts
+.claude/
+CLAUDE_FABLE5_KICKOFF_PROMPT.md
+
+# Optional AI/LLM advisor implementation and AI-specific operating notes
+fleet/LLM_DISPATCH_ADVISOR_DESIGN.md
+fleet/dispatch_advisor.py
+fleet/fleetSupervisor.py
+fleet/haiku_advisor.py
+fleet/ollama_advisor.py
+fleet/send_route.py
+fleet/test_dispatch_advisor.py
+fleet/test_ollama_advisor.py
+fleet/test_recovery.py
+TERMINALS_CHEATSHEET.md
+TESTBED_WORKFLOW.md
+
+# Personal and confidential documents
+*.docx
+*.xlsx
+.env
+.env.*
+!.env.example
+*credentials*
+*secrets*
+
+# Local logs, captured output, and generated run data
+AprilTag Localize Output/
+runs/
+solved_plans/
+*output*.txt
+terminal output.txt
+ORACLE_VM/test.txt
+*.log
+*.jsonl
+agv_grid_routes (1).json
+best_solution.json
+fleet_test.csv
+mission_test.csv
+
+# Python and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local environments and editor settings
+.venv/
+venv/
+.idea/
+.vscode/
+
+# Embedded/duplicate repositories kept locally
+external/
+vrp_rpd/
+
+# OS metadata
+.DS_Store
+Thumbs.db

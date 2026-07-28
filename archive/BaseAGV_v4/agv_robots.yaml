@@ -6,19 +6,15 @@
 agvs:
   agv_1:
     name: "Alvik1"               # Hardware topic prefix (Alvik1_cmd / Alvik1_status)
-    mac_address: "02:00:00:00:00:01"
+    mac_address: "02:00:00:00:00:05"
 
   agv_2:
     name: "Alvik2"
-    mac_address: "02:00:00:00:00:03"
+    mac_address: "02:00:00:00:00:02"
 
   agv_3:
     name: "Alvik3"
-    mac_address: "02:00:00:00:00:09"
-
-  agv_4:
-    name: "Alvik4"
-    mac_address: "02:00:00:00:00:07"
+    mac_address: "02:00:00:00:00:0A"
 
 communication:
   command_suffix: "_cmd"

@@ -1,21 +1,56 @@
 /*
- * Line_Follow_Simple
+ * AGV_MULTI_WS_DISPATCH
  *
- * Same ROS 2 / token / color-detection infrastructure as AGV_MULTI_WS_DISPATCH,
- * but line following is reduced to the simplest form that works well — matching
- * the Arduino "Line_follower" example:
+ * The Alvik is a DUMB EXECUTOR. It knows nothing about the grid or workstation
+ * locations. The ROS/Python side computes every routing decision and sends a
+ * flat token sequence. The robot executes each token in order and reports its
+ * progress back.
  *
- *   error   = centroid(L, C, R)   weighted position, zero when centered
- *   control = error * KP
- *   left    = BASE_SPEED - control
- *   right   = BASE_SPEED + control
+ * Command protocol (topic: <ROBOT_NAME>_cmd)
+ * ------------------------------------------
+ *   run <tok1>,<tok2>,...   Load a new token script and start immediately.
+ *   append <tok1>,...       Append tokens to the end of the current script
+ *                           (only allowed when IDLE/DONE).
+ *   pause                   Finish the current token then pause.
+ *   resume                  Resume from the next token after a pause.
+ *   stop                    Brake immediately and reset to IDLE.
+ *   reset                   Same as stop and return to blue-wait state.
  *
- * No D term. No yaw blend. No blind window on intersections.
- * The color sensor still stops the robot at RED / YELLOW / BLUE targets.
- * Turns still use the IMU-based rotate-to-heading sequence.
+ * Token vocabulary
+ * ----------------
+ *   RED       Drive forward until a red node marker (count = 1).
+ *   YENTRY    Drive forward (slow) until the yellow entry sticker.
+ *   YWORK     Drive forward (slow) until the yellow workstation sticker.
+ *   DOCK      Reverse slowly until the yellow dock sticker.
+ *   DWELL     Wait at workstation (WORKSTATION_WAIT_MS).
+ *   EXIT      Drive forward until back at the yellow entry sticker.
+ *   BLUE      Drive forward until the blue depot marker.
+ *   R         Turn 90° right in place.
+ *   L         Turn 90° left in place.
+ *   YAW0      Rotate to absolute yaw 0 (north-facing, used before DOCK).
+ *   CLEAR     Creep forward for CLEAR_MARKER_MS to leave current sticker.
  *
- * Tune KP and BASE_SPEED only. If the robot oscillates, lower KP.
- * If it understeers on curves, raise KP.
+ * Status JSON (topic: <ROBOT_NAME>_status, 200 ms period)
+ * --------------------------------------------------------
+ *   state        NOT_READY | IDLE | MOVING | DWELL | PAUSED | ARRIVED | EMERGENCY_STOP
+ *   step         current token index (0-based)
+ *   total        total tokens in loaded script
+ *   token        name of the token currently executing
+ *   ready        1 when blue start confirmed
+ *   active       1 while a script is running
+ *   x,y,yaw      odometry (cm, deg)
+ *   red_now      1 if red detected this cycle
+ *   yellow_now   1 if yellow detected this cycle
+ *   blue_now     1 if blue detected this cycle
+ *   ros          1 if micro-ROS connected
+ *   ms           millis() timestamp
+ *
+ * Color JSON (topic: <ROBOT_NAME>_color, 200 ms period)
+ * -------------------------------------------------------
+ *   color        RED | YELLOW | BLUE | ---
+ *   h,s,v        HSV values
+ *   L,C,R        line sensor raw values
+ *   red_count    cumulative red stickers detected this run
  */
 
 #include "Arduino_Alvik.h"
@@ -41,14 +76,14 @@ char WIFI_PASSWORD[] = "YOUR_WIFI_PASSWORD";
 char AGENT_IP[]      = "192.0.2.13";
 const uint32_t AGENT_PORT = 8888;
 
-char ROBOT_NAME[16] = "";
+char ROBOT_NAME[16] = "";   // filled by getAlvikID() in setup()
 char T_STATUS[32];
 char T_CMD[32];
 char T_COLOR[32];
 
 rcl_allocator_t allocator;
-rclc_support_t  support;
-rcl_node_t      node;
+rclc_support_t support;
+rcl_node_t node;
 rclc_executor_t executor;
 rcl_publisher_t pub_status;
 rcl_publisher_t pub_color;
@@ -64,49 +99,57 @@ unsigned long last_color_ms  = 0;
 const unsigned long STATUS_PERIOD_MS = 200;
 
 // =====================================================
-// TUNING  — only these two matter for line following
+// TUNING
 // =====================================================
 
-const float BASE_SPEED = 60.0f;   // RPM, both wheels when centered
-const float KP         = 50.0f;   // proportional gain on centroid error
-
-// Speeds for special manoeuvres — adjust if needed
+const int   TAPE_THRESHOLD             = 250;
+const float BASE_SPEED                 = 40.0f;
 const float YELLOW_SEARCH_SPEED        = 20.0f;
 const float WORKSTATION_APPROACH_SPEED = 30.0f;
 const float REVERSE_DOCK_SPEED         = 20.0f;
-const float CLEAR_MARKER_SPEED         = 28.0f;
-const float POST_TURN_EXIT_SPEED       = 25.0f;
+const float KP                         = 50.0f;
+const float MAX_CORRECTION             = 30.0f;
+const float DRIVE_TRIM                 = 0.0f;    // -ve slows right wheel to correct rightward drift (yaw goes negative)
+const float KP_HEADING                 = 1.5f;
+const float MAX_HEADING_CORRECTION     = 25.0f;
+const float KP_YAW_BLEND               = 1.0f;   // heading correction on clean tape
+const float KP_YAW_CROSS               = 2.0f;   // heading hold during sticker crossing
+const int   STICKER_LOW_THRESH         = 400;     // line sensor dip threshold for intersection
+const unsigned long MARKER_BLIND_MS    = 350;     // blind window duration (ms)
+const unsigned long BLIND_REARM_MS     = 400;     // rearm guard after blind window (ms)
+const float YAW_TOLERANCE             = 3.0f;
+const float TURN_MIN_SPEED             = 5.0f;
+const float TURN_MAX_SPEED             = 60.0f;
+const unsigned long TURN_CONTROL_MS    = 2;
+const float REVERSE_DOCK_ABSOLUTE_YAW  = 0.0f;
 
-// Turn controller
-const float YAW_TOLERANCE  = 3.0f;
-const float TURN_MIN_SPEED = 5.0f;
-const float TURN_MAX_SPEED = 60.0f;
-const float REVERSE_DOCK_ABSOLUTE_YAW = 0.0f;
+const unsigned long TURN_CENTERING_MS          = 250;
+const unsigned long PRE_CENTER_BRAKE_MS        = 100;
+const unsigned long PRE_ROTATE_BRAKE_MS        = 200;
+const unsigned long POST_ROTATE_BRAKE_MS       = 200;
+const unsigned long POST_TURN_EXIT_MS          = 350;
+const unsigned long YELLOW_POST_TURN_EXIT_MS   = 350;
+const float POST_TURN_EXIT_SPEED               = 25.0f;
 
-// Tape / marker thresholds
-const int   TAPE_THRESHOLD  = 250;
-const int   RED_STABLE_SAMPLES    = 1;
-const int   YELLOW_STABLE_SAMPLES = 1;
-const int   BLUE_STABLE_SAMPLES   = 5;
+const int RED_STABLE_SAMPLES    = 1;
+const int YELLOW_STABLE_SAMPLES = 1;
+const int BLUE_STABLE_SAMPLES   = 5;
 
-// Timing guards
-const unsigned long TURN_CONTROL_MS               = 2;
-const unsigned long TURN_CENTERING_MS             = 250;
-const unsigned long PRE_CENTER_BRAKE_MS           = 100;
-const unsigned long PRE_ROTATE_BRAKE_MS           = 200;
-const unsigned long POST_ROTATE_BRAKE_MS          = 200;
-const unsigned long POST_TURN_EXIT_MS             = 350;
-const unsigned long MARKER_IGNORE_AFTER_TURN_MS   = 600;
-const unsigned long MARKER_IGNORE_AFTER_RED_MS    = 1000;
-const unsigned long YELLOW_ARM_AFTER_RED_MS       = 750;
-const unsigned long YELLOW_IGNORE_AFTER_YAW_MS    = 300;
-const unsigned long EXIT_WORKSTATION_IGNORE_MS    = 1000;
-const unsigned long WORKSTATION_WAIT_MS           = 2000;
-const unsigned long WORKSTATION_BLINK_MS          = 250;
-const unsigned long CLEAR_MARKER_MS               = 500;
-const unsigned long LOST_LINE_FAILSAFE_MS         = 1500;
-const unsigned long LOOP_DELAY_MS                 = 10;   // 100 Hz — matches example's delay(100) character
-const unsigned long START_CONFIRM_MS              = 1500;
+const unsigned long MARKER_IGNORE_AFTER_TURN_MS     = 600;
+const unsigned long MARKER_IGNORE_AFTER_RED_PASS_MS = 1000;
+const unsigned long YELLOW_ARM_AFTER_RED_MS         = 750;
+const unsigned long YELLOW_ENTRY_DEPART_IGNORE_MS   = 350;
+const unsigned long YELLOW_IGNORE_AFTER_YAW_MS      = 300;
+const unsigned long EXIT_WORKSTATION_IGNORE_MS      = 1000;
+
+const unsigned long WORKSTATION_WAIT_MS   = 2000;
+const unsigned long WORKSTATION_BLINK_MS  = 250;
+const unsigned long CLEAR_MARKER_MS       = 500;
+const float         CLEAR_MARKER_SPEED    = 28.0f;
+
+const unsigned long LOST_LINE_FAILSAFE_MS = 1500;
+const unsigned long LOOP_DELAY_MS         = 1;
+const unsigned long START_CONFIRM_MS      = 1500;
 
 // =====================================================
 // TOKEN VOCABULARY
@@ -128,9 +171,9 @@ enum TokenOp : uint8_t {
 };
 
 #define MAX_TOKENS 256
-TokenOp  token_script[MAX_TOKENS];
-uint16_t token_count = 0;
-uint16_t token_index = 0;
+TokenOp token_script[MAX_TOKENS];
+uint16_t token_count  = 0;
+uint16_t token_index  = 0;
 
 // =====================================================
 // STATE MACHINE
@@ -153,7 +196,7 @@ enum RobotState : uint8_t {
   EMERGENCY_STOP
 };
 
-RobotState robot_state      = WAIT_FOR_START;
+RobotState robot_state     = WAIT_FOR_START;
 RobotState after_turn_state = DONE;
 
 enum TurnPhase : uint8_t {
@@ -182,44 +225,49 @@ float x = 0, y = 0, yaw = 0;
 float leg_target_yaw = 0.0f;
 uint32_t red_sticker_count = 0;
 
-int   last_ll = 0, last_lc = 0, last_lr = 0;
+// Intersection blind-window state
+float         cross_yaw         = 0.0f;
+unsigned long blind_until_ms    = 0;
+unsigned long rearm_after_ms    = 0;
+
+int  last_ll = 0, last_lc = 0, last_lr = 0;
 float last_h = 0, last_s = 0, last_v = 0;
 float last_nr = 0, last_ng = 0, last_nb = 0;
 float last_rgb_chroma = 0, last_hsv_chroma = 0;
-bool  last_red_now    = false;
-bool  last_yellow_now = false;
-bool  last_blue_now   = false;
+bool last_red_now    = false;
+bool last_yellow_now = false;
+bool last_blue_now   = false;
 
-unsigned long lost_line_start_ms     = 0;
+unsigned long lost_line_start_ms  = 0;
 unsigned long marker_ignore_until_ms = 0;
-TargetColor   last_marker_target     = TARGET_RED;
-int           marker_stable_count    = 0;
+TargetColor   last_marker_target  = TARGET_RED;
+int           marker_stable_count = 0;
 
-unsigned long turn_phase_start_ms    = 0;
-unsigned long turn_start_ms          = 0;
-unsigned long last_turn_control_ms   = 0;
-float         turn_start_yaw         = 0;
-float         turn_target_yaw        = 0;
-int           turn_settled_count     = 0;
-float         pending_turn_angle     = 0;
-bool          pending_turn_absolute  = false;
-float         pending_absolute_yaw   = 0;
-unsigned long pending_center_ms         = 0;
-unsigned long pending_post_exit_ms      = 0;
-unsigned long pending_marker_ignore_ms  = MARKER_IGNORE_AFTER_TURN_MS;
+unsigned long turn_phase_start_ms   = 0;
+unsigned long turn_start_ms         = 0;
+unsigned long last_turn_control_ms  = 0;
+float         turn_start_yaw        = 0;
+float         turn_target_yaw       = 0;
+int           turn_settled_count    = 0;
+float         pending_turn_angle    = 0;
+bool          pending_turn_absolute = false;
+float         pending_absolute_yaw  = 0;
+unsigned long pending_center_ms        = 0;
+unsigned long pending_post_exit_ms     = 0;
+unsigned long pending_marker_ignore_ms = MARKER_IGNORE_AFTER_TURN_MS;
 
 unsigned long workstation_wait_start_ms = 0;
 unsigned long clear_start_ms            = 0;
 
-bool ready_confirmed        = false;
+bool ready_confirmed      = false;
 unsigned long blue_confirm_start_ms = 0;
-bool script_active          = false;
-bool pause_requested        = false;
-bool emergency_printed      = false;
-bool mission_active         = false;
+bool script_active        = false;
+bool pause_requested      = false;
+bool emergency_printed    = false;
+bool mission_active       = false;
 
 // =====================================================
-// FORWARD DECLARATIONS
+// HELPERS FORWARD DECLARATIONS
 // =====================================================
 
 void waitForStartState();
@@ -234,40 +282,41 @@ void driveToBlueState();
 void doClearState();
 void turnGenericState();
 
-bool  driveForwardUntilColor(TargetColor t, float speed);
-bool  reverseStraightUntilColor(TargetColor t);
-void  followLine(int l, int c, int r, float base_speed);
+bool driveForwardUntilColor(TargetColor t, float speed);
+bool reverseStraightUntilColor(TargetColor t);
+void followLineOrDriveStraight(int l, int c, int r, float spd);
 float calculateCenterError(int l, int c, int r);
-bool  isOnTape(int l, int c, int r);
-bool  isIntersection(int l, int c, int r);
+bool isOnTape(int l, int c, int r);
+bool isIntersection(int l, int c, int r);
+float headingCorrection();
 
-void  beginTurnToYaw(float yaw_target, RobotState next,
-                     unsigned long ctr, unsigned long post, unsigned long ign);
-void  finishTurn();
+void beginTurnToYaw(float yaw_target, RobotState next, unsigned long ctr,
+                    unsigned long post, unsigned long ign);
+void finishTurn();
 float normalizeYaw(float a);
 float yawError(float tgt, float cur);
-void  startRotateAbsolute(float tgt);
-bool  updateRotateTo();
+void startRotateAbsolute(float tgt);
+bool updateRotateTo();
 
-bool  targetColorDetectedStable(TargetColor t, bool r, bool y, bool b);
-void  resetMarkerStable();
-bool  isRed(float h, float s, float v);
-bool  isYellow(float h, float s, float v, float nr, float ng, float nb, int l, int c, int r);
-bool  isBlue(float h, float s, float v);
+bool targetColorDetectedStable(TargetColor t, bool r, bool y, bool b);
+void resetMarkerStable();
+bool isRed(float h, float s, float v);
+bool isYellow(float h, float s, float v, float nr, float ng, float nb, int l, int c, int r);
+bool isBlue(float h, float s, float v);
 float colorChroma(float a, float b, float cc);
-void  checkLineFailsafe(bool tape, bool r, bool y, bool b);
+void checkLineFailsafe(bool tape, bool r, bool y, bool b);
 
-void  advanceToNextToken();
-bool  loadScript(const String& seq);
-bool  parseToken(const String& tok, TokenOp& out);
+void advanceToNextToken();
+bool loadScript(const String& seq);
+bool parseToken(const String& tok, TokenOp& out);
 const char* tokenName(TokenOp op);
 const char* stateName(RobotState s);
-void  processStartConfirmation();
-void  publishStatus(unsigned long now);
-void  publishColor(unsigned long now);
-void  cmdCallback(const void* msgin);
-void  initTransport();
-bool  initGraph();
+void processStartConfirmation();
+void publishStatus(unsigned long now);
+void publishColor(unsigned long now);
+void cmdCallback(const void* msgin);
+void initTransport();
+bool initGraph();
 
 void setLEDOff();
 void setLEDRed();
@@ -276,22 +325,22 @@ void setLEDBlue();
 void setLEDYellow();
 
 // =====================================================
-// MAC-BASED IDENTITY
+// SETUP
+// =====================================================
+
+// =====================================================
+// MAC-BASED IDENTITY LOOKUP
 // =====================================================
 
 int getAlvikID() {
   String mac = WiFi.macAddress();
   mac.toUpperCase();
-  if (mac == "02:00:00:00:00:01") return 1;
-  if (mac == "02:00:00:00:00:03") return 2;
-  if (mac == "02:00:00:00:00:09") return 3;
-  if (mac == "02:00:00:00:00:07") return 4;
-  return 1;
+  if (mac == "02:00:00:00:00:01") return 1;   // Alvik1
+  if (mac == "02:00:00:00:00:03") return 2;   // Alvik2
+  if (mac == "02:00:00:00:00:09") return 3;   // Alvik3
+  if (mac == "02:00:00:00:00:07") return 4;   // Alvik4
+  return 1;                                    // fallback
 }
-
-// =====================================================
-// SETUP
-// =====================================================
 
 void setup() {
   alvik.begin();
@@ -323,22 +372,22 @@ void loop() {
 
   if (alvik.get_touch_cancel() && robot_state != EMERGENCY_STOP) {
     alvik.brake();
-    robot_state    = EMERGENCY_STOP;
+    robot_state   = EMERGENCY_STOP;
     mission_active = false;
   }
 
   switch (robot_state) {
-    case WAIT_FOR_START:      waitForStartState();        break;
-    case EXEC_TOKEN:          execTokenState();           break;
-    case DRIVE_TO_RED:        driveToRedState();          break;
-    case DRIVE_TO_YENTRY:     driveToYEntryState();       break;
-    case DRIVE_TO_YWORK:      driveToYWorkState();        break;
-    case REVERSE_TO_DOCK:     reverseToDockState();       break;
-    case WORKSTATION_WAIT:    workstationWaitState();     break;
-    case DRIVE_OUT_TO_YENTRY: driveOutToYEntryState();    break;
-    case DRIVE_TO_BLUE:       driveToBlueState();         break;
-    case DO_CLEAR:            doClearState();             break;
-    case TURN_GENERIC:        turnGenericState();         break;
+    case WAIT_FOR_START:   waitForStartState();        break;
+    case EXEC_TOKEN:       execTokenState();           break;
+    case DRIVE_TO_RED:     driveToRedState();          break;
+    case DRIVE_TO_YENTRY:  driveToYEntryState();       break;
+    case DRIVE_TO_YWORK:   driveToYWorkState();        break;
+    case REVERSE_TO_DOCK:  reverseToDockState();       break;
+    case WORKSTATION_WAIT: workstationWaitState();     break;
+    case DRIVE_OUT_TO_YENTRY: driveOutToYEntryState(); break;
+    case DRIVE_TO_BLUE:    driveToBlueState();         break;
+    case DO_CLEAR:         doClearState();             break;
+    case TURN_GENERIC:     turnGenericState();         break;
 
     case PAUSED:
       alvik.brake();
@@ -354,7 +403,9 @@ void loop() {
     case EMERGENCY_STOP:
       alvik.brake();
       setLEDRed();
-      if (!emergency_printed) emergency_printed = true;
+      if (!emergency_printed) {
+        emergency_printed = true;
+      }
       break;
   }
 
@@ -394,8 +445,8 @@ void processStartConfirmation() {
       setLEDBlue();
     }
   } else {
-    ready_confirmed       = false;
-    blue_confirm_start_ms = 0;
+    ready_confirmed        = false;
+    blue_confirm_start_ms  = 0;
     if (((now / 300) % 2) == 0) setLEDRed(); else setLEDOff();
   }
 }
@@ -424,57 +475,70 @@ void execTokenState() {
     case TOK_RED:
       robot_state = DRIVE_TO_RED;
       break;
+
     case TOK_YENTRY:
       marker_ignore_until_ms = millis() + YELLOW_ARM_AFTER_RED_MS;
       resetMarkerStable();
       robot_state = DRIVE_TO_YENTRY;
       break;
+
     case TOK_YWORK:
       robot_state = DRIVE_TO_YWORK;
       break;
+
     case TOK_DOCK:
       robot_state = REVERSE_TO_DOCK;
       break;
+
     case TOK_DWELL:
       workstation_wait_start_ms = millis();
       robot_state = WORKSTATION_WAIT;
       break;
+
     case TOK_EXIT:
       marker_ignore_until_ms = millis() + EXIT_WORKSTATION_IGNORE_MS;
       resetMarkerStable();
       robot_state = DRIVE_OUT_TO_YENTRY;
       break;
+
     case TOK_BLUE:
       robot_state = DRIVE_TO_BLUE;
       break;
+
     case TOK_R:
       beginTurnToYaw(leg_target_yaw - 90.0f,
                      EXEC_TOKEN, TURN_CENTERING_MS, POST_TURN_EXIT_MS,
                      MARKER_IGNORE_AFTER_TURN_MS);
       break;
+
     case TOK_L:
       beginTurnToYaw(leg_target_yaw + 90.0f,
                      EXEC_TOKEN, TURN_CENTERING_MS, POST_TURN_EXIT_MS,
                      MARKER_IGNORE_AFTER_TURN_MS);
       break;
+
     case TOK_YAW0:
       beginTurnToYaw(REVERSE_DOCK_ABSOLUTE_YAW,
                      EXEC_TOKEN, 0, 0,
                      YELLOW_IGNORE_AFTER_YAW_MS);
       break;
+
     case TOK_CLEAR:
       clear_start_ms         = millis();
       marker_ignore_until_ms = millis() + CLEAR_MARKER_MS + 150;
       resetMarkerStable();
       robot_state = DO_CLEAR;
       break;
+
     default:
       robot_state = EXEC_TOKEN;
       break;
   }
 }
 
-void advanceToNextToken() { robot_state = EXEC_TOKEN; }
+void advanceToNextToken() {
+  robot_state = EXEC_TOKEN;
+}
 
 // =====================================================
 // DRIVE STATES
@@ -482,7 +546,7 @@ void advanceToNextToken() { robot_state = EXEC_TOKEN; }
 
 void driveToRedState() {
   if (driveForwardUntilColor(TARGET_RED, BASE_SPEED)) {
-    marker_ignore_until_ms = millis() + MARKER_IGNORE_AFTER_RED_MS;
+    marker_ignore_until_ms = millis() + MARKER_IGNORE_AFTER_RED_PASS_MS;
     resetMarkerStable();
     red_sticker_count++;
     advanceToNextToken();
@@ -490,21 +554,29 @@ void driveToRedState() {
 }
 
 void driveToYEntryState() {
-  if (driveForwardUntilColor(TARGET_YELLOW, YELLOW_SEARCH_SPEED)) advanceToNextToken();
+  if (driveForwardUntilColor(TARGET_YELLOW, YELLOW_SEARCH_SPEED)) {
+    advanceToNextToken();
+  }
 }
 
 void driveToYWorkState() {
-  if (driveForwardUntilColor(TARGET_YELLOW, WORKSTATION_APPROACH_SPEED)) advanceToNextToken();
+  if (driveForwardUntilColor(TARGET_YELLOW, WORKSTATION_APPROACH_SPEED)) {
+    advanceToNextToken();
+  }
 }
 
 void reverseToDockState() {
-  if (reverseStraightUntilColor(TARGET_YELLOW)) advanceToNextToken();
+  if (reverseStraightUntilColor(TARGET_YELLOW)) {
+    advanceToNextToken();
+  }
 }
 
 void workstationWaitState() {
   alvik.brake();
   unsigned long elapsed = millis() - workstation_wait_start_ms;
+
   if (((elapsed / WORKSTATION_BLINK_MS) % 2) == 0) setLEDYellow(); else setLEDOff();
+
   if (elapsed >= WORKSTATION_WAIT_MS) {
     resetMarkerStable();
     setLEDGreen();
@@ -513,11 +585,15 @@ void workstationWaitState() {
 }
 
 void driveOutToYEntryState() {
-  if (driveForwardUntilColor(TARGET_YELLOW, YELLOW_SEARCH_SPEED)) advanceToNextToken();
+  if (driveForwardUntilColor(TARGET_YELLOW, YELLOW_SEARCH_SPEED)) {
+    advanceToNextToken();
+  }
 }
 
 void driveToBlueState() {
-  if (driveForwardUntilColor(TARGET_BLUE, BASE_SPEED)) advanceToNextToken();
+  if (driveForwardUntilColor(TARGET_BLUE, BASE_SPEED)) {
+    advanceToNextToken();
+  }
 }
 
 void doClearState() {
@@ -560,7 +636,7 @@ bool driveForwardUntilColor(TargetColor target, float drive_speed) {
     return true;
   }
 
-  followLine(l, c, r, drive_speed);
+  followLineOrDriveStraight(l, c, r, drive_speed);
   checkLineFailsafe(tape_now, red_now, yellow_now, blue_now);
   return false;
 }
@@ -591,30 +667,17 @@ bool reverseStraightUntilColor(TargetColor target) {
     return true;
   }
 
-  alvik.set_wheels_speed(-REVERSE_DOCK_SPEED, -REVERSE_DOCK_SPEED, RPM);
+  float h_corr = headingCorrection();
+  alvik.set_wheels_speed(-REVERSE_DOCK_SPEED - h_corr, -REVERSE_DOCK_SPEED + h_corr, RPM);
   checkLineFailsafe(tape_now, red_now, yellow_now, blue_now);
   return false;
 }
 
-// =====================================================
-// LINE FOLLOWING  — Arduino example style, pure P only
-// =====================================================
-
-void followLine(int l, int c, int r, float base_speed) {
-  float error   = calculateCenterError(l, c, r);
-  float control = error * KP;
-  alvik.set_wheels_speed(base_speed - control, base_speed + control, RPM);
-}
-
-float calculateCenterError(int l, int c, int r) {
-  float sum_weight = l + c + r;
-  if (sum_weight <= 0.0f) return 0.0f;
-  float centroid = (l + c * 2.0f + r * 3.0f) / sum_weight;
-  return -(centroid - 2.0f);  // zero when centered; +ve = drift left, -ve = drift right
-}
-
-bool isOnTape(int l, int c, int r) {
-  return (l > TAPE_THRESHOLD || c > TAPE_THRESHOLD || r > TAPE_THRESHOLD);
+float headingCorrection() {
+  float roll, pitch;
+  alvik.get_orientation(roll, pitch, yaw);
+  float err = yawError(leg_target_yaw, yaw);
+  return constrain(KP_HEADING * err, -MAX_HEADING_CORRECTION, MAX_HEADING_CORRECTION);
 }
 
 bool isIntersection(int l, int c, int r) {
@@ -622,8 +685,59 @@ bool isIntersection(int l, int c, int r) {
   return (l > TAPE_THRESHOLD && r > TAPE_THRESHOLD);
 }
 
+void followLineOrDriveStraight(int l, int c, int r, float base_speed) {
+  unsigned long now = millis();
+
+  float roll, pitch;
+  alvik.get_orientation(roll, pitch, yaw);
+
+  // Suppress blue sticker from triggering blind window
+  bool blue_now = isBlue(last_h, last_s, last_v);
+
+  // Marker detection: color sensor (red/yellow, not blue) OR line sensor dip
+  bool marker = !blue_now &&
+                (isRed(last_h, last_s, last_v) ||
+                 isYellow(last_h, last_s, last_v, last_nr, last_ng, last_nb, l, c, r) ||
+                 (l < STICKER_LOW_THRESH) || (r < STICKER_LOW_THRESH));
+
+  if (marker && now >= rearm_after_ms && now >= blind_until_ms) {
+    cross_yaw      = leg_target_yaw;
+    blind_until_ms = now + MARKER_BLIND_MS;
+    rearm_after_ms = blind_until_ms + BLIND_REARM_MS;
+  }
+
+  bool blinded = (now < blind_until_ms);
+
+  if (blinded) {
+    float yaw_err  = yawError(cross_yaw, yaw);
+    float correction = constrain(KP_YAW_CROSS * yaw_err, -MAX_CORRECTION, MAX_CORRECTION);
+    float left_spd   = constrain(base_speed - correction, -70.0f, 70.0f);
+    float right_spd  = constrain(base_speed + correction, -70.0f, 70.0f);
+    alvik.set_wheels_speed(left_spd, right_spd, RPM);
+    return;
+  }
+
+  float error      = calculateCenterError(l, c, r);
+  float yaw_blend  = KP_YAW_BLEND * yawError(leg_target_yaw, yaw);
+  float correction = constrain(error * KP + yaw_blend, -MAX_CORRECTION, MAX_CORRECTION);
+  float left_spd   = constrain(base_speed - correction - DRIVE_TRIM, -70.0f, 70.0f);
+  float right_spd  = constrain(base_speed + correction + DRIVE_TRIM, -70.0f, 70.0f);
+  alvik.set_wheels_speed(left_spd, right_spd, RPM);
+}
+
+float calculateCenterError(int l, int c, int r) {
+  float sum_weight = l + c + r;
+  if (sum_weight <= 0.0f) return 0.0f;
+  float centroid = (l + c * 2.0f + r * 3.0f) / sum_weight;
+  return -(centroid - 2.0f);  // zero when centered; negative = drift right, positive = drift left
+}
+
+bool isOnTape(int l, int c, int r) {
+  return (l > TAPE_THRESHOLD || c > TAPE_THRESHOLD || r > TAPE_THRESHOLD);
+}
+
 // =====================================================
-// TURN CONTROL  — unchanged from AGV_MULTI_WS_DISPATCH
+// TURN CONTROL
 // =====================================================
 
 void beginTurnToYaw(float yaw_target, RobotState next,
@@ -631,12 +745,12 @@ void beginTurnToYaw(float yaw_target, RobotState next,
   alvik.brake();
   setLEDYellow();
 
-  pending_turn_absolute   = true;
-  pending_absolute_yaw    = yaw_target;
-  pending_turn_angle      = 0.0f;
-  after_turn_state        = next;
-  pending_center_ms       = ctr;
-  pending_post_exit_ms    = post;
+  pending_turn_absolute  = true;
+  pending_absolute_yaw   = yaw_target;
+  pending_turn_angle     = 0.0f;
+  after_turn_state       = next;
+  pending_center_ms      = ctr;
+  pending_post_exit_ms   = post;
   pending_marker_ignore_ms = ign;
 
   turn_phase          = TURN_PRE_CENTER_BRAKE;
@@ -714,9 +828,14 @@ void turnGenericState() {
       int l, c, r;
       alvik.get_line_sensors(l, c, r);
       if (isOnTape(l, c, r) && !isIntersection(l, c, r)) {
-        followLine(l, c, r, POST_TURN_EXIT_SPEED);
+        followLineOrDriveStraight(l, c, r, POST_TURN_EXIT_SPEED);
       } else {
-        alvik.set_wheels_speed(POST_TURN_EXIT_SPEED, POST_TURN_EXIT_SPEED, RPM);
+        float roll, pitch;
+        alvik.get_orientation(roll, pitch, yaw);
+        float err    = yawError(pending_absolute_yaw, yaw);
+        float h_corr = constrain(KP_HEADING * err, -MAX_HEADING_CORRECTION, MAX_HEADING_CORRECTION);
+        alvik.set_wheels_speed(POST_TURN_EXIT_SPEED - h_corr,
+                               POST_TURN_EXIT_SPEED + h_corr, RPM);
       }
       if (now - turn_phase_start_ms >= pending_post_exit_ms) {
         alvik.brake();
@@ -730,11 +849,17 @@ void turnGenericState() {
 void finishTurn() {
   turn_phase             = TURN_IDLE;
   marker_ignore_until_ms = millis() + pending_marker_ignore_ms;
+  // Capture raw IMU yaw (range -180..+180) as the heading reference for the
+  // new leg. Store it raw — do NOT normalize to 0-360 — so that yawError()
+  // compares two values in the same coordinate space and computes zero error
+  // at the start of each leg.
   float roll, pitch, imu_yaw;
   alvik.get_orientation(roll, pitch, imu_yaw);
-  leg_target_yaw = imu_yaw;
+  leg_target_yaw         = imu_yaw;
+  blind_until_ms         = 0;
+  rearm_after_ms         = 0;
   resetMarkerStable();
-  robot_state = after_turn_state;
+  robot_state            = after_turn_state;
 }
 
 float normalizeYaw(float a) {
@@ -745,6 +870,7 @@ float normalizeYaw(float a) {
 
 float yawError(float tgt, float cur) {
   float diff = normalizeYaw(tgt) - normalizeYaw(cur);
+  // Wrap to -180..+180
   if (diff >  180.0f) diff -= 360.0f;
   if (diff < -180.0f) diff += 360.0f;
   return diff;
@@ -772,7 +898,10 @@ bool updateRotateTo() {
   if (fabsf(err) <= YAW_TOLERANCE) {
     turn_settled_count++;
     alvik.brake();
-    if (turn_settled_count >= 3) { turn_settled_count = 0; return true; }
+    if (turn_settled_count >= 3) {
+      turn_settled_count = 0;
+      return true;
+    }
     return false;
   }
   turn_settled_count = 0;
@@ -780,25 +909,28 @@ bool updateRotateTo() {
   float scale = constrain(fabsf(err) / 90.0f, 0.0f, 1.0f);
   float spd   = TURN_MIN_SPEED + (TURN_MAX_SPEED - TURN_MIN_SPEED) * scale;
 
-  if (err > 0.0f) alvik.set_wheels_speed(-spd,  spd, RPM);
-  else            alvik.set_wheels_speed( spd,  -spd, RPM);
+  if (err > 0.0f) alvik.set_wheels_speed(-spd, spd, RPM);
+  else            alvik.set_wheels_speed( spd,-spd, RPM);
 
   return false;
 }
 
 // =====================================================
-// MARKER / COLOR DETECTION
+// MARKER DETECTION
 // =====================================================
 
 bool targetColorDetectedStable(TargetColor target, bool r, bool y, bool b) {
-  if (millis() < marker_ignore_until_ms) { resetMarkerStable(); return false; }
+  if (millis() < marker_ignore_until_ms) {
+    resetMarkerStable();
+    return false;
+  }
 
-  bool now_det = (target == TARGET_RED)    ? r :
-                 (target == TARGET_YELLOW) ? y : b;
-  int needed   = (target == TARGET_YELLOW) ? YELLOW_STABLE_SAMPLES :
-                 (target == TARGET_BLUE)   ? BLUE_STABLE_SAMPLES   : RED_STABLE_SAMPLES;
+  bool now = (target == TARGET_RED)    ? r :
+             (target == TARGET_YELLOW) ? y : b;
+  int needed = (target == TARGET_YELLOW) ? YELLOW_STABLE_SAMPLES :
+               (target == TARGET_BLUE)   ? BLUE_STABLE_SAMPLES   : RED_STABLE_SAMPLES;
 
-  if (now_det) {
+  if (now) {
     if (last_marker_target != target) { marker_stable_count = 0; last_marker_target = target; }
     marker_stable_count++;
   } else {
@@ -825,7 +957,7 @@ float colorChroma(float a, float b, float cc) {
 bool isYellow(float h, float s, float v, float nr, float ng, float nb, int l, int c, int r) {
   float rgb_chroma = colorChroma(nr, ng, nb);
   float hsv_chroma = s * v;
-  bool  tape_now   = isOnTape(l, c, r);
+  bool tape_now    = isOnTape(l, c, r);
 
   bool false_positive =
     tape_now && h > 65.0f && h < 95.0f && s < 0.25f && v < 0.30f && rgb_chroma < 0.05f;
@@ -883,13 +1015,22 @@ bool loadScript(const String& seq) {
   while (start <= (int)s.length()) {
     int comma = s.indexOf(',', start);
     String tok;
-    if (comma < 0) { tok = s.substring(start); start = s.length() + 1; }
-    else           { tok = s.substring(start, comma); start = comma + 1; }
+    if (comma < 0) {
+      tok   = s.substring(start);
+      start = s.length() + 1;
+    } else {
+      tok   = s.substring(start, comma);
+      start = comma + 1;
+    }
+
     tok.trim();
     if (tok.length() == 0) continue;
+
     if (token_count >= MAX_TOKENS) break;
+
     TokenOp op;
     if (!parseToken(tok, op)) return false;
+
     token_script[token_count++] = op;
   }
 
@@ -909,29 +1050,37 @@ void cmdCallback(const void* msgin) {
 
   if (cmd.equalsIgnoreCase("stop") || cmd.equalsIgnoreCase("reset")) {
     alvik.brake();
-    script_active         = false;
-    mission_active        = false;
-    pause_requested       = false;
-    turn_phase            = TURN_IDLE;
-    robot_state           = WAIT_FOR_START;
-    ready_confirmed       = false;
+    script_active  = false;
+    mission_active = false;
+    pause_requested = false;
+    turn_phase     = TURN_IDLE;
+    robot_state    = WAIT_FOR_START;
+    ready_confirmed = false;
     blue_confirm_start_ms = 0;
-    token_count           = 0;
-    token_index           = 0;
-    emergency_printed     = false;
+    token_count = 0; token_index = 0;
+    emergency_printed = false;
     return;
   }
 
-  if (cmd.equalsIgnoreCase("pause")) { pause_requested = true; return; }
+  if (cmd.equalsIgnoreCase("pause")) {
+    pause_requested = true;
+    return;
+  }
 
   if (cmd.equalsIgnoreCase("resume")) {
-    if (robot_state == PAUSED) { pause_requested = false; robot_state = EXEC_TOKEN; }
+    if (robot_state == PAUSED) {
+      pause_requested = false;
+      robot_state     = EXEC_TOKEN;
+    }
     return;
   }
 
+  // append <tokens>  — add tokens to end of current script while moving
   if (cmd.length() > 7 && cmd.substring(0, 7).equalsIgnoreCase("append ")) {
     String seq = cmd.substring(7);
-    seq.trim(); seq.replace(';', ','); seq.replace(' ', ',');
+    seq.trim();
+    seq.replace(';', ',');
+    seq.replace(' ', ',');
     int start = 0;
     while (start <= (int)seq.length()) {
       int comma = seq.indexOf(',', start);
@@ -950,32 +1099,32 @@ void cmdCallback(const void* msgin) {
 
   bool idle = (robot_state == WAIT_FOR_START || robot_state == DONE || robot_state == PAUSED);
 
+  // run <tokens>  — load and start immediately (must be IDLE)
   if (cmd.length() > 4 && cmd.substring(0, 4).equalsIgnoreCase("run ")) {
     if (!idle) return;
     String seq = cmd.substring(4);
     if (!loadScript(seq)) return;
     if (!ready_confirmed) return;
 
-    script_active           = true;
-    mission_active          = true;
-    pause_requested         = false;
-    emergency_printed       = false;
-    lost_line_start_ms      = 0;
-    red_sticker_count       = 0;
-    marker_ignore_until_ms  = millis() + 500;
+    script_active  = true;
+    mission_active = true;
+    pause_requested = false;
+    emergency_printed = false;
+    lost_line_start_ms = 0;
+    blind_until_ms  = 0;
+    rearm_after_ms  = 0;
+    red_sticker_count = 0;
+    marker_ignore_until_ms = millis() + 500;
     resetMarkerStable();
-    turn_phase     = TURN_IDLE;
+    turn_phase = TURN_IDLE;
     alvik.reset_pose(0, 0, 0, CM, DEG);
     leg_target_yaw = 0.0f;
 
     robot_state = EXEC_TOKEN;
     return;
   }
-}
 
-// =====================================================
-// TELEMETRY
-// =====================================================
+}
 
 void publishStatus(unsigned long now) {
   if (now - last_status_ms < STATUS_PERIOD_MS) return;

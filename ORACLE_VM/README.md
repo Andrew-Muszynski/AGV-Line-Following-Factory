@@ -56,9 +56,9 @@ All Alviks and the dispatch PC must be on the **same WiFi network**.
 The sketch hard-codes the network credentials. Open `AGV_MULTI_WS_DISPATCH.ino` and change these three lines near the top:
 
 ```cpp
-char WIFI_SSID[]     = "AGV_SWARM";      // ← your network SSID
-char WIFI_PASSWORD[] = "ISECap123";      // ← your network password
-char AGENT_IP[]      = "192.168.1.141";  // ← IP of the PC running the micro-ROS agent
+char WIFI_SSID[]     = "YOUR_WIFI_SSID";      // ← your network SSID
+char WIFI_PASSWORD[] = "YOUR_WIFI_PASSWORD";      // ← your network password
+char AGENT_IP[]      = "192.0.2.13";  // ← IP of the PC running the micro-ROS agent
 const uint32_t AGENT_PORT = 8888;        // leave as 8888 unless you changed it
 ```
 
@@ -80,10 +80,10 @@ Each Alvik is identified by its WiFi MAC address. The mapping is in two places a
 agvs:
   agv_1:
     name: "Alvik1"
-    mac_address: "3C:84:27:C2:87:50"
+    mac_address: "02:00:00:00:00:01"
   agv_2:
     name: "Alvik2"
-    mac_address: "3C:84:27:C3:E7:DC"
+    mac_address: "02:00:00:00:00:03"
 ```
 
 **`AGV_MULTI_WS_DISPATCH.ino`** — `getAlvikID()` function (around line 338):
@@ -92,10 +92,10 @@ agvs:
 int getAlvikID() {
   String mac = WiFi.macAddress();
   mac.toUpperCase();
-  if (mac == "3C:84:27:C2:87:50") return 1;   // Alvik1
-  if (mac == "3C:84:27:C3:E7:DC") return 2;   // Alvik2
-  if (mac == "74:4D:BD:A2:1B:70") return 3;   // Alvik3
-  if (mac == "48:CA:43:2E:1D:CC") return 4;   // Alvik4
+  if (mac == "02:00:00:00:00:01") return 1;   // Alvik1
+  if (mac == "02:00:00:00:00:03") return 2;   // Alvik2
+  if (mac == "02:00:00:00:00:09") return 3;   // Alvik3
+  if (mac == "02:00:00:00:00:07") return 4;   // Alvik4
   return 1;                                    // fallback
 }
 ```

@@ -1,0 +1,4959 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AGV Grid & Workstation Solver</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", Arial, sans-serif;
+    color: #172033;
+    background: #f5f7fb;
+  }
+  main {
+    display: grid;
+    grid-template-columns: 336px minmax(620px, 1fr) 360px;
+    gap: 16px;
+    min-height: 100vh;
+    padding: 16px;
+  }
+  h1 {
+    margin: 0 0 6px;
+    font-size: 24px;
+  }
+  h2 {
+    margin: 0 0 12px;
+    font-size: 17px;
+  }
+  p {
+    margin: 0 0 12px;
+    color: #5c667a;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .panel {
+    background: #fff;
+    border: 1px solid #d8deea;
+    border-radius: 8px;
+    padding: 16px;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+  }
+  .left, .right {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .grid-panel {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .field {
+    display: grid;
+    grid-template-columns: 1fr 88px;
+    align-items: center;
+    gap: 10px;
+    margin: 8px 0;
+    font-size: 14px;
+  }
+  input, select {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid #aab4c5;
+    border-radius: 4px;
+    background: #fff;
+    color: #172033;
+    font-size: 14px;
+  }
+  button {
+    border: 0;
+    border-radius: 5px;
+    padding: 8px 12px;
+    background: #2563eb;
+    color: white;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button.secondary {
+    background: #edf2f7;
+    color: #223047;
+  }
+  button.active {
+    background: #172033;
+    color: #fff;
+  }
+  button.danger {
+    background: #b42318;
+  }
+  button:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+  }
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .stat {
+    border: 1px solid #e0e6f0;
+    border-radius: 6px;
+    padding: 10px;
+    background: #f8fafc;
+  }
+  .stat b {
+    display: block;
+    margin-bottom: 3px;
+    font-size: 18px;
+  }
+  .stat span {
+    color: #64748b;
+    font-size: 12px;
+  }
+  .legend {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+    color: #516070;
+    font-size: 12px;
+  }
+  .legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    display: inline-block;
+  }
+  #grid-svg {
+    width: 100%;
+    max-height: calc(100vh - 152px);
+    min-height: 560px;
+    border: 1px solid #cfd8e6;
+    border-radius: 8px;
+    background: #f8fafc;
+  }
+  .route-list, .bay-list {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    max-height: 260px;
+    overflow: auto;
+    padding-right: 4px;
+  }
+  .row-card {
+    display: grid;
+    grid-template-columns: 54px 1fr;
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid #e1e8f2;
+    border-radius: 6px;
+    background: #fbfdff;
+    font-size: 12px;
+  }
+  .row-card b {
+    font-size: 13px;
+  }
+  .muted {
+    color: #667085;
+  }
+  .warning {
+    color: #b42318;
+    font-weight: 600;
+  }
+  .sim-controls {
+    display: grid;
+    grid-template-columns: auto auto 1fr auto;
+    gap: 8px;
+    align-items: center;
+    margin-top: 10px;
+  }
+  .sim-controls input[type=range] {
+    padding: 0;
+  }
+  .route-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    margin-top: 6px;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .route-legend .status-key {
+    color: #64748b;
+    font-size: 11px;
+  }
+  .sim-commands {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .sim-commands .cmd-col {
+    border: 1px solid #d8deea;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #0f141c;
+  }
+  .sim-commands .cmd-head {
+    padding: 4px 8px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #fff;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .sim-commands .cmd-head .cmd-progress {
+    font-size: 10px;
+    font-weight: 500;
+    opacity: 0.85;
+  }
+  .sim-commands ol {
+    margin: 0;
+    padding: 4px 0;
+    list-style: none;
+    max-height: 260px;
+    overflow: auto;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.45;
+  }
+  .sim-commands ol li {
+    padding: 0 8px;
+    color: #9ca7b8;
+    white-space: nowrap;
+  }
+  .sim-commands ol li.done { color: #4b6b52; }
+  .sim-commands ol li.active {
+    background: #1e2a3a;
+    color: #ffe08a;
+    font-weight: 700;
+  }
+  .sim-commands ol li.cmd-warn { color: #f0a35e; font-style: italic; }
+  .sim-commands.dimmed { opacity: 0.5; }
+  .decision-log-panel { margin-top: 10px; }
+  #decision-log {
+    max-height: 260px;
+    overflow-y: auto;
+    border: 1px solid #d8deea;
+    border-radius: 6px;
+    background: #0f141c;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11px;
+    margin-top: 4px;
+  }
+  .dl-row {
+    display: flex;
+    gap: 8px;
+    padding: 2px 8px;
+    border-bottom: 1px solid #1b2430;
+    align-items: baseline;
+  }
+  .dl-row:last-child { border-bottom: none; }
+  .dl-time { color: #64748b; flex: 0 0 auto; }
+  .dl-kind { flex: 0 0 62px; font-weight: 700; letter-spacing: 0.02em; }
+  .dl-text { color: #c7d0dc; flex: 1 1 auto; word-break: break-word; }
+  .dl-text b { color: #e2e8f0; }
+  .dl-warn .dl-kind { color: #f0a35e; }
+  .dl-error .dl-kind { color: #f2617a; }
+  .dl-error { background: #1e1216; }
+  .dl-recovery .dl-kind { color: #6cc1e0; }
+  .dl-wait .dl-kind { color: #cbb26b; }
+  .dl-advisor .dl-kind { color: #b48ef0; }
+  .dl-mission .dl-kind { color: #5fbf8a; }
+  #live-feed {
+    display: none;
+    width: 100%;
+    border: 1px solid #d8deea;
+    border-radius: 6px;
+    margin-bottom: 8px;
+    background: #0f172a;
+    min-height: 120px;
+  }
+  .grid-panel.live-on #live-feed {
+    display: block;
+  }
+  .agent-tools {
+    display: grid;
+    gap: 8px;
+    margin-top: 10px;
+    padding: 10px;
+    border: 1px solid #d8deea;
+    border-radius: 6px;
+    background: #fbfdff;
+  }
+  .tool-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .tool-label {
+    min-width: 64px;
+    color: #516070;
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .agent-toggle {
+    padding: 6px 9px;
+  }
+  .agent-toggle.hidden {
+    opacity: 0.45;
+    text-decoration: line-through;
+  }
+  .mode-status {
+    font-size: 12px;
+  }
+  .modal {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(15, 23, 42, 0.58);
+    z-index: 10;
+  }
+  .modal.open {
+    display: flex;
+  }
+  .modal-card {
+    width: min(1180px, 96vw);
+    max-height: 92vh;
+    display: flex;
+    flex-direction: column;
+    background: #fff;
+    border-radius: 8px;
+    border: 1px solid #d8deea;
+    box-shadow: 0 20px 60px rgba(15, 23, 42, 0.28);
+    overflow: hidden;
+  }
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
+    padding: 14px 16px;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  .modal-body {
+    overflow: auto;
+    padding: 16px;
+  }
+  .report-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .route-seq {
+    padding: 8px;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    background: #f8fafc;
+    font: 12px Consolas, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .table-wrap {
+    max-height: 340px;
+    overflow: auto;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  th, td {
+    border-bottom: 1px solid #e2e8f0;
+    padding: 5px 7px;
+    text-align: left;
+    white-space: nowrap;
+  }
+  th {
+    position: sticky;
+    top: 0;
+    background: #eef2f7;
+    z-index: 1;
+  }
+  .conflict-card {
+    display: grid;
+    grid-template-columns: 84px 1fr auto;
+    gap: 8px;
+    align-items: center;
+    padding: 8px;
+    border: 1px solid #fed7aa;
+    border-radius: 6px;
+    background: #fff7ed;
+    font-size: 12px;
+    margin-bottom: 7px;
+  }
+  .conflict-card strong {
+    color: #9a3412;
+  }
+  .conflict-card.live-vision {
+    border-color: #f5c884;
+    background: #fffbeb;
+  }
+  .conflict-card.live-vision strong { color: #b45309; }
+  .conflict-card.live-error {
+    border-color: #f2a3af;
+    background: #fef2f4;
+  }
+  .conflict-card.live-error strong { color: #b91c1c; }
+  /* ---- workflow views ----------------------------------------------------
+     Elements tagged v-setup / v-plan / v-run / v-plan-run are visible only in
+     the matching view(s). Views are pure CSS show/hide on body[data-view] —
+     nothing is re-created or re-parented at runtime, so switching views can
+     never reset inputs, routes, sockets, SVG, or timers. */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 10px 16px;
+    background: #fff;
+    border-bottom: 1px solid #d8deea;
+    position: sticky;
+    top: 0;
+    z-index: 30;
+  }
+  .topbar .brand {
+    font-weight: 700;
+    font-size: 15px;
+    margin-right: 8px;
+  }
+  #setup-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-left: auto;
+    font-size: 12px;
+    color: #5c667a;
+  }
+  #setup-summary button {
+    padding: 5px 9px;
+    font-size: 12px;
+  }
+  body[data-view="setup"] .v-plan, body[data-view="setup"] .v-run,
+  body[data-view="setup"] .v-plan-run { display: none !important; }
+  body[data-view="plan"] .v-setup, body[data-view="plan"] .v-run { display: none !important; }
+  body[data-view="run"] .v-setup, body[data-view="run"] .v-plan { display: none !important; }
+  body[data-view="setup"] main { grid-template-columns: 336px minmax(620px, 1fr); }
+  body[data-view="plan"] main, body[data-view="run"] main {
+    grid-template-columns: minmax(620px, 1fr) 360px;
+  }
+  .side-tabs {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .side-tabs button {
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+  .side-tab-pane { display: none; }
+  .side-tab-pane.active { display: block; }
+
+  @media (max-width: 1180px) {
+    main {
+      grid-template-columns: 320px 1fr;
+    }
+    .right {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 820px) {
+    main {
+      grid-template-columns: 1fr;
+      padding: 10px;
+    }
+    #grid-svg {
+      min-height: 420px;
+    }
+    .right {
+      display: flex;
+    }
+  }
+</style>
+</head>
+<body data-view="setup">
+<nav class="topbar">
+  <span class="brand">AGV Solver</span>
+  <button class="secondary active" id="view-setup">1 &middot; Setup</button>
+  <button class="secondary" id="view-plan">2 &middot; Plan &amp; Simulate</button>
+  <button class="secondary" id="view-run">3 &middot; Run &amp; Monitor</button>
+  <span id="setup-summary" class="v-plan-run">
+    <span id="setup-summary-text"></span>
+    <button class="secondary" id="edit-setup">Edit Setup</button>
+  </span>
+</nav>
+<main>
+  <section class="left v-setup">
+    <div>
+      <h1>AGV Grid & Workstation Solver</h1>
+      <p>Click a bay to place a workstation. Each workstation enters from the north edge of its bay. Depot slots sit south of the grid and all enter through node 0, then grid node 1.</p>
+    </div>
+
+    <div class="panel">
+      <h2>1. Grid Size</h2>
+      <label class="field">Rows <input id="rows" type="number" min="2" max="16" value="8"></label>
+      <label class="field">Columns <input id="cols" type="number" min="2" max="16" value="8"></label>
+      <div class="actions">
+        <button id="build-grid">Build grid</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>2. Workstations</h2>
+      <p><b id="bay-count">0</b> of <span id="bay-total">49</span> possible workstation bays selected.</p>
+      <div class="actions">
+        <button class="secondary" id="select-all">Select all bays</button>
+        <button class="secondary" id="clear-bays">Clear</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>3. Agents & Resources</h2>
+      <label class="field">Number of agents <input id="agents" type="number" min="1" max="12" value="4"></label>
+      <label class="field">Resources per agent <input id="capacity" type="number" min="1" max="20" value="3"></label>
+      <label class="field">Random seed <input id="seed" type="number" value="42"></label>
+      <label class="field">Route mode
+        <select id="route-mode">
+          <option value="nearest">Built-in: nearest next bay</option>
+          <option value="sweep">Built-in: left-to-right sweep</option>
+          <option value="ext:regret">vrp_rpd: Max Regret</option>
+          <option value="ext:nn">vrp_rpd: Nearest Neighbor</option>
+          <option value="ext:defer">vrp_rpd: Greedy Defer</option>
+          <option value="ext:heuristics">vrp_rpd: best of 3 heuristics</option>
+          <option value="ext:brkga">vrp_rpd: BRKGA</option>
+        </select>
+      </label>
+      <label class="field">VRP-RPD pickups (return processed parts)
+        <input id="rpd-mode" type="checkbox">
+      </label>
+      <label class="field">Processing time (sec)
+        <input id="process-sec" type="number" min="0" max="600" value="15">
+      </label>
+      <label class="field">Import plan (external solver JSON)
+        <input id="import-plan" type="file" accept=".json,application/json">
+      </label>
+      <div class="actions">
+        <button id="solve">Solve</button>
+        <button class="secondary" id="download-json" disabled>Download JSON</button>
+      </div>
+      <p id="capacity-warning" class="warning" style="display:none;"></p>
+    </div>
+  </section>
+
+  <section class="panel grid-panel">
+    <h2>Grid, Depot, Workstations, and Routes</h2>
+    <img id="live-feed" alt="annotated camera view (run apriltag_localize.py --stream)">
+    <svg id="grid-svg" viewBox="0 0 820 760" role="img" aria-label="AGV grid visualization"></svg>
+    <div class="sim-controls v-plan">
+      <button class="secondary" id="play-route">Play</button>
+      <button class="secondary" id="step-route">Step</button>
+      <input id="timestep-slider" type="range" min="0" max="0" value="0">
+      <span id="sim-time" class="muted">t=0 / 0</span>
+    </div>
+    <div class="actions v-plan" style="margin-top:8px;">
+      <button class="secondary" id="open-report" disabled>Route report</button>
+    </div>
+    <div id="route-legend" class="route-legend v-plan-run"></div>
+    <div id="sim-commands" class="sim-commands v-plan"></div>
+    <div class="agent-tools v-plan-run">
+      <div class="tool-row v-run">
+        <span class="tool-label">Mode</span>
+        <button class="secondary active" id="mode-sim">Sim</button>
+        <button class="secondary" id="mode-real">Real</button>
+        <button class="secondary" id="mode-live">Live</button>
+        <span id="real-status" class="mode-status muted">Simulated playback</span>
+      </div>
+      <div class="tool-row">
+        <span class="tool-label">Visible</span>
+        <span id="agent-visibility-controls" class="tool-row"></span>
+      </div>
+      <div class="tool-row v-plan">
+        <span class="tool-label">Edit</span>
+        <span id="agent-edit-controls" class="tool-row"></span>
+        <button class="secondary" id="toggle-edit-route">Edit path</button>
+        <button class="secondary" id="clear-route-edit">Clear edits</button>
+      </div>
+      <p id="edit-hint" class="muted v-plan" style="margin:0;">Select an AGV, turn on Edit path, then click intersections to add route waypoints.</p>
+    </div>
+    <div class="agent-tools v-run">
+      <div class="tool-row">
+        <span class="tool-label">Dispatch</span>
+        <button class="secondary" id="dispatch-generate">Generate commands</button>
+        <button class="secondary" id="dispatch-start" disabled>Start</button>
+        <button class="secondary" id="dispatch-hold" disabled>Hold</button>
+        <button class="secondary" id="dispatch-abort" disabled>Abort (STOP all)</button>
+        <span id="dispatch-status" class="mode-status muted">off</span>
+      </div>
+      <p class="muted" style="margin:0;">Live dispatch over rosbridge: solve, generate commands, review the
+        per-robot lists (especially the depot exit), then Start. Every command passes the deterministic
+        conflict gate + vision checks; Hold pauses issuing, Abort sends STOP to all robots.</p>
+      <div class="tool-row">
+        <span class="tool-label">Supervisor</span>
+        <button class="secondary" id="sup-send">Send mission</button>
+        <button class="secondary" id="sup-start">Start</button>
+        <button class="secondary" id="sup-abort">Abort</button>
+        <span id="sup-status" class="mode-status muted">no mission sent</span>
+      </div>
+      <p class="muted" style="margin:0;">Preferred path: hand the mission to the fleet supervisor on the
+        Linux laptop (run it with <b>--listen</b>) — it dispatches natively with lower latency, the
+        BUSY-ack protocol, and the same conflict + vision gates. The browser Start above is the fallback.</p>
+      <div id="sup-robot-status" class="muted" style="font-family:monospace; white-space:pre; font-size:11px;"></div>
+      <div id="dispatch-editors"></div>
+      <div id="dispatch-robot-status" class="muted" style="font-family:monospace; white-space:pre; font-size:11px;"></div>
+      <pre id="dispatch-log" style="max-height:180px; overflow:auto; background:#10151d; color:#9ecb9e; padding:6px; font-size:11px; display:none; margin:4px 0 0;"></pre>
+      <div class="decision-log-panel">
+        <div class="tool-row" style="justify-content:space-between;">
+          <span class="tool-label">Decision Log</span>
+          <span style="display:flex; gap:6px; align-items:center;">
+            <span id="decision-log-count" class="muted" style="font-size:11px;">0 event(s)</span>
+            <button class="secondary" id="decision-log-save">Save</button>
+            <button class="secondary" id="decision-log-clear">Clear</button>
+          </span>
+        </div>
+        <div id="decision-log"></div>
+        <p class="muted" style="margin:2px 0 0; font-size:11px;">Live feed from the fleet supervisor
+          over rosbridge. Save downloads this run as .json + .txt; Clear resets it for the next run.</p>
+      </div>
+    </div>
+    <div class="legend">
+      <span><i class="swatch" style="background:#4b5563;"></i>Intersection</span>
+      <span><i class="swatch" style="background:#22c55e;"></i>Workstation bay</span>
+      <span><i class="swatch" style="background:#2563eb;"></i>Depot slot</span>
+      <span><i class="swatch" style="background:#111827;"></i>Node 0 entry</span>
+      <span><i class="swatch" style="background:#f97316;"></i>Congestion heat</span>
+      <span><i class="swatch" style="background:#ef4444;"></i>Active edge collision</span>
+    </div>
+  </section>
+
+  <section class="right v-plan-run">
+    <div class="panel">
+      <h2>Run Metrics</h2>
+      <div class="stat-grid">
+        <div class="stat"><b id="metric-bays">0</b><span>workstations</span></div>
+        <div class="stat"><b id="metric-agents">4</b><span>depot slots</span></div>
+        <div class="stat"><b id="metric-distance">0</b><span>overall makespan</span></div>
+        <div class="stat"><b id="metric-hotspot">None</b><span>collision risk / hotspot</span></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="side-tabs" id="side-tabs">
+        <button class="secondary active" data-tab="routes">Agent Routes</button>
+        <button class="secondary" data-tab="bays">Selected Bays</button>
+        <button class="secondary" data-tab="conflicts">Events / Conflicts</button>
+      </div>
+      <div id="tab-routes" class="side-tab-pane active">
+        <div id="route-list" class="route-list"><p class="muted">Solve to draw complete paths.</p></div>
+      </div>
+      <div id="tab-bays" class="side-tab-pane">
+        <div id="bay-list" class="bay-list"><p class="muted">No workstation bays selected.</p></div>
+      </div>
+      <div id="tab-conflicts" class="side-tab-pane">
+        <div id="conflict-pane"><p class="muted">Solve to evaluate conflicts.</p></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="route-modal" class="modal" aria-hidden="true">
+  <div class="modal-card">
+    <div class="modal-header">
+      <div>
+        <h2 style="margin:0;">Route Report</h2>
+        <p style="margin:3px 0 0;">Assignments, exact node routes, second-by-second comparison, and collision risks.</p>
+      </div>
+      <button class="secondary" id="close-report">Close</button>
+    </div>
+    <div id="route-report" class="modal-body"></div>
+  </div>
+</div>
+
+<script>
+const svg = document.getElementById("grid-svg");
+const state = {
+  rows: 8,
+  cols: 8,
+  agents: 4,
+  capacity: 2,
+  rpdMode: false,   // VRP-RPD: pick processed parts back up after drop-off
+  processSec: 15,   // simulated workstation processing time (drop -> ready)
+  selected: new Set(),
+  routes: [],
+  edgeUse: new Map(),
+  totalDistance: 0,
+  conflicts: [],
+  schedule: null,
+  hiddenAgents: new Set(),
+  editAgent: 0,
+  editMode: false,
+  routeEdits: new Map(),
+  mode: "sim",
+  realSocket: null,
+  realPositions: new Map(),
+  visionPositions: new Map(),
+  realStatus: "Simulated playback",
+  timestep: 0,
+  timer: null,
+  missionStartMs: 0,  // wall-clock anchor for Real-mode workstation badges
+  planSource: "",     // "" = built-in solver; else "algorithm (file)" import
+  view: "setup",      // workflow view: "setup" | "plan" | "run" (CSS-only)
+  decisionLog: [],    // Run & Monitor event feed from /fleet_events
+  decisionLogSeen: new Set(),  // event seqs already logged (dedupe re-delivery)
+};
+
+const palette = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c", "#0f766e", "#be185d", "#475569", "#ca8a04", "#0891b2", "#7c3aed", "#db2777"];
+const NS = "http://www.w3.org/2000/svg";
+const DEPOT_ENTRY_CLEARANCE_SEC = {
+  Alvik1: 14.7,
+  Alvik2: 16.0,
+  Alvik3: 18.1,
+  Alvik4: 19.0,
+};
+// Physical red-marker spacing on the table (get_pose() reports cm from
+// reset_pose(0,0,0), taken at node0 right after the depot-exit maneuver).
+// Every hop is 10in except node0->node1, which is 13.5in.
+const NODE_SPACING_CM = 10 * 2.54;
+const NODE0_TO_NODE1_SPACING_CM = 13.5 * 2.54;
+// reset_pose(0,0,0) is called once at setup, while the robot faces SOUTH
+// (before the depot-exit maneuver). Odometry x/y stay fixed to that initial
+// world frame, so heading north into the grid afterward means -x (not +x).
+// local -x = north (-r), local +y = east (+c).
+// TODO: verify sign/axis against the real robot once pose tracking is
+// tested on the table — flip here if the dot drifts backward.
+function alvikPoseToGridPoint(xCm, yCm) {
+  const g = layout();
+  const northCm = -xCm;
+  const rowsFromNode0 = northCm <= NODE0_TO_NODE1_SPACING_CM
+    ? northCm / NODE0_TO_NODE1_SPACING_CM
+    : 1 + (northCm - NODE0_TO_NODE1_SPACING_CM) / NODE_SPACING_CM;
+  const colsFromNode0 = yCm / NODE_SPACING_CM;
+  const r = (state.rows - 1) - rowsFromNode0;
+  const c = colsFromNode0;
+  return { x: g.left + c * g.cell, y: g.top + r * g.cell };
+}
+const MOVEMENT_SEC = {
+  RED_RED: 3.56,
+  YELLOW_RED: 1.70,
+  YELLOW_YELLOW: 1.69,
+  RED_YELLOW: 2.00,
+  BLUE_RED: 4.19,
+};
+const TURN_SEC = {
+  RIGHT: 2.65,
+  LEFT: 2.65,
+  ROTATE_180: 5.00,
+};
+const DEPOT_LAUNCH_ORDER = [3, 0, 2, 1];
+const SAFETY_WINDOW_SEC = 5.0;
+const EDGE_SAFETY_WINDOW_SEC = 7.0;
+const EDGE_RELEASE_BUFFER_SEC = 0.1;
+const AUTO_DECONFLICT_MAX_ITERATIONS = 260;
+const SOLVE_POLISH_BUDGET_MS = 1800;
+const REROUTE_BUDGET_MS = 1200;
+const PATH_MODES = ["vh", "hv", "via-bottom", "via-top", "via-left", "via-right"];
+// Default is the lab's ROS2 laptop (the page itself lives on the Windows
+// laptop and only needs network access to the rosbridge websocket). Override
+// with a query param if the IP changes or rosbridge runs elsewhere, e.g.
+//   agv_grid_workstation_solver.html?rosbridge=192.0.2.15
+const ROSBRIDGE_URL = (() => {
+  let v = new URLSearchParams(window.location.search).get("rosbridge");
+  if (!v) return "ws://192.0.2.14:9090";
+  if (!v.startsWith("ws://") && !v.startsWith("wss://")) v = `ws://${v}`;
+  if (!/:\d+$/.test(v)) v = `${v}:9090`;
+  return v;
+})();
+// Live mode camera view: apriltag_localize.py --stream serves its annotated
+// preview as MJPEG (default http://localhost:8081/stream — the camera runs on
+// the same machine as this page). Override: ?stream=host[:port]
+const LIVE_STREAM_URL = (() => {
+  let v = new URLSearchParams(window.location.search).get("stream");
+  if (!v) return "http://localhost:8081/stream";
+  if (!v.startsWith("http://") && !v.startsWith("https://")) v = `http://${v}`;
+  if (!v.endsWith("/stream")) v = `${v.replace(/\/$/, "")}/stream`;
+  return v;
+})();
+
+// Real and Live modes both consume live robot data over rosbridge; Live
+// additionally shows the camera's annotated MJPEG view above the grid.
+// The Plan & Simulate view is ALWAYS pure simulation: the grid plays back the
+// solved route step-by-step (Play/Step/slider), never vision, and never the
+// camera feed — the live camera belongs to Run & Monitor. So Real/Live only
+// take effect in the Run view; from Plan every consumer sees simulated data.
+function liveDataMode() {
+  if (state.view === "plan") return false;
+  return state.mode === "real" || state.mode === "live";
+}
+
+// The "vrp_rpd:" route modes are solved by plan_server.py on this machine
+// (the solvers are Python/numba/torch and can't run in the browser).
+// Override: ?plansrv=host[:port]
+const PLAN_SERVER_URL = (() => {
+  let v = new URLSearchParams(window.location.search).get("plansrv");
+  if (!v) return "http://localhost:8082";
+  if (!v.startsWith("http://") && !v.startsWith("https://")) v = `http://${v}`;
+  return v.replace(/\/$/, "");
+})();
+
+// kind "odom": <ROBOT_NAME>_pose from AGV_Factory_color_pose.ino, std_msgs/String JSON
+//   {"x":cm,"y":cm,"yaw":deg,"battery":pct,"ms":millis} (odometry frame).
+// kind "vision": <ROBOT_NAME>_vision_pose from apriltag_localize.py
+//   (VRP repo, camera laptop), std_msgs/String JSON {"x_in","y_in","yaw_deg",
+//   "grid_x","grid_y","tag_id","ms"} — grid cells relative to node 1.
+// When fresh vision is available it takes priority over odometry.
+const ALVIK_REAL_TOPICS = [
+  { agent: 0, topic: "Alvik1_pose", type: "std_msgs/String", kind: "odom" },
+  { agent: 1, topic: "Alvik2_pose", type: "std_msgs/String", kind: "odom" },
+  { agent: 2, topic: "Alvik3_pose", type: "std_msgs/String", kind: "odom" },
+  { agent: 3, topic: "Alvik4_pose", type: "std_msgs/String", kind: "odom" },
+  { agent: 0, topic: "Alvik1_vision_pose", type: "std_msgs/String", kind: "vision" },
+  { agent: 1, topic: "Alvik2_vision_pose", type: "std_msgs/String", kind: "vision" },
+  { agent: 2, topic: "Alvik3_vision_pose", type: "std_msgs/String", kind: "vision" },
+  { agent: 3, topic: "Alvik4_vision_pose", type: "std_msgs/String", kind: "vision" },
+];
+// Vision poses older than this fall back to odometry.
+const VISION_FRESH_MS = 2000;
+// Where vision's grid origin (node 1, the first lattice node — NOT node 0 on
+// its odd 13.5in link) sits in the on-screen grid, and how vision axes map:
+// +grid_y (toward tag 22, "north" into the grid) decreases the row index,
+// +grid_x (toward tag 21) increases the column. If robots render one row off
+// or mirrored on the first live test, this pair of constants is the fix.
+const VISION_NODE1_ROW_FROM_BOTTOM = 0;  // node 1 = bottom lattice row
+const VISION_NODE1_COL = 0;              // node 1 = leftmost column
+
+function visionGridToPoint(gridX, gridY) {
+  const g = layout();
+  const r = (state.rows - 1) - VISION_NODE1_ROW_FROM_BOTTOM - gridY;
+  const c = VISION_NODE1_COL + gridX;
+  return { x: g.left + c * g.cell, y: g.top + r * g.cell };
+}
+
+function el(tag, attrs = {}, text = "") {
+  const node = document.createElementNS(NS, tag);
+  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+  if (text) node.textContent = text;
+  return node;
+}
+
+function clampInt(value, lo, hi) {
+  const n = parseInt(value, 10);
+  if (Number.isNaN(n)) return lo;
+  return Math.max(lo, Math.min(hi, n));
+}
+
+function bayId(r, c) {
+  return `${r},${c}`;
+}
+
+function bayNumber(r, c) {
+  // Bottom-up origin, matching the node numbering (robots enter from the
+  // depot at the bottom): B1 = bottom-left bay, B7 = bottom-right, counting
+  // upward row by row. Workstation/entry node numbers derive from this, so
+  // the bottom-left workstation is 64+1 = 65 on an 8x8 grid.
+  return (state.rows - 2 - r) * (state.cols - 1) + c + 1;
+}
+
+function bayFromNumber(n) {
+  const perRow = state.cols - 1;
+  return {
+    r: state.rows - 2 - Math.floor((n - 1) / perRow),
+    c: (n - 1) % perRow,
+  };
+}
+
+function parseBayId(id) {
+  const [r, c] = id.split(",").map(Number);
+  return { r, c };
+}
+
+function nodeKey(r, c) {
+  return `${r},${c}`;
+}
+
+function edgeKey(a, b) {
+  return [a, b].sort().join("|");
+}
+
+// A bay ENTRY sticker lies mid-edge on the grid lattice — entry 122 sits on the
+// corridor between grid nodes 18 and 19. So servicing that bay and traversing
+// that grid edge share one physical lane. entryEdgeNodes maps an entry node
+// label to the two grid nodes it lies between (null for grid/workstation/depot
+// labels); corridorKey collapses the full grid edge and the two half-edges the
+// entry splits it into to a single key, so the conflict detector treats them as
+// one resource. Mirrors the off-robot dispatch geometry.
+function entryEdgeNodes(label) {
+  const n = Number(label);
+  if (!Number.isInteger(n)) return null;
+  const nodes = state.rows * state.cols;
+  const bays = totalBayCount();
+  if (!(n > nodes + bays && n <= nodes + 2 * bays)) return null;  // entries only
+  const bay = bayFromNumber(n - nodes - bays);
+  return [nodeNumber(bay.r, bay.c), nodeNumber(bay.r, bay.c + 1)];
+}
+
+function corridorKey(a, b) {
+  for (const [endpoint, other] of [[a, b], [b, a]]) {
+    const flank = entryEdgeNodes(endpoint);
+    if (flank && (String(other) === String(flank[0]) ||
+                  String(other) === String(flank[1]))) {
+      return [flank[0], flank[1]].sort().join("<>");
+    }
+  }
+  return [a, b].sort().join("<>");
+}
+
+function layout() {
+  const pad = 80;
+  const w = 820;
+  const h = 820;
+  const gridW = w - pad * 2;
+  const gridH = h - 230;
+  const cell = Math.min(gridW / (state.cols - 1), gridH / (state.rows - 1));
+  const left = (w - cell * (state.cols - 1)) / 2;
+  const top = 58;
+  const bottom = top + cell * (state.rows - 1);
+  // The depot (slots, DE entries, node 0, lane) is drawn in the vision-grid
+  // frame via visionGridToPoint (see DEPOT_* constants + depotSlot/specialPt),
+  // so it shares the live robot dots' coordinate system and lines up. No
+  // separate depot Y-offsets are needed here anymore.
+  return { w, h, cell, left, top, bottom };
+}
+
+function pt(r, c) {
+  const g = layout();
+  return { x: g.left + c * g.cell, y: g.top + r * g.cell };
+}
+
+function specialPt(id) {
+  if (id === "node0") return visionGridToPoint(DEPOT_NODE0_GRID.x, DEPOT_NODE0_GRID.y);
+  if (id.startsWith("depot-entry-")) {
+    const i = parseInt(id.replace("depot-entry-", ""), 10);
+    return depotEntry(i);
+  }
+  if (id.startsWith("depot-slot-")) {
+    const i = parseInt(id.replace("depot-slot-", ""), 10);
+    return depotSlot(i);
+  }
+  return visionGridToPoint(DEPOT_NODE0_GRID.x, DEPOT_NODE0_GRID.y);
+}
+
+function pointFor(pathPoint) {
+  if (pathPoint.kind === "grid") return pt(pathPoint.r, pathPoint.c);
+  if (pathPoint.kind === "entry") return bayEntryPoint(pathPoint.bay);
+  if (pathPoint.kind === "workstation") return bayWorkPoint(pathPoint.bay);
+  return specialPt(pathPoint.id);
+}
+
+function pathKey(pathPoint) {
+  if (pathPoint.kind === "grid") return `g:${pathPoint.r},${pathPoint.c}`;
+  if (pathPoint.kind === "entry") return `e:${bayId(pathPoint.bay.r, pathPoint.bay.c)}`;
+  if (pathPoint.kind === "workstation") return `w:${bayId(pathPoint.bay.r, pathPoint.bay.c)}`;
+  return `s:${pathPoint.id}`;
+}
+
+function pathLabel(pathPoint) {
+  if (pathPoint.kind === "grid") return nodeNumber(pathPoint.r, pathPoint.c);
+  if (pathPoint.kind === "entry") return entryNodeNumber(pathPoint.bay);
+  if (pathPoint.kind === "workstation") return workstationNodeNumber(pathPoint.bay);
+  if (pathPoint.id === "node0") return 0;
+  if (pathPoint.id.startsWith("depot-entry-")) {
+    return `DE${parseInt(pathPoint.id.replace("depot-entry-", ""), 10) + 1}`;
+  }
+  if (pathPoint.id.startsWith("depot-slot-")) {
+    return `D${parseInt(pathPoint.id.replace("depot-slot-", ""), 10) + 1}`;
+  }
+  return pathPoint.id;
+}
+
+// Depot geometry in VISION-GRID coordinates (gridX east, gridY north of
+// node 1), so the drawn depot and the live robot dots share one coordinate
+// system via visionGridToPoint() — they line up in the digital twin. Node 0 is
+// the lane junction 1.35 cells south of node 1 (matches label_to_cell(0) on the
+// supervisor side). Slots sit ~0.55 cells south of node 1, pitched east; the
+// DE entries are on the node-0 lane just south of each slot.
+// Real geometry (overhead photo): node 1 drops STRAIGHT DOWN to node 0, which
+// makes a 90° turn into a horizontal lane running east. Robots park in a
+// straight row above the lane, each with a vertical stub down to the lane. So:
+// the DE entries sit ON the lane (same y as node 0), directly below each slot,
+// giving clean right angles — no diagonals.
+const DEPOT_LANE_GRID_Y = -1.35;   // the horizontal lane (node 0's row)
+const DEPOT_SLOT_GRID_Y = -0.75;   // parking row, above the lane
+const DEPOT_ENTRY_GRID_Y = DEPOT_LANE_GRID_Y;  // DE points are ON the lane
+const DEPOT_NODE0_GRID = { x: 0, y: DEPOT_LANE_GRID_Y };
+const DEPOT_SLOT_GRID_X0 = 0.5;    // first slot's east offset from node 1
+const DEPOT_SLOT_PITCH = 0.6;      // spacing between stubs
+
+// The depot slot's grid position. Depot slots are fixed hardware -- always
+// the nominal, measured layout, never inferred from a live vision reading.
+// (A previous version of this function preferred a "learned" position from
+// vision, updated live or on first sighting; a noisy/misdetected frame near
+// the depot region -- from a robot passing through during unrelated testing
+// -- silently corrupted the whole depot layout more than once, with no
+// visible cause, since the depots never actually move. Removed entirely.)
+function depotSlotGrid(i) {
+  return { x: DEPOT_SLOT_GRID_X0 + DEPOT_SLOT_PITCH * i, y: DEPOT_SLOT_GRID_Y };
+}
+
+function depotSlot(i) {
+  // The single source for a depot slot's screen position: the learned real
+  // parking grid coord (or nominal until vision has measured it), through
+  // visionGridToPoint. Everything — box, DE point, route line, congestion
+  // overlay — uses this, so they can't drift apart. Depot TIMING comes from
+  // measured clearance constants, not this pixel position, so it stays
+  // deterministic.
+  const grid = depotSlotGrid(i);
+  return visionGridToPoint(grid.x, grid.y);
+}
+
+
+function depotEntry(i) {
+  const grid = depotSlotGrid(i);
+  return visionGridToPoint(grid.x, DEPOT_ENTRY_GRID_Y);
+}
+
+function depotEntryPathToNode0(agent) {
+  const path = [specialPathPoint(`depot-slot-${agent}`), specialPathPoint(`depot-entry-${agent}`)];
+  for (let i = agent - 1; i >= 0; i--) {
+    path.push(specialPathPoint(`depot-entry-${i}`));
+  }
+  path.push(specialPathPoint("node0"));
+  return path;
+}
+
+function depotEntryPathFromNode0(agent) {
+  const path = [specialPathPoint("node0")];
+  for (let i = 0; i <= agent; i++) {
+    path.push(specialPathPoint(`depot-entry-${i}`));
+  }
+  path.push(specialPathPoint(`depot-slot-${agent}`));
+  return path;
+}
+
+function routeStart(i) {
+  return { r: state.rows - 1, c: 0 };
+}
+
+function isAgentVisible(agent) {
+  return !state.hiddenAgents.has(agent);
+}
+
+function visibleRoutes(routes = state.routes) {
+  return routes.filter((route) => isAgentVisible(route.agent));
+}
+
+function clampAgentState() {
+  if (state.editAgent >= state.agents) state.editAgent = Math.max(0, state.agents - 1);
+  for (const agent of [...state.hiddenAgents]) {
+    if (agent >= state.agents) state.hiddenAgents.delete(agent);
+  }
+  for (const agent of [...state.routeEdits.keys()]) {
+    if (agent >= state.agents) state.routeEdits.delete(agent);
+  }
+}
+
+function cloneWaypoints(waypoints) {
+  return (waypoints || []).map((node) => ({ r: node.r, c: node.c }));
+}
+
+function cloneWaits(waitBeforeSec) {
+  const waits = {};
+  for (const [key, value] of Object.entries(waitBeforeSec || {})) {
+    const seconds = Number(value) || 0;
+    if (seconds > 0) waits[key] = seconds;
+  }
+  return waits;
+}
+
+function totalRouteDwell(route) {
+  return Object.values(route.waitBeforeSec || {}).reduce((sum, value) => sum + (Number(value) || 0), 0);
+}
+
+function totalPlanDwell(routes) {
+  return routes.reduce((sum, route) => sum + totalRouteDwell(route) + (route.extraWaitSec || 0), 0);
+}
+
+function manualWaypointsFor(agent) {
+  return cloneWaypoints(state.routeEdits.get(agent) || []);
+}
+
+function setManualWaypoints(agent, waypoints) {
+  if (waypoints && waypoints.length) {
+    state.routeEdits.set(agent, cloneWaypoints(waypoints));
+  } else {
+    state.routeEdits.delete(agent);
+  }
+}
+
+function bayEntryNode(bay) {
+  return { r: bay.r, c: bay.c };
+}
+
+function gridPathPoint(node) {
+  return { kind: "grid", r: node.r, c: node.c };
+}
+
+function specialPathPoint(id) {
+  return { kind: "special", id };
+}
+
+function entryPathPoint(bay, mode) {
+  const point = { kind: "entry", bay: { r: bay.r, c: bay.c } };
+  if (mode) point.mode = mode;
+  return point;
+}
+
+function workstationPathPoint(bay, mode) {
+  const point = { kind: "workstation", bay: { r: bay.r, c: bay.c } };
+  if (mode) point.mode = mode;
+  return point;
+}
+
+function nodeNumber(r, c) {
+  return (state.rows - 1 - r) * state.cols + c + 1;
+}
+
+function totalBayCount() {
+  return (state.rows - 1) * (state.cols - 1);
+}
+
+function workstationNodeNumber(bay) {
+  return state.rows * state.cols + bayNumber(bay.r, bay.c);
+}
+
+function entryNodeNumber(bay) {
+  return state.rows * state.cols + totalBayCount() + bayNumber(bay.r, bay.c);
+}
+
+function bayEntryPoint(bay) {
+  const g = layout();
+  const a = pt(bay.r, bay.c);
+  const b = pt(bay.r, bay.c + 1);
+  return { x: (a.x + b.x) / 2, y: a.y + 8 };
+}
+
+function bayWorkPoint(bay) {
+  const g = layout();
+  const a = pt(bay.r, bay.c);
+  return { x: a.x + g.cell / 2, y: a.y + g.cell * 0.54 };
+}
+
+function appendNodeIfNew(path, node) {
+  const last = path[path.length - 1];
+  if (!last || last.r !== node.r || last.c !== node.c) path.push({ ...node });
+}
+
+function appendAxisPath(path, end, axisOrder) {
+  let last = path[path.length - 1];
+  let r = last.r;
+  let c = last.c;
+  const moveRows = () => {
+    while (r !== end.r) {
+      r += end.r > r ? 1 : -1;
+      appendNodeIfNew(path, { r, c });
+    }
+  };
+  const moveCols = () => {
+    while (c !== end.c) {
+      c += end.c > c ? 1 : -1;
+      appendNodeIfNew(path, { r, c });
+    }
+  };
+  for (const axis of axisOrder) {
+    if (axis === "r") moveRows();
+    else moveCols();
+  }
+}
+
+function pathBetween(start, end, mode = "vh") {
+  const path = [{ ...start }];
+  const via = [];
+  if (mode === "via-bottom") {
+    via.push({ r: state.rows - 1, c: start.c }, { r: state.rows - 1, c: end.c });
+  } else if (mode === "via-top") {
+    via.push({ r: 0, c: start.c }, { r: 0, c: end.c });
+  } else if (mode === "via-left") {
+    via.push({ r: start.r, c: 0 }, { r: end.r, c: 0 });
+  } else if (mode === "via-right") {
+    via.push({ r: start.r, c: state.cols - 1 }, { r: end.r, c: state.cols - 1 });
+  }
+  for (const waypoint of via) appendAxisPath(path, waypoint, mode === "hv" ? ["c", "r"] : ["r", "c"]);
+  appendAxisPath(path, end, mode === "hv" ? ["c", "r"] : ["r", "c"]);
+  return path;
+}
+
+function routeDistance(points) {
+  let distance = 0;
+  for (let i = 1; i < points.length; i++) {
+    distance += Math.abs(points[i].r - points[i - 1].r) + Math.abs(points[i].c - points[i - 1].c);
+  }
+  return distance;
+}
+
+function seededRandom(seed) {
+  let x = Math.sin(seed || 1) * 10000;
+  return () => {
+    x = Math.sin(x) * 10000;
+    return x - Math.floor(x);
+  };
+}
+
+function agvName(agent) {
+  return `Alvik${agent + 1}`;
+}
+
+function depotClearanceSec(agent) {
+  return DEPOT_ENTRY_CLEARANCE_SEC[agvName(agent)] || DEPOT_ENTRY_CLEARANCE_SEC.Alvik4;
+}
+
+function depotSegmentSec(agent) {
+  return depotClearanceSec(agent) / (agent + 2);
+}
+
+function launchOrderForAgents(count) {
+  const order = DEPOT_LAUNCH_ORDER.filter((agent) => agent < count);
+  for (let agent = 0; agent < count; agent++) {
+    if (!order.includes(agent)) order.push(agent);
+  }
+  return order;
+}
+
+function computeLaunchOffsets(count) {
+  const order = launchOrderForAgents(count);
+  const offsets = Array.from({ length: count }, () => 0);
+  if (!order.length) return offsets;
+  offsets[order[0]] = 0;
+  for (let i = 1; i < order.length; i++) {
+    const prev = order[i - 1];
+    const next = order[i];
+    const wait = prev === 0 && next === 2
+      ? depotClearanceSec(prev)
+      : depotClearanceSec(prev) + MOVEMENT_SEC.BLUE_RED;
+    offsets[next] = offsets[prev] + wait;
+  }
+  return offsets;
+}
+
+function headingBetween(fromPoint, toPoint) {
+  const a = pointFor(fromPoint);
+  const b = pointFor(toPoint);
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? "E" : "W";
+  return dy >= 0 ? "S" : "N";
+}
+
+function headingsOpposed(a, b) {
+  if (!a || !b) return false;
+  const order = ["N", "E", "S", "W"];
+  const ia = order.indexOf(a);
+  const ib = order.indexOf(b);
+  return ia >= 0 && ib >= 0 && (ib - ia + 4) % 4 === 2;
+}
+
+function turnPenaltySec(prevHeading, nextHeading) {
+  if (!prevHeading || !nextHeading || prevHeading === nextHeading) return 0;
+  const order = ["N", "E", "S", "W"];
+  const a = order.indexOf(prevHeading);
+  const b = order.indexOf(nextHeading);
+  if (a < 0 || b < 0) return 0;
+  const delta = (b - a + 4) % 4;
+  if (delta === 2) return TURN_SEC.ROTATE_180;
+  if (delta === 1) return TURN_SEC.RIGHT;
+  return TURN_SEC.LEFT;
+}
+
+function movementProfile(fromPoint, toPoint, agent) {
+  const fromKind = fromPoint.kind;
+  const toKind = toPoint.kind;
+  const fromLabel = pathLabel(fromPoint);
+  const toLabel = pathLabel(toPoint);
+  const depotStep = depotSegmentSec(agent);
+  const fromDepotSlot = String(fromLabel).startsWith("D") && !String(fromLabel).startsWith("DE");
+  const toDepotSlot = String(toLabel).startsWith("D") && !String(toLabel).startsWith("DE");
+  const fromDepotEntry = String(fromLabel).startsWith("DE");
+  const toDepotEntry = String(toLabel).startsWith("DE");
+
+  if (fromDepotSlot && toDepotEntry) {
+    return { seconds: depotStep, type: "DEPOT_SLOT_TO_ENTRY" };
+  }
+  if (fromDepotEntry && toDepotEntry) {
+    return { seconds: depotStep, type: "DEPOT_ENTRY_TO_ENTRY" };
+  }
+  if (fromDepotEntry && toLabel === 0) {
+    return { seconds: depotStep, type: "DEPOT_ENTRY_TO_NODE_0" };
+  }
+  if (fromLabel === 0 && toLabel === 1) {
+    return { seconds: MOVEMENT_SEC.BLUE_RED, type: "BLUE_TO_RED" };
+  }
+  if (fromLabel === 1 && toLabel === 0) {
+    return { seconds: MOVEMENT_SEC.BLUE_RED, type: "RED_TO_BLUE_RETURN" };
+  }
+  if (fromLabel === 0 && toDepotEntry) {
+    return { seconds: depotStep, type: "NODE_0_TO_DEPOT_ENTRY" };
+  }
+  if (fromDepotEntry && toDepotSlot) {
+    return { seconds: depotStep, type: "DEPOT_ENTRY_TO_SLOT" };
+  }
+  if (fromKind === "grid" && toKind === "grid") {
+    return { seconds: MOVEMENT_SEC.RED_RED, type: "RED_TO_RED" };
+  }
+  if (fromKind === "grid" && toKind === "entry") {
+    return { seconds: MOVEMENT_SEC.RED_YELLOW, type: "RED_TO_YELLOW" };
+  }
+  if (fromKind === "entry" && toKind === "grid") {
+    return { seconds: MOVEMENT_SEC.YELLOW_RED, type: "YELLOW_TO_RED" };
+  }
+  if ((fromKind === "entry" && toKind === "workstation") ||
+      (fromKind === "workstation" && toKind === "entry")) {
+    return { seconds: MOVEMENT_SEC.YELLOW_YELLOW, type: "YELLOW_TO_YELLOW" };
+  }
+  return { seconds: MOVEMENT_SEC.RED_RED, type: "MOVE" };
+}
+
+function applyRouteTiming(route) {
+  const segments = [];
+  const events = [];
+  let t = route.launchOffsetSec || 0;
+  let prevHeading = null;
+  if (route.path.length) {
+    events.push({
+      node: pathLabel(route.path[0]),
+      pathIndex: 0,
+      arrivalSec: 0,
+      departSec: t,
+      note: t > 0 ? "waiting for launch clearance" : "launch",
+    });
+  }
+
+  for (let i = 1; i < route.path.length; i++) {
+    const from = route.path[i - 1];
+    const to = route.path[i];
+    const heading = headingBetween(from, to);
+    const movement = movementProfile(from, to, route.agent);
+    const measuredCompleteMove = movement.type.startsWith("DEPOT") ||
+      movement.type === "BLUE_TO_RED" ||
+      movement.type === "RED_TO_BLUE_RETURN";
+    const turnSec = measuredCompleteMove ? 0 : turnPenaltySec(prevHeading, heading);
+    const waitSec = Math.max(0, Number((route.waitBeforeSec || {})[i]) || 0);
+    if (waitSec > 0) {
+      const lastEvent = events[events.length - 1];
+      if (lastEvent) {
+        lastEvent.departSec = t + waitSec;
+        lastEvent.dwellSec = (lastEvent.dwellSec || 0) + waitSec;
+        lastEvent.note = lastEvent.note ? `${lastEvent.note}; dwell` : "dwell";
+      }
+      t += waitSec;
+    }
+    const startSec = t;
+    const endSec = startSec + turnSec + movement.seconds;
+    segments.push({
+      from,
+      to,
+      segmentIndex: i,
+      fromNode: pathLabel(from),
+      toNode: pathLabel(to),
+      startSec,
+      endSec,
+      moveSec: movement.seconds,
+      turnSec,
+      waitBeforeSec: waitSec,
+      type: movement.type,
+      heading,
+    });
+    events.push({
+      node: pathLabel(to),
+      pathIndex: i,
+      arrivalSec: endSec,
+      departSec: endSec,
+      via: movement.type,
+      turnSec,
+    });
+    t = endSec;
+    prevHeading = heading;
+  }
+
+  route.segments = segments;
+  route.events = events;
+  route.durationSec = t;
+  route.distance = t;
+  return route;
+}
+
+function applyLaunchSchedule(routes) {
+  const offsets = computeLaunchOffsets(routes.length);
+  for (const route of routes) {
+    route.launchOffsetSec = offsets[route.agent] + (route.extraWaitSec || 0);
+    applyRouteTiming(route);
+  }
+  return routes;
+}
+
+function buildAgentRoute(
+  agent,
+  baysForAgent,
+  extraWaitSec = 0,
+  manualWaypoints = manualWaypointsFor(agent),
+  waitBeforeSec = {},
+  pathMode = "vh"
+) {
+  // Defensive service-merge: guarantee no adjacent same-bay drop+pick reaches
+  // the path builder unmerged (which would force a mid-grid ROTATE_180). Every
+  // path into buildAgentRoute — built-in solve, external plan, import, re-solve
+  // during collision resolution — passes through here, so this is the single
+  // choke point that makes the "never double back at a workstation" rule hold.
+  baysForAgent = mergeServiceVisits(baysForAgent);
+
+  let cur = routeStart(agent);
+  const fullPath = [
+    ...depotEntryPathToNode0(agent),
+    gridPathPoint(routeStart(agent)),
+  ];
+
+  for (const waypoint of manualWaypoints) {
+    const segment = pathBetween(cur, waypoint, pathMode);
+    fullPath.push(...segment.slice(1).map(gridPathPoint));
+    cur = { r: waypoint.r, c: waypoint.c };
+  }
+
+  for (let b = 0; b < baysForAgent.length; b++) {
+    const bay = baysForAgent[b];
+    // The entry sticker sits mid-edge between the bay's west (bay.c) and
+    // east (bay.c+1) row nodes, so the bay is servable from either side.
+    // Routing to the far side crosses the bay's own entry edge and forces a
+    // mid-grid about-face (Alvik3 drove past its workstation, ROTATE_180'd
+    // at the next red node and came back — hardware run 2026-07-14). Score
+    // both sides: no heading flip first, then shortest approach.
+    const sides = [
+      { node: { r: bay.r, c: bay.c } },
+      { node: { r: bay.r, c: bay.c + 1 } },
+    ];
+    for (const side of sides) {
+      side.segment = pathBetween(cur, side.node, pathMode);
+      const tail = [...fullPath, ...side.segment.slice(1).map(gridPathPoint)];
+      const arrival = headingBetween(tail[tail.length - 2], tail[tail.length - 1]);
+      const entering = headingBetween(gridPathPoint(side.node), entryPathPoint(bay));
+      side.flip = headingsOpposed(arrival, entering) ? 1 : 0;
+      side.dist = routeDistance(side.segment);
+    }
+    sides.sort((x, y) => x.flip - y.flip || x.dist - y.dist);
+    fullPath.push(...sides[0].segment.slice(1).map(gridPathPoint));
+    // Leave toward the next objective (next bay's entry edge, else home);
+    // exiting out the far side of the edge would just re-cover ground.
+    const nextRef = b + 1 < baysForAgent.length
+      ? { r: baysForAgent[b + 1].r, c: baysForAgent[b + 1].c + 0.5 }
+      : routeStart(agent);
+    const west = { r: bay.r, c: bay.c };
+    const east = { r: bay.r, c: bay.c + 1 };
+    const towardNext = (node) =>
+      Math.abs(node.r - nextRef.r) + Math.abs(node.c - nextRef.c);
+    const exit = towardNext(east) < towardNext(west) ? east : west;
+    const mode = bay.mode || "drop";
+    fullPath.push(
+      entryPathPoint(bay, mode),
+      workstationPathPoint(bay, mode),
+      entryPathPoint(bay, mode),
+      gridPathPoint(exit)
+    );
+    cur = exit;
+  }
+
+  const home = routeStart(agent);
+  const returnSegment = pathBetween(cur, home, pathMode);
+  fullPath.push(...returnSegment.slice(1).map(gridPathPoint));
+  fullPath.push(...depotEntryPathFromNode0(agent));
+
+  return {
+    agent,
+    bays: cloneBays(baysForAgent),
+    path: fullPath,
+    segments: [],
+    events: [],
+    distance: 0,
+    durationSec: 0,
+    launchOffsetSec: 0,
+    extraWaitSec,
+    manualWaypoints: cloneWaypoints(manualWaypoints),
+    waitBeforeSec: cloneWaits(waitBeforeSec),
+    pathMode,
+  };
+}
+
+function distributeWork() {
+  const bays = [...state.selected].map(parseBayId);
+  const mode = document.getElementById("route-mode").value;
+  const seed = clampInt(document.getElementById("seed").value, 1, 999999);
+  const rng = seededRandom(seed);
+
+  if (mode === "sweep") {
+    bays.sort((a, b) => a.r - b.r || a.c - b.c);
+  } else {
+    bays.sort(() => rng() - 0.5);
+  }
+
+  const buckets = Array.from({ length: state.agents }, () => []);
+  bays.forEach((bay, i) => buckets[i % state.agents].push(bay));
+
+  if (mode === "nearest") {
+    for (let i = 0; i < buckets.length; i++) {
+      const ordered = [];
+      const remaining = [...buckets[i]];
+      let cur = routeStart(i);
+      while (remaining.length) {
+        let best = 0;
+        let bestDist = Infinity;
+        for (let j = 0; j < remaining.length; j++) {
+          const entry = bayEntryNode(remaining[j]);
+          const d = Math.abs(cur.r - entry.r) + Math.abs(cur.c - entry.c);
+          if (d < bestDist) {
+            best = j;
+            bestDist = d;
+          }
+        }
+        const next = remaining.splice(best, 1)[0];
+        ordered.push(next);
+        cur = bayEntryNode(next);
+      }
+      buckets[i] = ordered;
+    }
+  }
+
+  let templates = buckets.map((baysForAgent, agent) => buildAgentRoute(agent, baysForAgent, 0));
+  if (state.rpdMode) templates = assignPickups(templates);
+  const polished = polishCollisionPlan(templates);
+  state.routes = polished.routes;
+  state.conflicts = polished.conflicts;
+  state.schedule = polished.schedule;
+  state.planSource = "";  // built-in solver owns the plan again
+  invalidateDispatchEditors();
+}
+
+// Generated command text belongs to the plan it was generated from. After
+// any re-solve/reroute it is stale — Send mission would pair old commands
+// with the new schedule and the supervisor's alignment gate would reject the
+// mission (observed 2026-07-16). Drop the editors so the next Send/Start
+// regenerates fresh text from the current plan.
+function invalidateDispatchEditors() {
+  const editors = document.getElementById("dispatch-editors");
+  if (editors && editors.innerHTML) {
+    editors.innerHTML = "";
+    dispatchSetStatus("plan changed — command text cleared; Generate again to review");
+  }
+}
+
+// ---- VRP-RPD: pickup assignment -------------------------------------------
+// Every dropped part becomes pickable state.processSec after its drop-off and
+// must be returned to the depot. Pickups are NOT tied to the robot that
+// delivered: each is auctioned to whichever robot (with pickup capacity left)
+// finishes its tour earliest after appending it — a greedy earliest-completion
+// heuristic that lowers fleet makespan. Tours stay drops-then-picks, which is
+// always capacity-feasible (load 3 -> 0 -> 3).
+function assignPickups(templateRoutes) {
+  const offsets = computeLaunchOffsets(templateRoutes.length);
+  const visits = templateRoutes.map((route) => cloneBays(route.bays));
+  const meta = templateRoutes.map((route) => ({
+    manualWaypoints: route.manualWaypoints || [],
+    pathMode: route.pathMode || "vh",
+  }));
+
+  const buildTour = (agent) => {
+    const route = buildAgentRoute(
+      agent, visits[agent], 0, meta[agent].manualWaypoints, {}, meta[agent].pathMode);
+    route.launchOffsetSec = offsets[agent] || 0;
+    return applyRouteTiming(route);
+  };
+
+  // Ready times come from the delivery legs, which pickup appends never move.
+  const readyAt = new Map();
+  for (let agent = 0; agent < visits.length; agent++) {
+    for (const seg of buildTour(agent).segments) {
+      if (seg.to && seg.to.kind === "workstation" && seg.to.mode !== "pick") {
+        readyAt.set(bayId(seg.to.bay.r, seg.to.bay.c), seg.endSec + state.processSec);
+      }
+    }
+  }
+
+  // Tour completion including waits for parts that aren't ready on arrival
+  // (waits cascade: an early wait delays every later pickup in the tour).
+  const tourCompletion = (agent) => {
+    const route = buildTour(agent);
+    let carry = 0;
+    for (const seg of route.segments) {
+      if (seg.to && seg.to.kind === "workstation" && seg.to.mode === "pick") {
+        const ready = readyAt.get(bayId(seg.to.bay.r, seg.to.bay.c));
+        if (ready != null) carry += Math.max(0, ready - (seg.endSec + carry));
+      }
+    }
+    return route.durationSec + carry;
+  };
+
+  const remaining = [...readyAt.keys()];
+  const pickCount = visits.map(() => 0);
+  while (remaining.length) {
+    let best = null;
+    for (let agent = 0; agent < visits.length; agent++) {
+      if (pickCount[agent] >= state.capacity) continue;
+      for (const id of remaining) {
+        const bay = parseBayId(id);
+        // A pickup appended right after its own drop is NOT skipped: it merges
+        // into one in-bay "service" stay below (drop, wait out processing,
+        // pick, single exit) — the cheapest option and, crucially, the only
+        // one with no mid-grid about-face. Merging happens after the auction so
+        // tourCompletion here still scores the raw drop-then-pick geometry
+        // (an upper bound; the merge only ever makes the real tour shorter).
+        visits[agent].push({ r: bay.r, c: bay.c, mode: "pick" });
+        const completion = tourCompletion(agent);
+        visits[agent].pop();
+        if (!best || completion < best.completion) {
+          best = { agent, id, completion };
+        }
+      }
+    }
+    if (!best) {
+      console.warn(`RPD: ${remaining.length} pickup(s) unassigned — ` +
+                   `fleet pickup capacity ${visits.length} x ${state.capacity} exceeded`);
+      break;
+    }
+    const bay = parseBayId(best.id);
+    visits[best.agent].push({ r: bay.r, c: bay.c, mode: "pick" });
+    pickCount[best.agent]++;
+    remaining.splice(remaining.indexOf(best.id), 1);
+  }
+
+  // Collapse an adjacent same-bay drop -> pick into one "service" visit so the
+  // robot stays inside the dead-end bay through processing instead of exiting,
+  // about-facing at the entry node and re-entering (the mid-grid ROTATE_180
+  // seen in Alvik1's built-in nearest solve, 2026-07-20). Identical rule to
+  // importPlanFromJson; downstream (buildAgentRoute, pickupReadyViolations,
+  // route report, capacity check) already understands "service".
+  const merged = visits.map((visitList) =>
+    visitList.reduce((out, v) => {
+      const prev = out[out.length - 1];
+      if (prev && v.mode === "pick" && !prev.mode &&
+          prev.r === v.r && prev.c === v.c) {
+        prev.mode = "service";
+      } else {
+        out.push({ ...v });
+      }
+      return out;
+    }, []));
+
+  return merged.map((visitList, agent) => buildAgentRoute(
+    agent, visitList, 0, meta[agent].manualWaypoints, {}, meta[agent].pathMode));
+}
+
+function computeEdgeUse() {
+  state.edgeUse = new Map();
+  state.totalDistance = 0;
+  for (const route of state.routes) {
+    state.totalDistance += route.distance;
+    for (let i = 1; i < route.path.length; i++) {
+      const a = pathKey(route.path[i - 1]);
+      const b = pathKey(route.path[i]);
+      const key = edgeKey(a, b);
+      state.edgeUse.set(key, (state.edgeUse.get(key) || 0) + 1);
+    }
+  }
+}
+
+function intervalsOverlap(a0, a1, b0, b1) {
+  return Math.max(a0, b0) < Math.min(a1, b1);
+}
+
+function intervalGap(a0, a1, b0, b1) {
+  if (intervalsOverlap(a0, a1, b0, b1)) return 0;
+  return Math.max(a0, b0) - Math.min(a1, b1);
+}
+
+function fmtSec(value) {
+  return `${Number(value).toFixed(1)}s`;
+}
+
+function detectConflicts(routes = state.routes) {
+  const conflicts = [];
+
+  const nodeEvents = [];
+  for (const route of routes) {
+    for (const ev of route.events || []) {
+      nodeEvents.push({ agent: route.agent, node: ev.node, time: ev.arrivalSec, pathIndex: ev.pathIndex || 0 });
+    }
+  }
+  for (let i = 0; i < nodeEvents.length; i++) {
+    for (let j = i + 1; j < nodeEvents.length; j++) {
+      const a = nodeEvents[i];
+      const b = nodeEvents[j];
+      if (a.agent === b.agent || String(a.node) !== String(b.node)) continue;
+      const gap = Math.abs(a.time - b.time);
+      if (gap <= SAFETY_WINDOW_SEC) {
+        conflicts.push({
+          type: "same node",
+          severity: "fatal",
+          timeSec: Math.min(a.time, b.time),
+          agents: [a.agent, b.agent],
+          node: a.node,
+          gapSec: gap,
+          events: [
+            { agent: a.agent, timeSec: a.time, pathIndex: a.pathIndex },
+            { agent: b.agent, timeSec: b.time, pathIndex: b.pathIndex },
+          ],
+          detail: `Node ${a.node}, ${fmtSec(a.time)} vs ${fmtSec(b.time)} within ${fmtSec(SAFETY_WINDOW_SEC)} collision window`,
+        });
+      }
+    }
+  }
+
+  const edgeEvents = routes.flatMap((route) =>
+    (route.segments || [])
+      .filter((seg) => String(seg.fromNode) !== String(seg.toNode))
+      .map((seg) => ({
+        agent: route.agent,
+        from: seg.fromNode,
+        to: seg.toNode,
+        key: corridorKey(seg.fromNode, seg.toNode),
+        startSec: seg.startSec,
+        endSec: seg.endSec,
+        segment: seg,
+      }))
+  );
+
+  for (let i = 0; i < edgeEvents.length; i++) {
+    for (let j = i + 1; j < edgeEvents.length; j++) {
+      const a = edgeEvents[i];
+      const b = edgeEvents[j];
+      if (a.agent === b.agent || a.key !== b.key) continue;
+      const sameDirection = String(a.from) === String(b.from) && String(a.to) === String(b.to);
+      const overlap = intervalsOverlap(a.startSec, a.endSec, b.startSec, b.endSec);
+      const gap = intervalGap(a.startSec, a.endSec, b.startSec, b.endSec);
+      if (overlap) {
+        const overlapStartSec = Math.max(a.startSec, b.startSec);
+        const overlapEndSec = Math.min(a.endSec, b.endSec);
+        conflicts.push({
+          type: sameDirection ? "same edge" : "opposite edge",
+          severity: "fatal",
+          timeSec: overlapStartSec,
+          agents: [a.agent, b.agent],
+          edgeKey: a.key,
+          overlapStartSec,
+          overlapEndSec,
+          intervals: [
+            { agent: a.agent, from: a.from, to: a.to, startSec: a.startSec, endSec: a.endSec, segment: a.segment },
+            { agent: b.agent, from: b.from, to: b.to, startSec: b.startSec, endSec: b.endSec, segment: b.segment },
+          ],
+          detail: `${a.key.replace("<>", " <-> ")} overlap ${fmtSec(overlapStartSec)}-${fmtSec(overlapEndSec)}`,
+        });
+      } else if (gap <= EDGE_SAFETY_WINDOW_SEC) {
+        conflicts.push({
+          type: sameDirection ? "same edge contention" : "opposite edge contention",
+          severity: "fatal",
+          timeSec: Math.min(a.endSec, b.endSec),
+          agents: [a.agent, b.agent],
+          edgeKey: a.key,
+          gapSec: gap,
+          intervals: [
+            { agent: a.agent, from: a.from, to: a.to, startSec: a.startSec, endSec: a.endSec, segment: a.segment },
+            { agent: b.agent, from: b.from, to: b.to, startSec: b.startSec, endSec: b.endSec, segment: b.segment },
+          ],
+          detail: `${a.key.replace("<>", " <-> ")} gap ${fmtSec(gap)} inside ${fmtSec(EDGE_SAFETY_WINDOW_SEC)} edge collision window`,
+        });
+      }
+    }
+  }
+  return conflicts.sort((a, b) => (a.timeSec || 0) - (b.timeSec || 0));
+}
+
+function isEdgeConflict(conflict) {
+  return Boolean(conflict.edgeKey);
+}
+
+function fatalEdgeConflicts(conflicts) {
+  return conflicts.filter((conflict) => conflict.severity === "fatal" && isEdgeConflict(conflict));
+}
+
+function fatalSchedulingConflicts(conflicts) {
+  return conflicts.filter((conflict) =>
+    conflict.severity === "fatal" &&
+    (isEdgeConflict(conflict) || conflict.type === "same node")
+  );
+}
+
+function scheduleStatus(routes, conflicts, iterations = 0, capped = false) {
+  const fatalEdges = fatalEdgeConflicts(conflicts);
+  const fatalNodes = conflicts.filter((conflict) => conflict.severity === "fatal" && !isEdgeConflict(conflict));
+  return {
+    collisionFree: fatalEdges.length === 0 && fatalNodes.length === 0,
+    edgeExclusive: fatalEdges.length === 0,
+    iterations,
+    capped,
+    fatalEdgeRemaining: fatalEdges.length,
+    fatalNodeRemaining: fatalNodes.length,
+    nearMisses: conflicts.filter((conflict) => conflict.severity !== "fatal").length,
+    extraWaitByAgent: routes.map((route) => ({
+      agent: route.agent,
+      seconds: route.extraWaitSec || 0,
+      dwellSeconds: totalRouteDwell(route),
+    })),
+  };
+}
+
+function refreshScheduleStatus() {
+  if (!state.schedule) return;
+  const status = scheduleStatus(
+    state.routes,
+    state.conflicts,
+    state.schedule.iterations || 0,
+    Boolean(state.schedule.capped)
+  );
+  state.schedule = status;
+}
+
+function buildRoutesWithSchedule(templateRoutes, extraWaits, waitsByAgent) {
+  return applyLaunchSchedule(templateRoutes.map((route) => {
+    const built = buildAgentRoute(
+      route.agent,
+      cloneBays(route.bays),
+      extraWaits[route.agent] || 0,
+      cloneWaypoints(route.manualWaypoints || manualWaypointsFor(route.agent)),
+      cloneWaits(waitsByAgent[route.agent] || route.waitBeforeSec || {}),
+      route.pathMode || "vh"
+    );
+    if (route.pinnedOrder) built.pinnedOrder = true;
+    return built;
+  }));
+}
+
+function launchRank(agent, routeCount) {
+  const order = launchOrderForAgents(routeCount);
+  const rank = order.indexOf(agent);
+  return rank >= 0 ? rank : order.length + agent;
+}
+
+function delayPlanForEdgeConflict(conflict, routes) {
+  const intervals = conflict.intervals || [];
+  if (intervals.length < 2) {
+    return { agent: typeof conflict.agents[1] === "number" ? conflict.agents[1] : conflict.agents[0], seconds: 1 };
+  }
+
+  const [a, b] = intervals;
+  let delayed = b;
+  let blocker = a;
+  if (b.startSec < a.startSec) {
+    delayed = a;
+    blocker = b;
+  } else if (Math.abs(a.startSec - b.startSec) < 0.001) {
+    const routeA = routes.find((route) => route.agent === a.agent);
+    const routeB = routes.find((route) => route.agent === b.agent);
+    const launchA = routeA ? routeA.launchOffsetSec || 0 : 0;
+    const launchB = routeB ? routeB.launchOffsetSec || 0 : 0;
+    const rankA = launchRank(a.agent, routes.length);
+    const rankB = launchRank(b.agent, routes.length);
+    if (launchA > launchB || (Math.abs(launchA - launchB) < 0.001 && rankA > rankB)) {
+      delayed = a;
+      blocker = b;
+    }
+  }
+
+  let seconds = blocker.endSec + EDGE_SAFETY_WINDOW_SEC + EDGE_RELEASE_BUFFER_SEC - delayed.startSec;
+  if (!Number.isFinite(seconds) || seconds <= 0) seconds = 1;
+  return {
+    agent: delayed.agent,
+    waitIndex: delayed.segment && delayed.segment.segmentIndex,
+    seconds: Math.max(EDGE_RELEASE_BUFFER_SEC, Math.ceil(seconds * 10) / 10),
+  };
+}
+
+function delayPlanForNodeConflict(conflict, routes) {
+  const events = conflict.events || [];
+  if (events.length < 2) {
+    return { agent: typeof conflict.agents[1] === "number" ? conflict.agents[1] : conflict.agents[0], seconds: 1 };
+  }
+  const [a, b] = events;
+  let delayed = b;
+  let blocker = a;
+  if (b.timeSec < a.timeSec) {
+    delayed = a;
+    blocker = b;
+  } else if (Math.abs(a.timeSec - b.timeSec) < 0.001) {
+    const rankA = launchRank(a.agent, routes.length);
+    const rankB = launchRank(b.agent, routes.length);
+    if (rankA > rankB) {
+      delayed = a;
+      blocker = b;
+    }
+  }
+  let seconds = blocker.timeSec + SAFETY_WINDOW_SEC + EDGE_RELEASE_BUFFER_SEC - delayed.timeSec;
+  if (!Number.isFinite(seconds) || seconds <= 0) seconds = 1;
+  return {
+    agent: delayed.agent,
+    waitIndex: delayed.pathIndex || 0,
+    seconds: Math.max(EDGE_RELEASE_BUFFER_SEC, Math.ceil(seconds * 10) / 10),
+  };
+}
+
+function delayPlanForConflict(conflict, routes) {
+  return isEdgeConflict(conflict)
+    ? delayPlanForEdgeConflict(conflict, routes)
+    : delayPlanForNodeConflict(conflict, routes);
+}
+
+// VRP-RPD hard constraint: a robot may not leave a pickup workstation before
+// the part is ready (drop-off arrival + state.processSec). Violations are
+// fixed like conflicts — add a dwell on the workstation->exit segment, i.e.
+// the robot waits INSIDE the bay (a dead end, so it blocks nobody) — and the
+// schedule is rebuilt until the constraint holds.
+function pickupReadyViolations(routes) {
+  if (!state.rpdMode) return [];
+  const readyAt = new Map();
+  for (const route of routes) {
+    for (const seg of route.segments || []) {
+      if (seg.to && seg.to.kind === "workstation" && seg.to.mode !== "pick") {
+        readyAt.set(bayId(seg.to.bay.r, seg.to.bay.c), seg.endSec + state.processSec);
+      }
+    }
+  }
+  const violations = [];
+  for (const route of routes) {
+    const segs = route.segments || [];
+    for (let i = 0; i < segs.length; i++) {
+      const seg = segs[i];
+      // "service" = merged drop+pick in one stay: the drop happens on
+      // arrival (readyAt above) and the departure must wait for readiness,
+      // exactly like a pick.
+      if (!(seg.to && seg.to.kind === "workstation" &&
+            (seg.to.mode === "pick" || seg.to.mode === "service"))) continue;
+      const ready = readyAt.get(bayId(seg.to.bay.r, seg.to.bay.c));
+      if (ready == null) continue;
+      const departSec = i + 1 < segs.length ? segs[i + 1].startSec : seg.endSec;
+      if (departSec < ready - 0.001) {
+        violations.push({
+          agent: route.agent,
+          waitIndex: i + 1 < segs.length ? segs[i + 1].segmentIndex : seg.segmentIndex,
+          seconds: Math.ceil((ready - departSec) * 10) / 10,
+        });
+      }
+    }
+  }
+  return violations;
+}
+
+function edgeExclusiveSchedule(templateRoutes) {
+  const extraWaits = [];
+  const waitsByAgent = [];
+  for (const route of templateRoutes) {
+    extraWaits[route.agent] = route.extraWaitSec || 0;
+    waitsByAgent[route.agent] = cloneWaits(route.waitBeforeSec || {});
+  }
+
+  let routes = buildRoutesWithSchedule(templateRoutes, extraWaits, waitsByAgent);
+  let conflicts = detectConflicts(routes);
+  let iterations = 0;
+  let fatalConflicts = fatalSchedulingConflicts(conflicts);
+  let readyViolations = pickupReadyViolations(routes);
+
+  while ((fatalConflicts.length || readyViolations.length) &&
+         iterations < AUTO_DECONFLICT_MAX_ITERATIONS) {
+    if (readyViolations.length) {
+      // Part-ready waits first: they are hard constraints, and the dwells
+      // they insert shift timings that conflict fixes must then respect.
+      const v = readyViolations[0];
+      waitsByAgent[v.agent] = waitsByAgent[v.agent] || {};
+      waitsByAgent[v.agent][v.waitIndex] = (waitsByAgent[v.agent][v.waitIndex] || 0) + v.seconds;
+    } else {
+      const plan = delayPlanForConflict(fatalConflicts[0], routes);
+      const waitIndex = Number(plan.waitIndex) || 0;
+      if (waitIndex > 0) {
+        waitsByAgent[plan.agent] = waitsByAgent[plan.agent] || {};
+        waitsByAgent[plan.agent][waitIndex] = (waitsByAgent[plan.agent][waitIndex] || 0) + plan.seconds;
+      } else {
+        extraWaits[plan.agent] = (extraWaits[plan.agent] || 0) + plan.seconds;
+      }
+    }
+    routes = buildRoutesWithSchedule(routes, extraWaits, waitsByAgent);
+    conflicts = detectConflicts(routes);
+    fatalConflicts = fatalSchedulingConflicts(conflicts);
+    readyViolations = pickupReadyViolations(routes);
+    iterations++;
+  }
+
+  return {
+    routes,
+    conflicts,
+    schedule: scheduleStatus(routes, conflicts, iterations,
+                             fatalConflicts.length > 0 || readyViolations.length > 0),
+  };
+}
+
+function conflictScore(conflicts) {
+  return conflicts.reduce((score, conflict) => {
+    if (conflict.severity === "fatal" && isEdgeConflict(conflict)) return score + 100000;
+    if (conflict.severity === "fatal") return score + 90000;
+    if (isEdgeConflict(conflict)) return score + 850;
+    return score + 150;
+  }, 0);
+}
+
+function evaluateRoutes(routes) {
+  const conflicts = detectConflicts(routes);
+  return {
+    conflicts,
+    score: conflictScore(conflicts),
+    makespan: makespan(routes),
+    dwell: totalPlanDwell(routes),
+    fatal: fatalSchedulingConflicts(conflicts).length,
+  };
+}
+
+function nowMs() {
+  return window.performance && performance.now ? performance.now() : Date.now();
+}
+
+function cleanRouteTemplate(route, overrides = {}) {
+  const has = (key) => Object.prototype.hasOwnProperty.call(overrides, key);
+  const built = buildAgentRoute(
+    route.agent,
+    has("bays") ? overrides.bays : route.bays,
+    has("extraWaitSec") ? overrides.extraWaitSec : 0,
+    has("manualWaypoints") ? overrides.manualWaypoints : route.manualWaypoints || manualWaypointsFor(route.agent),
+    has("waitBeforeSec") ? overrides.waitBeforeSec : {},
+    has("pathMode") ? overrides.pathMode : route.pathMode || "vh"
+  );
+  if (route.pinnedOrder) built.pinnedOrder = true;
+  return built;
+}
+
+function cleanRouteTemplates(routes) {
+  return routes.map((route) => cleanRouteTemplate(route));
+}
+
+function routeScheduleResult(templateRoutes) {
+  const scheduled = edgeExclusiveSchedule(cleanRouteTemplates(templateRoutes));
+  return {
+    routes: scheduled.routes,
+    conflicts: scheduled.conflicts,
+    schedule: scheduled.schedule,
+    eval: evaluateRoutes(scheduled.routes),
+  };
+}
+
+function isBetterPlanEval(candidate, best) {
+  if (candidate.eval.fatal !== best.eval.fatal) return candidate.eval.fatal < best.eval.fatal;
+  if (Math.abs(candidate.eval.makespan - best.eval.makespan) > 0.05) {
+    return candidate.eval.makespan < best.eval.makespan;
+  }
+  if (Math.abs(candidate.eval.dwell - best.eval.dwell) > 0.05) {
+    return candidate.eval.dwell < best.eval.dwell;
+  }
+  return candidate.eval.score < best.eval.score;
+}
+
+function conflictFocusAgents(conflicts, routes, limit = 2) {
+  const counts = new Map();
+  for (const conflict of fatalSchedulingConflicts(conflicts)) {
+    for (const agent of conflict.agents || []) counts.set(agent, (counts.get(agent) || 0) + 1);
+  }
+  let agents = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([agent]) => agent);
+
+  if (!agents.length) {
+    agents = [...routes]
+      .sort((a, b) => (totalRouteDwell(b) + (b.extraWaitSec || 0)) - (totalRouteDwell(a) + (a.extraWaitSec || 0)))
+      .map((route) => route.agent);
+  }
+
+  return agents.slice(0, limit);
+}
+
+function routeReplacementSet(routes, replacement) {
+  return routes.map((route) => route.agent === replacement.agent ? replacement : cleanRouteTemplate(route));
+}
+
+function polishCollisionPlan(templateRoutes, budgetMs = SOLVE_POLISH_BUDGET_MS, forcedAgent = null, includeOrders = false) {
+  const start = nowMs();
+  let best = routeScheduleResult(templateRoutes);
+  const focusAgents = forcedAgent === null
+    ? conflictFocusAgents(best.conflicts, best.routes, 2)
+    : [forcedAgent];
+
+  for (const agent of focusAgents) {
+    const current = best.routes.find((route) => route.agent === agent) ||
+      templateRoutes.find((route) => route.agent === agent);
+    if (!current) continue;
+
+    const modeCandidates = PATH_MODES.filter((mode) => mode !== (current.pathMode || "vh"));
+    const orderCandidates = includeOrders ? candidateOrders(current).slice(0, 4) : [cloneBays(current.bays)];
+
+    for (const order of orderCandidates) {
+      for (const pathMode of modeCandidates) {
+        if (nowMs() - start > budgetMs) {
+          return best;
+        }
+        const replacement = cleanRouteTemplate(current, {
+          bays: order,
+          pathMode,
+          extraWaitSec: 0,
+          waitBeforeSec: {},
+        });
+        const candidate = routeScheduleResult(routeReplacementSet(best.routes, replacement));
+        if (isBetterPlanEval(candidate, best)) best = candidate;
+      }
+    }
+  }
+
+  return best;
+}
+
+// ---- workstation lifecycle badges ------------------------------------------
+// Per-bay part state, read off the planned schedule: awaiting delivery ->
+// processing (state.processSec after the drop) -> awaiting pickup -> complete.
+// Without RPD there is no processing/pickup phase: delivered = complete.
+// The clock is the sim playback time; in Real mode it is wall time since
+// START was pressed on this page (schedule-projected, not robot-confirmed).
+function bayLifecycleTimes() {
+  const times = new Map();
+  for (const route of state.routes) {
+    const segs = route.segments || [];
+    for (let i = 0; i < segs.length; i++) {
+      const seg = segs[i];
+      if (!(seg.to && seg.to.kind === "workstation")) continue;
+      const id = bayId(seg.to.bay.r, seg.to.bay.c);
+      const info = times.get(id) || {};
+      if (seg.to.mode !== "pick") {
+        info.dropSec = seg.endSec;
+      }
+      if (seg.to.mode === "pick" || seg.to.mode === "service") {
+        // picked once the robot leaves the workstation (waits included)
+        info.pickupSec = i + 1 < segs.length ? segs[i + 1].startSec : seg.endSec;
+      }
+      times.set(id, info);
+    }
+  }
+  return times;
+}
+
+const BAY_STATUS_STYLE = {
+  awaiting_delivery: { label: "AWAIT", fill: "#e2e8f0", stroke: "#94a3b8", text: "#475569" },
+  processing:        { label: "PROC",  fill: "#fde68a", stroke: "#d97706", text: "#92400e" },
+  awaiting_pickup:   { label: "READY", fill: "#bfdbfe", stroke: "#3b82f6", text: "#1d4ed8" },
+  complete:          { label: "DONE",  fill: "#86efac", stroke: "#16a34a", text: "#14532d" },
+};
+
+function bayStatusAt(info, tSec) {
+  if (!info || info.dropSec == null || tSec < info.dropSec) return "awaiting_delivery";
+  if (!state.rpdMode) return "complete";
+  if (tSec < info.dropSec + state.processSec) return "processing";
+  if (info.pickupSec == null || tSec < info.pickupSec) return "awaiting_pickup";
+  return "complete";
+}
+
+function statusClockSec() {
+  if (liveDataMode() && state.missionStartMs) {
+    return (Date.now() - state.missionStartMs) / 1000;
+  }
+  return state.timestep;
+}
+
+function drawGrid() {
+  svg.innerHTML = "";
+  const g = layout();
+  svg.setAttribute("viewBox", `0 0 ${g.w} ${g.h}`);
+
+  svg.appendChild(el("rect", { x: 0, y: 0, width: g.w, height: g.h, fill: "#f8fafc" }));
+
+  // Depot drawn in the SAME vision-grid frame as the live robot dots, so they
+  // line up. node0 = lane junction; the lane runs from node 1 (grid bottom-left)
+  // south to node 0 then east under the parking slots — the actual robot path.
+  const node0Pt = visionGridToPoint(DEPOT_NODE0_GRID.x, DEPOT_NODE0_GRID.y);
+  const node1Pt = visionGridToPoint(0, 0);
+  const laneEastPt = visionGridToPoint(
+    DEPOT_SLOT_GRID_X0 + DEPOT_SLOT_PITCH * Math.max(0, state.agents - 1) + 0.5,
+    DEPOT_NODE0_GRID.y);
+  svg.appendChild(el("text", { x: node0Pt.x + 18, y: node0Pt.y + 26, fill: "#334155", "font-size": 12, "font-weight": 700 }, "Depot lane south of grid"));
+  // horizontal lane at node-0 level
+  svg.appendChild(el("line", {
+    x1: node0Pt.x, y1: node0Pt.y, x2: laneEastPt.x, y2: laneEastPt.y,
+    stroke: "#93a4b8", "stroke-width": 8, "stroke-linecap": "round"
+  }));
+  // node 1 -> node 0 connector (the leg robots drive on exit/return)
+  svg.appendChild(el("line", {
+    x1: node1Pt.x, y1: node1Pt.y, x2: node0Pt.x, y2: node0Pt.y,
+    stroke: "#6b7280", "stroke-width": 8, "stroke-linecap": "round"
+  }));
+  svg.appendChild(el("circle", { cx: node0Pt.x, cy: node0Pt.y, r: 12, fill: "#111827", stroke: "#ffffff", "stroke-width": 2 }));
+  svg.appendChild(el("text", { x: node0Pt.x, y: node0Pt.y + 4, "text-anchor": "middle", fill: "#fff", "font-size": 11, "font-weight": 700 }, "0"));
+
+  const laneY = visionGridToPoint(0, DEPOT_LANE_GRID_Y).y;
+  // Agents currently away from the depot (out on a route, real or simulated)
+  // must not also get a static "parked here" box drawn at the same time —
+  // that produced a robot rendered twice at once (live marker on the grid
+  // AND its depot box, out of sync with each other, e.g. Alvik3 mid-route
+  // 2026-07-23). The two draws share no state, so compare actual pixel
+  // position against the depot slot's position directly rather than trying
+  // to track a separate "has launched" flag that could itself drift.
+  const DEPOT_MARKER_MATCH_PX = 15;
+  for (let i = 0; i < state.agents; i++) {
+    const route = state.routes.find((r) => r.agent === i);
+    if (route) {
+      const isReal = liveDataMode();
+      const p = isReal
+        ? realPointForAgent(i) || pointAtSeconds(route, Math.min(state.timestep, makespan()))
+        : pointAtSeconds(route, Math.min(state.timestep, makespan()));
+      const slotNow = depotSlot(i);
+      const awayFromDepot = p && Math.hypot(p.x - slotNow.x, p.y - slotNow.y) > DEPOT_MARKER_MATCH_PX;
+      if (awayFromDepot) continue;
+    }
+    // ONE coordinate system: the box, its DE point (straight below on the
+    // lane), and the route line all use depotSlot(i). The DE point shares the
+    // box x, so the slot->lane leg is vertical. No live-vs-sim snapping — the
+    // depot geometry is the real geometry in both modes (see DEPOT_* constants,
+    // which are set from the robots' measured parking coordinates).
+    const slot = depotSlot(i);
+    svg.appendChild(el("circle", { cx: slot.x, cy: laneY, r: 6, fill: "#dbeafe", stroke: "#2563eb", "stroke-width": 2 }));
+    svg.appendChild(el("text", { x: slot.x, y: laneY + 16, "text-anchor": "middle", fill: "#1d4ed8", "font-size": 10, "font-weight": 700 }, `DE${i + 1}`));
+    svg.appendChild(el("rect", { x: slot.x - 20, y: slot.y - 16, width: 40, height: 32, rx: 5, fill: "#dbeafe", stroke: "#2563eb", "stroke-width": 2 }));
+    svg.appendChild(el("text", { x: slot.x, y: slot.y + 4, "text-anchor": "middle", fill: "#1d4ed8", "font-size": 12, "font-weight": 700 }, `D${i + 1}`));
+  }
+
+  for (let r = 0; r < state.rows - 1; r++) {
+    for (let c = 0; c < state.cols - 1; c++) {
+      const p = pt(r, c);
+      const id = bayId(r, c);
+      const selected = state.selected.has(id);
+      const rect = el("rect", {
+        x: p.x + 6, y: p.y + 6, width: g.cell - 12, height: g.cell - 12,
+        fill: selected ? "#dcfce7" : "#ffffff",
+        stroke: selected ? "#22c55e" : "#d9e2ee",
+        "stroke-width": selected ? 2 : 1,
+        rx: 4,
+        "data-bay": id,
+        style: "cursor:pointer"
+      });
+      rect.addEventListener("click", () => {
+        if (!state.editMode) toggleBay(id);
+      });
+      svg.appendChild(rect);
+      svg.appendChild(el("text", { x: p.x + g.cell / 2, y: p.y + g.cell / 2 + 4, "text-anchor": "middle", fill: selected ? "#166534" : "#94a3b8", "font-size": 11 }, `B${bayNumber(r, c)}`));
+    }
+  }
+
+  for (let r = 0; r < state.rows; r++) {
+    const a = pt(r, 0);
+    const b = pt(r, state.cols - 1);
+    svg.appendChild(el("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: "#8a98aa", "stroke-width": 5, "stroke-linecap": "round" }));
+  }
+  for (let c = 0; c < state.cols; c++) {
+    const a = pt(0, c);
+    const b = pt(state.rows - 1, c);
+    svg.appendChild(el("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: "#8a98aa", "stroke-width": 5, "stroke-linecap": "round" }));
+  }
+
+  drawHeat();
+  drawRoutes();
+
+  const bayTimes = state.routes.length ? bayLifecycleTimes() : null;
+  const statusClock = statusClockSec();
+  for (const id of state.selected) {
+    const bay = parseBayId(id);
+    const entry = bayEntryPoint(bay);
+    const work = bayWorkPoint(bay);
+    svg.appendChild(el("line", { x1: entry.x, y1: entry.y, x2: work.x, y2: work.y, stroke: "#16a34a", "stroke-width": 3, "stroke-linecap": "round" }));
+    svg.appendChild(el("circle", { cx: entry.x, cy: entry.y, r: 6, fill: "#facc15", stroke: "#a16207", "stroke-width": 1.5 }));
+    svg.appendChild(el("text", { x: entry.x, y: entry.y - 9, "text-anchor": "middle", fill: "#854d0e", "font-size": 9, "font-weight": 700 }, entryNodeNumber(bay)));
+    svg.appendChild(el("circle", { cx: work.x, cy: work.y, r: 8, fill: "#22c55e", stroke: "#166534", "stroke-width": 1.5 }));
+    svg.appendChild(el("text", { x: work.x, y: work.y + 3, "text-anchor": "middle", fill: "#ffffff", "font-size": 9, "font-weight": 700 }, workstationNodeNumber(bay)));
+    if (bayTimes) {
+      // tiny part-status badge along the bay cell's bottom edge
+      const style = BAY_STATUS_STYLE[bayStatusAt(bayTimes.get(id), statusClock)];
+      const p = pt(bay.r, bay.c);
+      const cx = p.x + g.cell / 2;
+      const by = p.y + g.cell - 20;
+      svg.appendChild(el("rect", {
+        x: cx - 22, y: by, width: 44, height: 11, rx: 3,
+        fill: style.fill, stroke: style.stroke, "stroke-width": 0.75,
+        "pointer-events": "none",
+      }));
+      svg.appendChild(el("text", {
+        x: cx, y: by + 8.5, "text-anchor": "middle",
+        fill: style.text, "font-size": 8, "font-weight": 700,
+        "pointer-events": "none",
+      }, style.label));
+    }
+  }
+
+  for (let r = 0; r < state.rows; r++) {
+    for (let c = 0; c < state.cols; c++) {
+      const p = pt(r, c);
+      const node = nodeNumber(r, c);
+      const circle = el("circle", {
+        cx: p.x, cy: p.y, r: state.editMode ? 9 : 6,
+        fill: state.editMode ? "#1d4ed8" : "#4b5563",
+        stroke: "#ffffff",
+        "stroke-width": 1.5,
+        style: state.editMode ? "cursor:crosshair" : "",
+      });
+      circle.addEventListener("click", (event) => {
+        event.stopPropagation();
+        handleGridNodeClick(r, c);
+      });
+      svg.appendChild(circle);
+      svg.appendChild(el("text", { x: p.x, y: p.y - 11, "text-anchor": "middle", fill: "#64748b", "font-size": 10 }, node));
+    }
+  }
+  const node0Redraw = visionGridToPoint(DEPOT_NODE0_GRID.x, DEPOT_NODE0_GRID.y);
+  svg.appendChild(el("circle", { cx: node0Redraw.x, cy: node0Redraw.y, r: 12, fill: "#111827", stroke: "#ffffff", "stroke-width": 2 }));
+  svg.appendChild(el("text", { x: node0Redraw.x, y: node0Redraw.y + 4, "text-anchor": "middle", fill: "#fff", "font-size": 11, "font-weight": 700 }, "0"));
+  drawActiveEdgeConflicts();
+  drawSimulationAgents();
+
+  for (let c = 0; c < state.cols; c++) {
+    const p = pt(state.rows - 1, c);
+    svg.appendChild(el("text", { x: p.x, y: p.y + 26, "text-anchor": "middle", fill: "#64748b", "font-size": 11 }, c + 1));
+  }
+  for (let r = 0; r < state.rows; r++) {
+    const p = pt(r, 0);
+    // Row 1 is the row nearest the depot (nodes 1-8), matching the node
+    // numbering; the top row is row `rows` (nodes 57-64 on an 8x8).
+    svg.appendChild(el("text", { x: p.x - 24, y: p.y + 4, "text-anchor": "middle", fill: "#64748b", "font-size": 11 }, state.rows - r));
+  }
+}
+
+function drawHeat() {
+  if (!state.edgeUse.size) return;
+  const maxUse = Math.max(...state.edgeUse.values());
+  for (const [key, use] of state.edgeUse.entries()) {
+    if (use < 2) continue;
+    const [a, b] = key.split("|").map((part) => {
+      if (part.startsWith("g:")) {
+        const [r, c] = part.replace("g:", "").split(",").map(Number);
+        return pt(r, c);
+      }
+      if (part.startsWith("e:")) {
+        return bayEntryPoint(parseBayId(part.replace("e:", "")));
+      }
+      if (part.startsWith("w:")) {
+        return bayWorkPoint(parseBayId(part.replace("w:", "")));
+      }
+      return specialPt(part.replace("s:", ""));
+    });
+    const width = 5 + (use / maxUse) * 12;
+    svg.appendChild(el("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: "#f97316", "stroke-width": width, opacity: 0.25, "stroke-linecap": "round" }));
+  }
+}
+
+function drawRoutes() {
+  for (const route of visibleRoutes()) {
+    const color = palette[route.agent % palette.length];
+    const points = route.path.map((p) => {
+      const q = pointFor(p);
+      return `${q.x},${q.y}`;
+    }).join(" ");
+    if (route.path.length > 1) {
+      svg.appendChild(el("polyline", { points, fill: "none", stroke: color, "stroke-width": 3, opacity: 0.72, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    }
+    const start = routeStart(route.agent);
+    const sp = pt(start.r, start.c);
+    svg.appendChild(el("circle", { cx: sp.x, cy: sp.y, r: 12, fill: color, stroke: "#ffffff", "stroke-width": 2 }));
+    svg.appendChild(el("text", { x: sp.x, y: sp.y + 4, "text-anchor": "middle", fill: "#fff", "font-size": 11, "font-weight": 700 }, `A${route.agent + 1}`));
+    for (let i = 0; i < (route.manualWaypoints || []).length; i++) {
+      const wp = pt(route.manualWaypoints[i].r, route.manualWaypoints[i].c);
+      svg.appendChild(el("rect", {
+        x: wp.x - 7, y: wp.y - 7, width: 14, height: 14,
+        transform: `rotate(45 ${wp.x} ${wp.y})`,
+        fill: "#f8fafc",
+        stroke: color,
+        "stroke-width": 3,
+      }));
+      svg.appendChild(el("text", {
+        x: wp.x,
+        y: wp.y + 4,
+        "text-anchor": "middle",
+        fill: color,
+        "font-size": 9,
+        "font-weight": 800,
+      }, i + 1));
+    }
+  }
+}
+
+function makespan(routes = state.routes) {
+  if (!routes.length) return 0;
+  return Math.max(...routes.map((route) => route.durationSec || 0));
+}
+
+function pointAt(route, tSec) {
+  if (!route.path.length) return specialPathPoint(`depot-slot-${route.agent}`);
+  const seg = (route.segments || []).find((s) => s.startSec <= tSec && tSec <= s.endSec);
+  if (seg) return seg.from;
+  const passed = (route.segments || []).filter((s) => s.endSec <= tSec);
+  if (passed.length) return passed[passed.length - 1].to;
+  return route.path[0];
+}
+
+function pointAtSeconds(route, tSec) {
+  if (!route.path.length) return pointFor(specialPathPoint(`depot-slot-${route.agent}`));
+  const seg = (route.segments || []).find((s) => s.startSec <= tSec && tSec <= s.endSec);
+  if (!seg) return pointFor(pointAt(route, tSec));
+  const denom = Math.max(0.001, seg.endSec - seg.startSec);
+  const alpha = Math.max(0, Math.min(1, (tSec - seg.startSec) / denom));
+  const a = pointFor(seg.from);
+  const b = pointFor(seg.to);
+  return {
+    x: a.x + (b.x - a.x) * alpha,
+    y: a.y + (b.y - a.y) * alpha,
+  };
+}
+
+function locationLabelAt(route, tSec) {
+  const seg = (route.segments || []).find((s) => s.startSec <= tSec && tSec <= s.endSec);
+  if (seg) return `${seg.fromNode}->${seg.toNode}`;
+  return String(pathLabel(pointAt(route, tSec)));
+}
+
+function activeEdgeSegment(route, tSec) {
+  return (route.segments || []).find((seg) =>
+    seg.startSec <= tSec &&
+    tSec < seg.endSec &&
+    String(seg.fromNode) !== String(seg.toNode)
+  );
+}
+
+function activeEdgeConflictsAt(tSec, routes = state.routes) {
+  const active = [];
+  for (const route of routes) {
+    const seg = activeEdgeSegment(route, tSec);
+    if (!seg) continue;
+    active.push({
+      agent: route.agent,
+      key: [seg.fromNode, seg.toNode].sort().join("<>"),
+      from: seg.fromNode,
+      to: seg.toNode,
+      segment: seg,
+    });
+  }
+
+  const conflicts = [];
+  for (let i = 0; i < active.length; i++) {
+    for (let j = i + 1; j < active.length; j++) {
+      const a = active[i];
+      const b = active[j];
+      if (a.key !== b.key) continue;
+      conflicts.push({
+        edgeKey: a.key,
+        agents: [a.agent, b.agent],
+        segments: [a.segment, b.segment],
+        sameDirection: String(a.from) === String(b.from) && String(a.to) === String(b.to),
+      });
+    }
+  }
+  return conflicts;
+}
+
+function edgeLabelFromConflict(conflict) {
+  return conflict.edgeKey.replace("<>", " <-> ");
+}
+
+function timeWindowEdgeConflictsAt(tSec) {
+  return state.conflicts
+    .filter((conflict) =>
+      conflict.severity === "fatal" &&
+      isEdgeConflict(conflict) &&
+      conflict.agents.every((agent) => isAgentVisible(agent)) &&
+      tSec >= (conflict.timeSec || 0) &&
+      tSec <= (conflict.timeSec || 0) + EDGE_SAFETY_WINDOW_SEC
+    )
+    .map((conflict) => ({
+      edgeKey: conflict.edgeKey,
+      agents: conflict.agents,
+      segments: (conflict.intervals || []).map((item) => item.segment).filter(Boolean),
+      sameDirection: conflict.type !== "opposite edge" && conflict.type !== "opposite edge contention",
+    }))
+    .filter((conflict) => conflict.segments.length);
+}
+
+function currentEdgeContentionsAt(tSec) {
+  const active = activeEdgeConflictsAt(tSec, visibleRoutes());
+  const windowed = timeWindowEdgeConflictsAt(tSec);
+  const byKey = new Map();
+  for (const conflict of [...active, ...windowed]) {
+    const key = `${conflict.edgeKey}|${conflict.agents.join(",")}`;
+    if (!byKey.has(key)) byKey.set(key, conflict);
+  }
+  return [...byKey.values()];
+}
+
+function drawActiveEdgeConflicts() {
+  if (!state.routes.length) return;
+  const t = Math.min(state.timestep, makespan());
+  const conflicts = currentEdgeContentionsAt(t);
+  const drawn = new Set();
+  for (const conflict of conflicts) {
+    if (drawn.has(conflict.edgeKey)) continue;
+    drawn.add(conflict.edgeKey);
+    const seg = conflict.segments[0];
+    const a = pointFor(seg.from);
+    const b = pointFor(seg.to);
+    const midX = (a.x + b.x) / 2;
+    const midY = (a.y + b.y) / 2;
+    svg.appendChild(el("line", {
+      x1: a.x, y1: a.y, x2: b.x, y2: b.y,
+      stroke: "#ef4444",
+      "stroke-width": 13,
+      opacity: 0.82,
+      "stroke-linecap": "round",
+    }));
+    svg.appendChild(el("text", {
+      x: midX,
+      y: midY - 10,
+      "text-anchor": "middle",
+      fill: "#991b1b",
+      "font-size": 11,
+      "font-weight": 800,
+      stroke: "#ffffff",
+      "stroke-width": 3,
+      "paint-order": "stroke",
+    }, `A${conflict.agents.map((agent) => agent + 1).join("/A")}`));
+  }
+}
+
+function drawSimulationAgents() {
+  if (!state.routes.length) return;
+  const t = Math.min(state.timestep, makespan());
+  for (const route of visibleRoutes()) {
+    const isReal = liveDataMode();
+    const p = isReal
+      ? realPointForAgent(route.agent) || pointAtSeconds(route, t)
+      : pointAtSeconds(route, t);
+    const color = palette[route.agent % palette.length];
+    svg.appendChild(el("circle", { cx: p.x, cy: p.y, r: 13, fill: color, stroke: "#ffffff", "stroke-width": 2.5 }));
+    svg.appendChild(el("text", { x: p.x, y: p.y + 4, "text-anchor": "middle", fill: "#fff", "font-size": 11, "font-weight": 700 }, `A${route.agent + 1}`));
+    if (isReal) {
+      const battery = realBatteryForAgent(route.agent);
+      if (battery !== null) {
+        svg.appendChild(el("text", {
+          x: p.x, y: p.y - 18, "text-anchor": "middle", fill: color,
+          "font-size": 11, "font-weight": 700, stroke: "#ffffff", "stroke-width": 3, "paint-order": "stroke",
+        }, `${battery}%`));
+      }
+    }
+  }
+}
+
+function setTimestep(t) {
+  const maxT = makespan();
+  state.timestep = Math.max(0, Math.min(maxT, Number(t) || 0));
+  render();
+}
+
+function stopPlayback() {
+  if (state.timer) {
+    clearInterval(state.timer);
+    state.timer = null;
+  }
+  document.getElementById("play-route").textContent = "Play";
+}
+
+function togglePlayback() {
+  if (!state.routes.length) return;
+  if (state.timer) {
+    stopPlayback();
+    return;
+  }
+  document.getElementById("play-route").textContent = "Pause";
+  state.timer = setInterval(() => {
+    if (state.timestep >= makespan()) {
+      stopPlayback();
+      return;
+    }
+    state.timestep = Math.min(makespan(), state.timestep + 1);
+    render();
+  }, 420);
+}
+
+function stepRoute() {
+  if (!state.routes.length) return;
+  if (state.timestep >= makespan()) state.timestep = 0;
+  else state.timestep = Math.min(makespan(), state.timestep + 1);
+  render();
+}
+
+function rescheduleCurrentRoutes(resetExtraWait = true) {
+  if (!state.routes.length) {
+    distributeWork();
+  } else {
+    const scheduled = edgeExclusiveSchedule(state.routes.map((route) =>
+      buildAgentRoute(
+        route.agent,
+        route.bays,
+        resetExtraWait ? 0 : route.extraWaitSec || 0,
+        manualWaypointsFor(route.agent),
+        resetExtraWait ? {} : route.waitBeforeSec || {},
+        route.pathMode || "vh"
+      )
+    ));
+    state.routes = scheduled.routes;
+    state.conflicts = scheduled.conflicts;
+    state.schedule = scheduled.schedule;
+    invalidateDispatchEditors();
+  }
+  computeEdgeUse();
+  state.conflicts = detectConflicts();
+  refreshScheduleStatus();
+  state.timestep = Math.min(state.timestep, makespan());
+}
+
+function handleGridNodeClick(r, c) {
+  if (!state.editMode) return;
+  stopPlayback();
+  const agent = state.editAgent;
+  const waypoints = manualWaypointsFor(agent);
+  const last = waypoints[waypoints.length - 1];
+  if (last && last.r === r && last.c === c) return;
+  waypoints.push({ r, c });
+  setManualWaypoints(agent, waypoints);
+  rescheduleCurrentRoutes(true);
+  render();
+}
+
+function toggleBay(id) {
+  stopPlayback();
+  if (state.selected.has(id)) state.selected.delete(id);
+  else state.selected.add(id);
+  state.routes = [];
+  state.edgeUse = new Map();
+  state.totalDistance = 0;
+  state.conflicts = [];
+  state.schedule = null;
+  render();
+}
+
+// The lab's standard 12-workstation layout, applied on page load so it
+// doesn't have to be re-clicked every session. Bay numbers assume the 8x8
+// grid (7 bays per row); out-of-range bays are skipped on smaller grids.
+// The 12 physical workstations (W01..W12), as bay numbers under the
+// bottom-up numbering (B1 = bottom-left). Same physical bays as the old
+// top-down list [14,16,17,22,24,27,31,37,38,42,43,47] — renumbered
+// 2026-07-17 when the bay origin moved to the bottom-left.
+const DEFAULT_BAY_NUMBERS = [1, 5, 9, 10, 14, 17, 22, 24, 27, 30, 31, 42];
+
+function applyDefaultBays() {
+  state.selected.clear();
+  for (const n of DEFAULT_BAY_NUMBERS) {
+    const bay = bayFromNumber(n);
+    if (bay.r >= 0 && bay.r < state.rows - 1 && bay.c < state.cols - 1) {
+      state.selected.add(bayId(bay.r, bay.c));
+    }
+  }
+}
+
+function selectAll() {
+  stopPlayback();
+  state.selected.clear();
+  for (let r = 0; r < state.rows - 1; r++) {
+    for (let c = 0; c < state.cols - 1; c++) state.selected.add(bayId(r, c));
+  }
+  state.routes = [];
+  state.edgeUse = new Map();
+  state.conflicts = [];
+  state.schedule = null;
+  render();
+}
+
+function clearBays() {
+  stopPlayback();
+  state.selected.clear();
+  state.routes = [];
+  state.edgeUse = new Map();
+  state.totalDistance = 0;
+  state.conflicts = [];
+  state.schedule = null;
+  render();
+}
+
+function externalAlgorithm() {
+  const v = document.getElementById("route-mode").value;
+  return v.startsWith("ext:") ? v.slice(4) : null;
+}
+
+function buildSolveConfig() {
+  return {
+    grid: { rows: state.rows, cols: state.cols },
+    agents: state.agents,
+    capacity: state.capacity,
+    rpd: { enabled: state.rpdMode, process_sec: state.processSec },
+    workstations: [...state.selected].map(parseBayId).map((bay) => ({
+      bay: bayNumber(bay.r, bay.c),
+      north_entry_nodes: [nodeNumber(bay.r, bay.c), nodeNumber(bay.r, bay.c + 1)],
+    })),
+  };
+}
+
+async function solveExternal(algorithm) {
+  if (!state.selected.size) {
+    alert("Select workstation bays first.");
+    return;
+  }
+  state.realStatus = `Solving with ${algorithm} on the plan server...`;
+  const status = document.getElementById("real-status");
+  if (status) status.textContent = state.realStatus;
+  setSolveButtonBusy(true, `Solving (${algorithm})...`);
+  try {
+    const resp = await fetch(`${PLAN_SERVER_URL}/solve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        algorithm,
+        config: buildSolveConfig(),
+        seed: clampInt(document.getElementById("seed").value, 1, 999999),
+      }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+    state.realStatus = "Simulated playback";
+    importPlanFromJson(data, "plan server");
+  } catch (err) {
+    state.realStatus = "Simulated playback";
+    alert(`External solve failed: ${err.message}\n\n` +
+          `Is the plan server running on this machine?\n` +
+          `  python plan_server.py`);
+    render();
+  } finally {
+    setSolveButtonBusy(false);
+  }
+}
+
+// Toggle the Solve button between its idle label and a "Solving..." state
+// while an external (plan-server) solve is in flight — the built-in solver
+// runs synchronously so it never needs this, but the plan-server round trip
+// can take seconds and gave no visible sign of progress on the Setup tab.
+function setSolveButtonBusy(busy, label) {
+  const btn = document.getElementById("solve");
+  if (!btn) return;
+  if (busy) {
+    if (btn.dataset.idleLabel === undefined) btn.dataset.idleLabel = btn.textContent;
+    btn.textContent = label || "Solving...";
+    btn.disabled = true;
+    btn.classList.add("busy");
+  } else {
+    btn.textContent = btn.dataset.idleLabel || "Solve";
+    btn.disabled = false;
+    btn.classList.remove("busy");
+  }
+}
+
+function solve(openModal = true) {
+  syncControls();
+  stopPlayback();
+  const ext = externalAlgorithm();
+  if (ext) {
+    solveExternal(ext);  // async — applies the plan and opens the report
+    return;
+  }
+  distributeWork();
+  computeEdgeUse();
+  state.conflicts = detectConflicts();
+  refreshScheduleStatus();
+  state.timestep = 0;
+  render();
+  // successful solve: collapse setup and put the plan front and center
+  if (state.routes.length) setView("plan");
+  if (openModal) showReport();
+}
+
+function syncControls() {
+  state.rows = clampInt(document.getElementById("rows").value, 2, 16);
+  state.cols = clampInt(document.getElementById("cols").value, 2, 16);
+  state.agents = clampInt(document.getElementById("agents").value, 1, 12);
+  state.capacity = clampInt(document.getElementById("capacity").value, 1, 20);
+  state.rpdMode = document.getElementById("rpd-mode").checked;
+  state.processSec = clampInt(document.getElementById("process-sec").value, 0, 600);
+  clampAgentState();
+  document.getElementById("rows").value = state.rows;
+  document.getElementById("cols").value = state.cols;
+  document.getElementById("agents").value = state.agents;
+  document.getElementById("capacity").value = state.capacity;
+  document.getElementById("process-sec").value = state.processSec;
+  for (const id of [...state.selected]) {
+    const bay = parseBayId(id);
+    if (bay.r >= state.rows - 1 || bay.c >= state.cols - 1) state.selected.delete(id);
+  }
+  for (const [agent, waypoints] of [...state.routeEdits.entries()]) {
+    setManualWaypoints(agent, waypoints.filter((node) =>
+      node.r >= 0 && node.r < state.rows && node.c >= 0 && node.c < state.cols
+    ));
+  }
+}
+
+function buildGrid() {
+  stopPlayback();
+  syncControls();
+  state.routes = [];
+  state.edgeUse = new Map();
+  state.totalDistance = 0;
+  state.conflicts = [];
+  state.schedule = null;
+  render();
+}
+
+function recomputeIfSolved() {
+  const hadRoutes = state.routes.length > 0;
+  syncControls();
+  if (externalAlgorithm()) {
+    // External algorithms only run on an explicit Solve press — a settings
+    // change must not silently replace their plan with a built-in one.
+    if (hadRoutes) {
+      state.realStatus = "settings changed — press Solve to re-run the external algorithm";
+    }
+    render();
+    return;
+  }
+  if (hadRoutes && state.selected.size) {
+    distributeWork();
+    computeEdgeUse();
+    state.conflicts = detectConflicts();
+    refreshScheduleStatus();
+  } else {
+    state.routes = [];
+    state.edgeUse = new Map();
+    state.totalDistance = 0;
+    state.conflicts = [];
+    state.schedule = null;
+  }
+  state.timestep = Math.min(state.timestep, makespan());
+  render();
+}
+
+function routeText(route) {
+  if (!route.bays.length) return "No assigned bays";
+  const hasPicks = route.bays.some((bay) => bay.mode === "pick" || bay.mode === "service");
+  return route.bays.map((bay) => {
+    const tag = bay.mode === "pick" ? " pick"
+      : bay.mode === "service" ? " drop+pick"
+      : (hasPicks ? " drop" : "");
+    // B# is the bay id; (#) is the workstation node number shown in the
+    // bay's green marker on the grid.
+    return `B${bayNumber(bay.r, bay.c)} (${workstationNodeNumber(bay)})${tag}`;
+  }).join(" -> ");
+}
+
+function edgeKeyToLabel(key) {
+  return key
+    .replaceAll("g:", "")
+    .replaceAll("s:", "")
+    .replaceAll("e:", "E")
+    .replaceAll("w:", "W")
+    .replace("|", " to ");
+}
+
+function renderLists() {
+  const bayList = document.getElementById("bay-list");
+  bayList.innerHTML = "";
+  if (!state.selected.size) {
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = "No workstation bays selected.";
+    bayList.appendChild(p);
+  } else {
+    [...state.selected].map(parseBayId).sort((a, b) => bayNumber(a.r, a.c) - bayNumber(b.r, b.c)).forEach((bay) => {
+      const card = document.createElement("div");
+      card.className = "row-card";
+      card.innerHTML = `<b>B${bayNumber(bay.r, bay.c)}</b><span>Bay row ${bay.r + 1}, col ${bay.c + 1}<br><span class="muted">North entry between nodes ${nodeNumber(bay.r, bay.c)} and ${nodeNumber(bay.r, bay.c + 1)}</span></span>`;
+      bayList.appendChild(card);
+    });
+  }
+
+  const routeList = document.getElementById("route-list");
+  routeList.innerHTML = "";
+  if (!state.routes.length) {
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = "Solve to draw complete paths.";
+    routeList.appendChild(p);
+  } else {
+    state.routes.forEach((route) => {
+      const card = document.createElement("div");
+      card.className = "row-card";
+      card.innerHTML = `<b style="color:${palette[route.agent % palette.length]}">A${route.agent + 1}</b><span>${routeText(route)}<br><span class="muted">${fmtSec(route.durationSec || 0)}, launch ${fmtSec(route.launchOffsetSec || 0)}</span></span>`;
+      routeList.appendChild(card);
+    });
+  }
+}
+
+function renderMetrics() {
+  const totalBays = (state.rows - 1) * (state.cols - 1);
+  document.getElementById("bay-count").textContent = state.selected.size;
+  document.getElementById("bay-total").textContent = totalBays;
+  document.getElementById("metric-bays").textContent = state.selected.size;
+  document.getElementById("metric-agents").textContent = state.agents;
+  document.getElementById("metric-distance").textContent = state.routes.length ? fmtSec(makespan()) : "0.0s";
+  document.getElementById("download-json").disabled = state.routes.length === 0;
+  document.getElementById("open-report").disabled = state.routes.length === 0;
+
+  let hotspot = "None";
+  let maxUse = 0;
+  for (const [key, use] of state.edgeUse.entries()) {
+    if (use > maxUse) {
+      maxUse = use;
+      hotspot = `${edgeKeyToLabel(key)} (${use}x)`;
+    }
+  }
+  const fatalCount = state.conflicts.filter((c) => c.severity === "fatal").length;
+  const nearCount = state.conflicts.length - fatalCount;
+  if (state.schedule && state.schedule.collisionFree) {
+    document.getElementById("metric-hotspot").textContent = nearCount
+      ? `5s safe, ${nearCount} warn`
+      : "5s safe";
+  } else {
+    document.getElementById("metric-hotspot").textContent = state.conflicts.length
+      ? `${fatalCount} fatal, ${nearCount} near`
+      : hotspot;
+  }
+
+  const slider = document.getElementById("timestep-slider");
+  const maxT = makespan();
+  state.timestep = Math.min(state.timestep, maxT);
+  slider.max = Math.ceil(maxT);
+  slider.step = 1;
+  slider.value = state.timestep;
+  const activeConflicts = currentEdgeContentionsAt(state.timestep);
+  const activeText = activeConflicts.length
+    ? ` | 5s EDGE CONTENTION A${activeConflicts[0].agents.map((agent) => agent + 1).join("/A")} ${edgeLabelFromConflict(activeConflicts[0])}`
+    : "";
+  document.getElementById("sim-time").textContent = `t=${fmtSec(state.timestep)} / ${fmtSec(maxT)}${activeText}`;
+
+  const warning = document.getElementById("capacity-warning");
+  const capacity = state.agents * state.capacity;
+  if (state.selected.size > capacity) {
+    warning.style.display = "";
+    warning.textContent = `${state.selected.size} workstations exceed one-trip capacity ${state.agents} x ${state.capacity} = ${capacity}. Routes will still visualize, but agents need reload cycles.`;
+  } else {
+    warning.style.display = "none";
+  }
+}
+
+function renderAgentControls() {
+  const visibility = document.getElementById("agent-visibility-controls");
+  const edit = document.getElementById("agent-edit-controls");
+  visibility.innerHTML = "";
+  edit.innerHTML = "";
+
+  for (let agent = 0; agent < state.agents; agent++) {
+    const visibleButton = document.createElement("button");
+    visibleButton.className = `secondary agent-toggle${isAgentVisible(agent) ? " active" : " hidden"}`;
+    visibleButton.textContent = `A${agent + 1}`;
+    visibleButton.title = isAgentVisible(agent) ? `Hide AGV ${agent + 1}` : `Show AGV ${agent + 1}`;
+    visibleButton.addEventListener("click", () => {
+      if (state.hiddenAgents.has(agent)) state.hiddenAgents.delete(agent);
+      else state.hiddenAgents.add(agent);
+      render();
+    });
+    visibility.appendChild(visibleButton);
+
+    const editButton = document.createElement("button");
+    editButton.className = `secondary agent-toggle${state.editAgent === agent ? " active" : ""}`;
+    editButton.textContent = `A${agent + 1}`;
+    editButton.title = `Edit AGV ${agent + 1}`;
+    editButton.addEventListener("click", () => {
+      state.editAgent = agent;
+      state.editMode = true;
+      render();
+    });
+    edit.appendChild(editButton);
+  }
+
+  document.getElementById("toggle-edit-route").className = state.editMode ? "secondary active" : "secondary";
+  document.getElementById("toggle-edit-route").textContent = state.editMode ? "Editing on" : "Edit path";
+  document.getElementById("clear-route-edit").disabled = !manualWaypointsFor(state.editAgent).length;
+  document.getElementById("mode-sim").className = state.mode === "sim" ? "secondary active" : "secondary";
+  document.getElementById("mode-real").className = state.mode === "real" ? "secondary active" : "secondary";
+  document.getElementById("mode-live").className = state.mode === "live" ? "secondary active" : "secondary";
+  document.getElementById("real-status").textContent = state.realStatus;
+  document.getElementById("edit-hint").textContent = state.editMode
+    ? `Editing AGV ${state.editAgent + 1}: click intersections to add waypoints. Clear edits removes this AGV's manual path.`
+    : "Select an AGV, turn on Edit path, then click intersections to add route waypoints.";
+}
+
+function render() {
+  syncControls();
+  drawGrid();
+  renderRouteLegend();
+  renderSimCommands();
+  renderLists();
+  renderMetrics();
+  renderAgentControls();
+  renderSetupSummary();
+  renderConflictPane();
+}
+
+// ---- workflow views --------------------------------------------------------
+// Pure CSS show/hide keyed on body[data-view]; no DOM is created or removed,
+// so switching views never resets configuration, routes, playback, or the
+// rosbridge/camera connections.
+function setView(view) {
+  state.view = view;
+  document.body.dataset.view = view;
+  document.getElementById("view-setup").className = view === "setup" ? "secondary active" : "secondary";
+  document.getElementById("view-plan").className = view === "plan" ? "secondary active" : "secondary";
+  document.getElementById("view-run").className = view === "run" ? "secondary active" : "secondary";
+  // The camera feed belongs to Run & Monitor only. Leaving the Run view (e.g.
+  // back to Plan & Simulate) drops the MJPEG connection and hides the <img>;
+  // returning to Run while Live is selected re-attaches it. Plan & Simulate is
+  // always pure route playback (see liveDataMode), so this keeps the live
+  // video off that tab even if Live was left active on the Run tab.
+  const panel = document.querySelector(".grid-panel");
+  const feed = document.getElementById("live-feed");
+  if (panel && feed) {
+    if (view === "run" && state.mode === "live") {
+      panel.classList.add("live-on");
+      if (!feed.src) feed.src = LIVE_STREAM_URL;
+    } else {
+      panel.classList.remove("live-on");
+      if (feed.src) feed.removeAttribute("src");
+    }
+  }
+  render();
+}
+
+// Compact configuration recap shown in the top bar outside the Setup view.
+function renderSetupSummary() {
+  const text = document.getElementById("setup-summary-text");
+  if (!text) return;
+  const modeSel = document.getElementById("route-mode");
+  const alg = modeSel && modeSel.selectedOptions.length
+    ? modeSel.selectedOptions[0].textContent : "";
+  text.textContent =
+    `${state.rows}×${state.cols} grid · ${state.selected.size} bays · ` +
+    `${state.agents} agents ×${state.capacity}` +
+    (state.rpdMode ? ` · RPD ${state.processSec}s` : "") +
+    ` · ${state.planSource || alg}`;
+}
+
+// Read-only conflict summary for the Events/Conflicts side tab (the Route
+// report keeps the full cards with reroute buttons).
+// Live supervisor warnings (vision proximity + errors) from the run, pulled
+// from the decision-log feed. Shown ABOVE the plan-time conflict predictions so
+// the same pane answers both "what did the planner foresee" and "what is
+// actually happening on the floor right now".
+function liveWarningCards() {
+  const live = state.decisionLog.filter(
+    (ev) => ev.kind === "vision" || ev.kind === "error");
+  if (!live.length) return "";
+  const recent = live.slice(-12).reverse();
+  const rows = recent.map((ev) => {
+    const cls = ev.kind === "error" ? "conflict-card live-error"
+                                    : "conflict-card live-vision";
+    const tag = ev.kind === "error" ? "LIVE ERROR" : "LIVE VISION";
+    const who = ev.robot ? `${escapeHtml(ev.robot)} ` : "";
+    return `<div class="${cls}"><strong>${tag}</strong>` +
+      `<span>${decisionTimeStr(ev.ms)} — ${who}${escapeHtml(ev.text)}</span>` +
+      `<span></span></div>`;
+  }).join("");
+  return `<p class="muted">Live from the supervisor (${live.length} this run — ` +
+    `full history in the Decision Log below):</p>${rows}`;
+}
+
+function renderConflictPane() {
+  const box = document.getElementById("conflict-pane");
+  if (!box) return;
+  const liveCards = liveWarningCards();
+  if (!state.routes.length) {
+    box.innerHTML = liveCards ||
+      '<p class="muted">Solve to evaluate conflicts.</p>';
+    return;
+  }
+  const fatal = state.conflicts.filter((c) => c.severity === "fatal").length;
+  const status = state.schedule && state.schedule.collisionFree
+    ? "Schedule is collision-free inside the fatal safety windows."
+    : `${fatal} fatal risk(s) remain — open the Route report to reroute.`;
+  const cards = state.conflicts.slice(0, 40).map((conflict) => `
+    <div class="conflict-card">
+      <strong>${escapeHtml(conflict.severity)}</strong>
+      <span>t=${escapeHtml(fmtSec(conflict.timeSec || 0))} | ${escapeHtml(conflict.type)} | A${conflict.agents.map((a) => a + 1).join(", A")} | ${escapeHtml(conflict.detail)}</span>
+      <span></span>
+    </div>`).join("");
+  box.innerHTML = liveCards +
+    `<p class="muted">Planner prediction: ${escapeHtml(status)}</p>` +
+    (cards || '<p class="muted">No node or edge contentions inside the safety windows.</p>') +
+    (state.conflicts.length > 40
+      ? `<p class="muted">Showing first 40 of ${state.conflicts.length}.</p>` : "");
+}
+
+// Always-visible visit order per robot, under the grid: drop-offs marked v,
+// pickups marked ^ (plain bay numbers when RPD is off).
+function renderRouteLegend() {
+  const box = document.getElementById("route-legend");
+  if (!box) return;
+  if (!state.routes.length) {
+    box.innerHTML = "";
+    return;
+  }
+  const items = state.routes.map((route) => {
+    const hasPicks = route.bays.some((bay) => bay.mode === "pick" || bay.mode === "service");
+    const seq = route.bays.length
+      ? route.bays.map((bay) => {
+          const arrow = bay.mode === "pick" ? "↑"
+            : bay.mode === "service" ? "↓↑"
+            : (hasPicks ? "↓" : "");
+          return `B${bayNumber(bay.r, bay.c)}${arrow}`;
+        }).join(" → ")
+      : "no bays";
+    return `<span style="color:${palette[route.agent % palette.length]}">` +
+      `<b>${agvName(route.agent)}</b>&nbsp;${seq}</span>`;
+  });
+  if (state.planSource) {
+    items.unshift(`<span class="status-key">plan: ${escapeHtml(state.planSource)}</span>`);
+  }
+  if (state.rpdMode) {
+    items.push(`<span class="status-key">↓ drop-off &nbsp;↑ pickup &nbsp;|&nbsp; ` +
+      `badges: AWAIT = waiting for delivery, PROC = processing, ` +
+      `READY = waiting for pickup, DONE = complete</span>`);
+  }
+  box.innerHTML = items.join("");
+}
+
+// Per-robot generated commands under the grid in the Plan & Simulate view, so
+// the plan's progress is visible textually alongside the graphical playback.
+// Each robot's currently-executing command (the one whose route segment is
+// active at state.timestep) is highlighted; already-finished commands dim.
+// Only visible robots (Visible toggles) are shown, matching the grid. Hidden
+// while a live mission is running the Run view (that tab has its own dispatch
+// editors); this is the simulated-playback companion.
+function renderSimCommands() {
+  const box = document.getElementById("sim-commands");
+  if (!box) return;
+  if (!state.routes.length) {
+    box.innerHTML = '<p class="muted">Solve to generate per-robot commands.</p>';
+    return;
+  }
+  const t = Math.min(state.timestep, makespan());
+  const cols = state.routes
+    .filter((route) => isAgentVisible(route.agent))
+    .map((route) => {
+      const color = palette[route.agent % palette.length];
+      const cmds = generateCommandLines(route);
+      const done = route.durationSec > 0 && t >= route.durationSec;
+      // Segment active at t (start<=t<end). Commands whose segment index is
+      // below it are finished; the ones equal to it are executing now.
+      const activeSeg = (route.segments || []).find((s) => s.startSec <= t && t < s.endSec);
+      const activeIdx = activeSeg ? activeSeg.segmentIndex : null;
+      const lineState = (cmd) => {
+        if (cmd.warn) return "cmd-warn";
+        if (done) return "done";
+        if (activeIdx == null) return "";                        // t=0, nothing running yet
+        if (cmd.segIndex == null) return "";                     // depot template lines
+        if (cmd.segIndex < activeIdx) return "done";
+        if (cmd.segIndex === activeIdx) return "active";
+        return "";
+      };
+      const lis = cmds.map((cmd) =>
+        `<li class="${lineState(cmd)}">${escapeHtml(cmd.text)}</li>`).join("");
+      const total = cmds.filter((c) => !c.warn).length;
+      const doneCount = done ? total
+        : cmds.filter((c) => !c.warn && lineState(c) === "done").length;
+      const progress = done ? "done" : `${doneCount}/${total}`;
+      return `<div class="cmd-col">
+        <div class="cmd-head" style="background:${color}">
+          <span>${agvName(route.agent)}</span><span class="cmd-progress">${progress}</span>
+        </div>
+        <ol>${lis}</ol>
+      </div>`;
+    });
+  box.innerHTML = cols.join("") ||
+    '<p class="muted">All robots hidden — use the Visible toggles to show commands.</p>';
+}
+
+function pointFromNodeLabel(label) {
+  const text = String(label).trim();
+  if (text === "0") return specialPt("node0");
+  if (text.startsWith("DE")) return specialPt(`depot-entry-${parseInt(text.replace("DE", ""), 10) - 1}`);
+  if (text.startsWith("D")) return specialPt(`depot-slot-${parseInt(text.replace("D", ""), 10) - 1}`);
+  const n = Number(text);
+  if (Number.isFinite(n) && n >= 1 && n <= state.rows * state.cols) {
+    const idx = n - 1;
+    const r = state.rows - 1 - Math.floor(idx / state.cols);
+    const c = idx % state.cols;
+    return pt(r, c);
+  }
+  return null;
+}
+
+function pointFromPosition(position) {
+  if (!position) return null;
+  if (Number.isFinite(position.svg_x) && Number.isFinite(position.svg_y)) {
+    return { x: position.svg_x, y: position.svg_y };
+  }
+  if (Number.isFinite(position.grid_r) && Number.isFinite(position.grid_c)) {
+    return pt(position.grid_r, position.grid_c);
+  }
+  if (Number.isFinite(position.x) && Number.isFinite(position.y)) {
+    const c = Math.max(0, Math.min(state.cols - 1, position.x));
+    const r = Math.max(0, Math.min(state.rows - 1, state.rows - 1 - position.y));
+    return pt(r, c);
+  }
+  return null;
+}
+
+// Parses the Alvik_pose std_msgs/String payload: JSON text in msg.data,
+// {"x":cm,"y":cm,"yaw":deg,"battery":pct,"ms":millis}. Returns
+// {point, yawDeg, batteryPct} or null if msg.data isn't that shape.
+function alvikPoseStringPayload(msg) {
+  if (typeof msg.data !== "string") return null;
+  let pose;
+  try {
+    pose = JSON.parse(msg.data);
+  } catch (_) {
+    return null;
+  }
+  if (!Number.isFinite(pose.x) || !Number.isFinite(pose.y)) return null;
+  return {
+    point: alvikPoseToGridPoint(pose.x, pose.y),
+    yawDeg: Number.isFinite(pose.yaw) ? pose.yaw : null,
+    batteryPct: Number.isFinite(pose.battery) ? pose.battery : null,
+  };
+}
+
+function realPayloadToPoint(msg) {
+  let node;
+  if (typeof msg.node_id !== "undefined") node = msg.node_id;
+  else if (typeof msg.grid_node !== "undefined") node = msg.grid_node;
+  else if (typeof msg.node !== "undefined") node = msg.node;
+  else if (typeof msg.current_node !== "undefined") node = msg.current_node;
+  const nodePoint = typeof node !== "undefined" ? pointFromNodeLabel(node) : null;
+  if (nodePoint) return nodePoint;
+  if (msg.pose && msg.pose.pose && msg.pose.pose.position) return pointFromPosition(msg.pose.pose.position);
+  if (msg.pose && msg.pose.position) return pointFromPosition(msg.pose.position);
+  if (msg.position) return pointFromPosition(msg.position);
+  return pointFromPosition(msg);
+}
+
+// Parses the <ROBOT_NAME>_vision_pose payload from apriltag_localize.py.
+function visionPoseStringPayload(msg) {
+  if (typeof msg.data !== "string") return null;
+  let pose;
+  try {
+    pose = JSON.parse(msg.data);
+  } catch (_) {
+    return null;
+  }
+  if (!Number.isFinite(pose.grid_x) || !Number.isFinite(pose.grid_y)) return null;
+  return {
+    point: visionGridToPoint(pose.grid_x, pose.grid_y),
+    yawDeg: Number.isFinite(pose.yaw_deg) ? pose.yaw_deg : null,
+    gridX: pose.grid_x,
+    gridY: pose.grid_y,
+  };
+}
+
+function realPointForAgent(agent) {
+  const vision = state.visionPositions.get(agent);
+  if (vision && Date.now() - vision.receivedAt <= VISION_FRESH_MS) return vision.point;
+  const entry = state.realPositions.get(agent);
+  return entry ? entry.point : null;
+}
+
+function realBatteryForAgent(agent) {
+  const entry = state.realPositions.get(agent);
+  return entry && Number.isFinite(entry.batteryPct) ? entry.batteryPct : null;
+}
+
+function disconnectRealMode() {
+  if (state.realSocket) {
+    state.realSocket.onopen = null;
+    state.realSocket.onmessage = null;
+    state.realSocket.onerror = null;
+    state.realSocket.onclose = null;
+    state.realSocket.close();
+    state.realSocket = null;
+  }
+}
+
+function subscribeRealTopics(socket) {
+  for (const config of ALVIK_REAL_TOPICS.filter((item) => item.agent < state.agents)) {
+    socket.send(JSON.stringify({
+      op: "subscribe",
+      topic: config.topic,
+      type: config.type,
+      throttle_rate: 100,
+    }));
+  }
+  socket.send(JSON.stringify({
+    op: "subscribe",
+    topic: "fleet_status",
+    type: "std_msgs/String",
+    throttle_rate: 200,
+  }));
+  // Decision Log feed: discrete run events (vision warnings, errors, recovery,
+  // waits, advisor/mission milestones). No throttle — every event matters.
+  socket.send(JSON.stringify({
+    op: "subscribe",
+    topic: "fleet_events",
+    type: "std_msgs/String",
+  }));
+}
+
+function handleRealMessage(event) {
+  let payload;
+  try {
+    payload = JSON.parse(event.data);
+  } catch (_) {
+    return;
+  }
+  if (payload.op !== "publish") return;
+  if (payload.topic === "fleet_status") {
+    renderSupervisorStatus(String((payload.msg || {}).data || ""));
+    return;
+  }
+  if (payload.topic === "fleet_events") {
+    ingestDecisionEvent(String((payload.msg || {}).data || ""));
+    return;
+  }
+  if (payload.topic.endsWith("_status")) {
+    const name = payload.topic.slice(0, -"_status".length);
+    if (dispatch.robots[name]) {
+      dispatchOnStatus(name, String((payload.msg || {}).data || "").trim());
+    }
+    return;
+  }
+  const config = ALVIK_REAL_TOPICS.find((item) => item.topic === payload.topic);
+  if (!config) return;
+  const msg = payload.msg || {};
+  if (config.kind === "vision") {
+    const visionPose = visionPoseStringPayload(msg);
+    if (!visionPose) return;
+    state.visionPositions.set(config.agent, {
+      point: visionPose.point,
+      yawDeg: visionPose.yawDeg,
+      gridX: visionPose.gridX,
+      gridY: visionPose.gridY,
+      receivedAt: Date.now(),
+      topic: config.topic,
+    });
+    state.realStatus = `Real mode: ${agvName(config.agent)} update from ${config.topic} (vision)`;
+    render();
+    return;
+  }
+  const alvikPose = alvikPoseStringPayload(msg);
+  const point = alvikPose ? alvikPose.point : realPayloadToPoint(msg);
+  if (!point) return;
+  state.realPositions.set(config.agent, {
+    point,
+    yawDeg: alvikPose ? alvikPose.yawDeg : null,
+    batteryPct: alvikPose ? alvikPose.batteryPct : null,
+    receivedAt: Date.now(),
+    topic: config.topic,
+  });
+  state.realStatus = `Real mode: ${agvName(config.agent)} update from ${config.topic}`;
+  render();
+}
+
+function connectRealMode() {
+  if (!("WebSocket" in window)) {
+    state.realStatus = "Real mode needs browser WebSocket support";
+    return;
+  }
+  if (state.realSocket && state.realSocket.readyState <= 1) return;
+  state.realStatus = `Connecting to ${ROSBRIDGE_URL}`;
+  const socket = new WebSocket(ROSBRIDGE_URL);
+  state.realSocket = socket;
+  socket.onopen = () => {
+    state.realStatus = `Connected to ${ROSBRIDGE_URL}; subscribing to Alvik topics`;
+    subscribeRealTopics(socket);
+    render();
+  };
+  socket.onmessage = handleRealMessage;
+  socket.onerror = () => {
+    state.realStatus = `Real mode error: start rosbridge at ${ROSBRIDGE_URL}`;
+    render();
+  };
+  socket.onclose = () => {
+    if (liveDataMode()) state.realStatus = `Disconnected from ${ROSBRIDGE_URL}`;
+    render();
+  };
+}
+
+function setMode(mode) {
+  state.mode = mode;
+  if (liveDataMode()) {
+    stopPlayback();
+    connectRealMode();
+  } else {
+    disconnectRealMode();
+    state.realStatus = "Simulated playback";
+  }
+  // Live mode: show the camera's annotated MJPEG view above the grid. The
+  // <img> src is set only while Live is active so the stream connection is
+  // dropped when not being watched.
+  const panel = document.querySelector(".grid-panel");
+  const feed = document.getElementById("live-feed");
+  if (mode === "live") {
+    panel.classList.add("live-on");
+    if (!feed.src) {
+      feed.onerror = () => {
+        state.realStatus =
+          `camera stream not reachable at ${LIVE_STREAM_URL} — run ` +
+          "apriltag_localize.py --rosbridge --stream on this machine";
+        feed.removeAttribute("src");
+        panel.classList.remove("live-on");
+        render();
+      };
+      feed.src = LIVE_STREAM_URL;
+    }
+  } else {
+    panel.classList.remove("live-on");
+    if (feed.src) feed.removeAttribute("src");
+  }
+  render();
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function routeSequence(route) {
+  return route.path.map(pathLabel).join("-");
+}
+
+function cloneVisit(bay) {
+  // A visit is a bay plus an optional mode ("pick" = collect the processed
+  // part; absent/"drop" = deliver). Everything that copies bay lists must
+  // preserve the mode or RPD pickup legs silently turn into drop-offs.
+  return bay.mode ? { r: bay.r, c: bay.c, mode: bay.mode } : { r: bay.r, c: bay.c };
+}
+
+// Collapse an adjacent same-bay drop -> pick into ONE "service" visit (stay in
+// the dead-end bay through processing). Unmerged, the robot leaves the bay,
+// about-faces at the next node, and re-enters — a banned mid-grid ROTATE_180
+// (verified: unmerged RPD tours produce ~2100 mid-grid flips per 6000, merged
+// produces ZERO). Applied defensively at the entry of buildAgentRoute so NO
+// caller (external plan, import, re-solve, manual) can bypass it. Idempotent:
+// an already-"service" visit is left as-is.
+function mergeServiceVisits(visits) {
+  return (visits || []).reduce((out, v) => {
+    const prev = out[out.length - 1];
+    if (prev && v.mode === "pick" && !prev.mode &&
+        prev.r === v.r && prev.c === v.c) {
+      prev.mode = "service";
+    } else {
+      out.push(cloneVisit(v));
+    }
+    return out;
+  }, []);
+}
+
+function cloneBays(bays) {
+  return bays.map(cloneVisit);
+}
+
+function rotateBays(bays, offset) {
+  if (!bays.length) return [];
+  const o = offset % bays.length;
+  return [...bays.slice(o), ...bays.slice(0, o)].map(cloneVisit);
+}
+
+function blockOrderVariants(block) {
+  const variants = [block];
+  variants.push([...block].reverse());
+  variants.push([...block].sort((a, b) => bayNumber(a.r, a.c) - bayNumber(b.r, b.c)));
+  variants.push([...block].sort((a, b) => bayNumber(b.r, b.c) - bayNumber(a.r, a.c)));
+  for (let i = 1; i < Math.min(block.length, 8); i++) {
+    variants.push(rotateBays(block, i));
+  }
+  return variants;
+}
+
+function candidateOrders(route) {
+  const base = cloneBays(route.bays);
+  // Imported plans (external solver) own their visit order — possibly an
+  // interleaved pickup-delivery sequence our block rules don't describe.
+  // Never reshuffle them; only path modes / dwells may vary.
+  if (route.pinnedOrder) return [base];
+  // RPD tours are drop-block then pick-block (capacity: robots leave the
+  // depot full). Permute within each block only — a pickup reordered ahead
+  // of a drop-off would overload the robot.
+  const drops = base.filter((bay) => bay.mode !== "pick");
+  const picks = base.filter((bay) => bay.mode === "pick");
+  const orders = [];
+  if (picks.length) {
+    for (const order of blockOrderVariants(drops)) orders.push([...order, ...picks]);
+    for (const order of blockOrderVariants(picks)) orders.push([...drops, ...order]);
+  } else {
+    orders.push(...blockOrderVariants(base));
+  }
+  const seen = new Set();
+  return orders.filter((order) => {
+    const key = order.map((bay) => `${bayId(bay.r, bay.c)}:${bay.mode || "drop"}`).join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function rerouteAgent(agent) {
+  if (!state.routes[agent]) return;
+  stopPlayback();
+  const currentEval = evaluateRoutes(state.routes);
+  const status = document.getElementById("real-status");
+  const modal = document.getElementById("route-modal");
+  const modalOpen = modal.classList.contains("open");
+  const report = document.getElementById("route-report");
+  const previousStatus = state.realStatus;
+  state.realStatus = `Optimizing AGV ${agent + 1} reroute...`;
+  if (status) status.textContent = state.realStatus;
+  if (modalOpen && report) {
+    report.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+    report.insertAdjacentHTML("afterbegin", `<p class="muted"><b>Optimizing AGV ${agent + 1}...</b> Testing dwell waits and alternate edges within the bounded search.</p>`);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const best = polishCollisionPlan(state.routes, REROUTE_BUDGET_MS, agent, true);
+
+  if (!isBetterPlanEval(best, { eval: currentEval })) {
+    state.realStatus = previousStatus || "Simulated playback";
+    render();
+    if (modalOpen) renderReport();
+    alert(`No lower-makespan or safer reroute found for AGV ${agent + 1} within the bounded search.`);
+    return;
+  }
+
+  state.routes = best.routes;
+  state.schedule = best.schedule || scheduleStatus(state.routes, detectConflicts(state.routes), 0, false);
+  invalidateDispatchEditors();
+  computeEdgeUse();
+  state.conflicts = detectConflicts();
+  refreshScheduleStatus();
+  state.timestep = 0;
+  state.realStatus = previousStatus || "Simulated playback";
+  render();
+  showReport();
+}
+
+function reportSummaryHtml() {
+  return state.routes.map((route) => {
+    const bays = routeText(route);
+    return `
+      <div class="stat">
+        <b style="color:${palette[route.agent % palette.length]}">AGV ${route.agent + 1}</b>
+        <span>${escapeHtml(bays)}</span>
+        <div class="muted" style="margin-top:6px;">launch ${fmtSec(route.launchOffsetSec || 0)} | done ${fmtSec(route.durationSec || 0)}${route.extraWaitSec ? ` | launch wait ${fmtSec(route.extraWaitSec)}` : ""}${totalRouteDwell(route) ? ` | dwell ${fmtSec(totalRouteDwell(route))}` : ""}${route.pathMode && route.pathMode !== "vh" ? ` | path ${escapeHtml(route.pathMode)}` : ""}</div>
+        <button class="secondary reroute-btn" data-agent="${route.agent}" style="margin-top:8px;">Reroute AGV ${route.agent + 1}</button>
+        <button class="secondary edit-route-btn" data-agent="${route.agent}" style="margin-top:8px;">Edit on map</button>
+      </div>`;
+  }).join("");
+}
+
+function launchScheduleHtml() {
+  const order = launchOrderForAgents(state.routes.length);
+  const rows = order.map((agent) => {
+    const route = state.routes[agent];
+    const node0Event = (route.events || []).find((ev) => ev.node === 0);
+    const node1Event = (route.events || []).find((ev) => ev.node === 1);
+    return `
+      <tr>
+        <td>${agvName(agent)}</td>
+        <td>${fmtSec(route.launchOffsetSec || 0)}</td>
+        <td>${fmtSec(depotClearanceSec(agent))}</td>
+        <td>${fmtSec(node0Event ? node0Event.arrivalSec : 0)}</td>
+        <td>${fmtSec(node1Event ? node1Event.arrivalSec : 0)}</td>
+      </tr>`;
+  }).join("");
+  return `
+    <div class="table-wrap" style="max-height:220px;">
+      <table>
+        <thead><tr><th>AGV</th><th>launch</th><th>D# to 0</th><th>arrive 0</th><th>arrive 1</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function scheduleSafetyHtml() {
+  if (!state.schedule) return "";
+  const extraWaitRows = state.routes
+    .filter((route) => (route.extraWaitSec || 0) > 0 || totalRouteDwell(route) > 0 || (route.pathMode && route.pathMode !== "vh"))
+    .map((route) => `<tr><td>AGV ${route.agent + 1}</td><td>${fmtSec(route.extraWaitSec || 0)}</td><td>${fmtSec(totalRouteDwell(route))}</td><td>${escapeHtml(route.pathMode || "vh")}</td><td>${fmtSec(route.launchOffsetSec || 0)}</td></tr>`)
+    .join("");
+  const status = state.schedule.collisionFree
+    ? "Collision-window schedule achieved: no two AGVs contend for the same edge or node inside the fatal time window."
+    : `UNSAFE: ${state.schedule.fatalEdgeRemaining} fatal edge overlap(s) and ${state.schedule.fatalNodeRemaining} fatal node contention(s) remain after ${state.schedule.iterations} delay pass(es).`;
+  return `
+    <h3>Edge-Exclusive Safety</h3>
+    <p class="muted">${escapeHtml(status)} ${state.schedule.nearMisses ? `${state.schedule.nearMisses} warning(s) remain outside the fatal window.` : `No ${fmtSec(EDGE_SAFETY_WINDOW_SEC)} edge contention warnings remain.`}</p>
+    ${extraWaitRows ? `
+      <div class="table-wrap" style="max-height:180px;">
+        <table>
+          <thead><tr><th>AGV</th><th>launch wait</th><th>dwell wait</th><th>path mode</th><th>final launch</th></tr></thead>
+          <tbody>${extraWaitRows}</tbody>
+        </table>
+      </div>` : `<p class="muted">No automatic dwell or launch delay was needed beyond the measured depot launch sequence.</p>`}
+  `;
+}
+
+function routeSequencesHtml() {
+  return state.routes.map((route) => `
+    <h3>AGV ${route.agent + 1}</h3>
+    <div class="route-seq">${escapeHtml(routeSequence(route))}</div>
+  `).join("");
+}
+
+function timelineHtml() {
+  const maxT = Math.ceil(makespan());
+  const headers = state.routes.map((route) => `<th>AGV ${route.agent + 1}</th>`).join("");
+  let rows = "";
+  for (let t = 0; t <= maxT; t++) {
+    const cells = state.routes.map((route) => `<td>${escapeHtml(locationLabelAt(route, t))}</td>`).join("");
+    rows += `<tr><td>${fmtSec(t)}</td>${cells}</tr>`;
+  }
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>time</th>${headers}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function rerouteControlsHtml() {
+  return `
+    <div class="actions">
+      ${state.routes.map((route) => `
+        <button class="secondary reroute-btn" data-agent="${route.agent}">Reroute A${route.agent + 1}</button>
+        <button class="secondary edit-route-btn" data-agent="${route.agent}">Edit A${route.agent + 1} on map</button>
+      `).join("")}
+    </div>`;
+}
+
+function conflictsHtml() {
+  if (!state.conflicts.length) {
+    return `<p class="muted">No fatal node contentions were detected inside the ${fmtSec(SAFETY_WINDOW_SEC)} collision window, and no edge contentions were detected inside the ${fmtSec(EDGE_SAFETY_WINDOW_SEC)} edge collision window.</p>${rerouteControlsHtml()}`;
+  }
+  return state.conflicts.slice(0, 120).map((conflict) => {
+    const buttons = conflict.agents.map((agent) =>
+      `<button class="secondary reroute-btn" data-agent="${agent}">Reroute A${agent + 1}</button>`
+    ).join(" ");
+    return `
+      <div class="conflict-card">
+        <strong>${escapeHtml(conflict.severity)}</strong>
+        <span>t=${escapeHtml(fmtSec(conflict.timeSec || 0))} | ${escapeHtml(conflict.type)} | A${conflict.agents.map((a) => a + 1).join(", A")} | ${escapeHtml(conflict.detail)}</span>
+        <span>${buttons}</span>
+      </div>`;
+  }).join("") + rerouteControlsHtml() + (state.conflicts.length > 120 ? `<p class="muted">Showing first 120 of ${state.conflicts.length} risks.</p>` : "");
+}
+
+function renderReport() {
+  const fatalCount = state.conflicts.filter((c) => c.severity === "fatal").length;
+  const nearCount = state.conflicts.length - fatalCount;
+  const report = document.getElementById("route-report");
+  report.innerHTML = `
+    <h3>Assignment At A Glance</h3>
+    <div class="report-grid">${reportSummaryHtml()}</div>
+    <h3>Depot Launch Schedule</h3>
+    <p class="muted">Launch order uses ${launchOrderForAgents(state.routes.length).map((agent) => agvName(agent)).join(" -> ")}. The D# to 0 column is your measured depot-to-red-sticker clearance.</p>
+    ${launchScheduleHtml()}
+    ${scheduleSafetyHtml()}
+    <h3>Exact Node Routes</h3>
+    <p class="muted">Grid nodes use 1..${state.rows * state.cols}. Workstation nodes use ${state.rows * state.cols + 1}..${state.rows * state.cols + totalBayCount()}. Entry nodes use ${state.rows * state.cols + totalBayCount() + 1}..${state.rows * state.cols + totalBayCount() * 2}. Depot clearances are measured seconds from D# to node 0.</p>
+    ${routeSequencesHtml()}
+    <h3>Time Comparison</h3>
+    <p class="muted">Overall makespan: ${fmtSec(makespan())}. Collision risk: ${fatalCount} fatal, ${nearCount} near-miss.</p>
+    ${timelineHtml()}
+    <h3>Collision Risks</h3>
+    ${conflictsHtml()}
+  `;
+  report.querySelectorAll(".reroute-btn").forEach((btn) => {
+    btn.addEventListener("click", () => rerouteAgent(Number(btn.dataset.agent)));
+  });
+  report.querySelectorAll(".edit-route-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.editAgent = Number(btn.dataset.agent);
+      state.editMode = true;
+      closeReport();
+      render();
+    });
+  });
+}
+
+function showReport() {
+  if (!state.routes.length) return;
+  renderReport();
+  const modal = document.getElementById("route-modal");
+  modal.classList.add("open");
+  modal.setAttribute("aria-hidden", "false");
+}
+
+function closeReport() {
+  const modal = document.getElementById("route-modal");
+  modal.classList.remove("open");
+  modal.setAttribute("aria-hidden", "true");
+}
+
+function buildExportPayload() {
+  return {
+    grid: { rows: state.rows, cols: state.cols },
+    agents: state.agents,
+    capacity: state.capacity,
+    rpd: { enabled: state.rpdMode, process_sec: state.processSec },
+    collision_window_sec: SAFETY_WINDOW_SEC,
+    edge_collision_window_sec: EDGE_SAFETY_WINDOW_SEC,
+    real_mode: {
+      rosbridge_url: ROSBRIDGE_URL,
+      topics: ALVIK_REAL_TOPICS.filter((item) => item.agent < state.agents).map((item) => ({
+        agent: item.agent + 1,
+        topic: item.topic,
+        type: item.type,
+      })),
+    },
+    depot: {
+      junction_node: 0,
+      grid_connection_node: 1,
+      layout: "south of grid, single line, all slots enter through node 0 then node 1",
+    },
+    depot_slots: Array.from({ length: state.agents }, (_, i) => ({
+      agent: i + 1,
+      agv: agvName(i),
+      depot_slot: `D${i + 1}`,
+      depot_entry: `DE${i + 1}`,
+      start_to_node0_sec: depotClearanceSec(i),
+      launch_offset_sec: (state.routes[i] && state.routes[i].launchOffsetSec) || 0,
+      path_to_grid: [...depotEntryPathToNode0(i).map(pathLabel), 1],
+    })),
+    workstations: [...state.selected].map(parseBayId).map((bay) => ({
+      bay: bayNumber(bay.r, bay.c),
+      // row 1 = bay row nearest the depot (bottom-up, matching the node
+      // numbering and romeshprasad's workstations.json convention)
+      row: state.rows - 1 - bay.r,
+      col: bay.c + 1,
+      north_entry_nodes: [nodeNumber(bay.r, bay.c), nodeNumber(bay.r, bay.c + 1)],
+    })),
+    routes: state.routes.map((route) => ({
+      agent: route.agent + 1,
+      agv: agvName(route.agent),
+      bays: route.bays.map((bay) => bayNumber(bay.r, bay.c)),
+      visits: route.bays.map((bay) => ({
+        bay: bayNumber(bay.r, bay.c),
+        mode: bay.mode || "drop",
+      })),
+      manual_waypoints: (route.manualWaypoints || []).map((node) => ({
+        row: node.r + 1,
+        col: node.c + 1,
+        node: nodeNumber(node.r, node.c),
+      })),
+      launch_offset_sec: route.launchOffsetSec || 0,
+      extra_wait_sec: route.extraWaitSec || 0,
+      dwell_wait_sec: totalRouteDwell(route),
+      path_mode: route.pathMode || "vh",
+      wait_before_segment_sec: cloneWaits(route.waitBeforeSec || {}),
+      duration_sec: route.durationSec || 0,
+      path_nodes: route.path.map(pathLabel),
+      node_events: (route.events || []).map((ev) => ({
+        node: ev.node,
+        path_index: ev.pathIndex || 0,
+        arrival_sec: ev.arrivalSec,
+        depart_sec: ev.departSec,
+        dwell_sec: ev.dwellSec || 0,
+        note: ev.note || ev.via || "",
+        turn_sec: ev.turnSec || 0,
+      })),
+      segments: (route.segments || []).map((seg) => ({
+        segment_index: seg.segmentIndex,
+        from: seg.fromNode,
+        to: seg.toNode,
+        start_sec: seg.startSec,
+        end_sec: seg.endSec,
+        wait_before_sec: seg.waitBeforeSec || 0,
+        move_sec: seg.moveSec,
+        turn_sec: seg.turnSec,
+        type: seg.type,
+      })),
+    })),
+    makespan_sec: makespan(),
+    edge_exclusive_schedule: state.schedule ? {
+      collision_free: state.schedule.collisionFree,
+      edge_exclusive: state.schedule.edgeExclusive,
+      auto_delay_iterations: state.schedule.iterations,
+      capped: state.schedule.capped,
+      fatal_edge_remaining: state.schedule.fatalEdgeRemaining,
+      fatal_node_remaining: state.schedule.fatalNodeRemaining,
+      near_misses: state.schedule.nearMisses,
+      extra_wait_by_agent: state.schedule.extraWaitByAgent.map((item) => ({
+        agent: item.agent + 1,
+        extra_wait_sec: item.seconds,
+        dwell_wait_sec: item.dwellSeconds || 0,
+      })),
+    } : null,
+    conflicts: state.conflicts.map((conflict) => ({
+      type: conflict.type,
+      severity: conflict.severity,
+      time_sec: conflict.timeSec || 0,
+      agents: conflict.agents.map((agent) => agent + 1),
+      edge: conflict.edgeKey || null,
+      overlap_start_sec: typeof conflict.overlapStartSec === "number" ? conflict.overlapStartSec : null,
+      overlap_end_sec: typeof conflict.overlapEndSec === "number" ? conflict.overlapEndSec : null,
+      gap_sec: typeof conflict.gapSec === "number" ? conflict.gapSec : null,
+      detail: conflict.detail,
+    })),
+  };
+}
+
+function downloadJson() {
+  const payload = buildExportPayload();
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = exportFileName();
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// {route mode}_{processing time}s_{timestamp}.json, e.g.
+// "ext-brkga_60s_20260722-091500.json" — mode + RPD process time in the name
+// so repeated downloads (different modes/settings) don't overwrite each other
+// or need opening to tell apart.
+function exportFileName() {
+  const modeSel = document.getElementById("route-mode");
+  const mode = (modeSel && modeSel.value ? modeSel.value : "plan").replace(/[^a-z0-9]+/gi, "-");
+  const secs = state.rpdMode ? `_${state.processSec}s` : "";
+  const ts = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
+  return `${mode}${secs}_${ts}.json`;
+}
+
+// ===================== Live dispatch (no route files) ======================
+// Executes the solved plan directly from this page over rosbridge: publishes
+// AGV_Factory_color_pose.ino commands to <Name>_cmd, watches <Name>_status for done markers,
+// and gates every command behind the same deterministic conflict math the
+// off-robot dispatcher uses, anchored to live
+// completion times and vision positions. Warn/hold only ever inserts DWELLs;
+// commands are never reordered. advisor advising stays in the Python path.
+
+const DISPATCH_DONE_MARKERS = ["IDLE", "STOPPED", "POSE_RESET", "ERROR"];
+const DWELL_MIN_MS = 200;
+const DWELL_MAX_MS = 30000;
+const DISPATCH_HOLD_MS = 2000;          // fallback hold (AGV_Factory_color_pose.ino default dwell)
+const DISPATCH_TICK_MS = 250;
+const VISION_FRESH_DISPATCH_MS = 1500;  // vision this old is ignored by the gate
+const VISION_TARGET_BLOCK_CELLS = 0.6;  // another robot this close to my next node = hold
+const VISION_OFFROUTE_CELLS = 0.75;     // my vision vs expected node farther than this = hold
+
+const DISPATCH_MOVE_COLORS = {
+  FORWARD_UNTIL_RED: ["RED"], FORWARD_UNTIL_YELLOW: ["YELLOW"],
+  FORWARD_UNTIL_BLUE: ["BLUE"], FORWARD_UNTIL_COLOR: ["RED", "YELLOW", "BLUE"],
+  BACKWARD_UNTIL_COLOR: ["RED", "YELLOW", "BLUE"],
+  BACKWARD_UNTIL_YELLOW: ["YELLOW"], BACKWARD_UNTIL_BLUE: ["BLUE"],
+};
+const DISPATCH_TURN_SEC = {
+  RIGHT_UNTIL_COLOR: TURN_SEC.RIGHT, LEFT_UNTIL_COLOR: TURN_SEC.LEFT,
+  ROTATE_180: TURN_SEC.ROTATE_180,
+};
+const DISPATCH_NOOPS = ["STOP", "RESET_POSE", "GET_STATUS"];
+
+function dispatchMarkerColor(label) {
+  // Physical marker layout (table re-stickered; node 0 changed to BLUE by
+  // the user 2026-07-14 — it belongs to the depot, not the grid): grid
+  // nodes 1..N = RED; node 0, depot-lane junctions (DE#) and parking
+  // stickers (D#) = BLUE; entries/workstations = YELLOW.
+  if (typeof label === "string") return "BLUE";
+  const n = Number(label);
+  if (n === 0) return "BLUE";
+  if (n >= 1 && n <= state.rows * state.cols) return "RED";
+  return "YELLOW";
+}
+
+// label -> vision grid cell (cells relative to node 1), for vision checks.
+// Grid nodes are exact; entries/workstations are approximate cell centers;
+// node 0 uses its measured 13.5in offset below node 1.
+function dispatchLabelToCell(label) {
+  if (typeof label === "string") return null;  // depot lane: skip checks
+  const n = Number(label);
+  if (n === 0) return { gx: 0, gy: -1.35 };
+  const nodes = state.rows * state.cols;
+  if (n >= 1 && n <= nodes) {
+    const idx = n - 1;
+    return { gx: idx % state.cols, gy: Math.floor(idx / state.cols) };
+  }
+  const bayNum = n <= nodes + totalBayCount() ? n - nodes : n - nodes - totalBayCount();
+  const bIdx = bayNum - 1;
+  // bay rows count bottom-up (row 0 nearest the depot); a bay's entry sits
+  // on its north node row, the workstation half a cell south of it
+  const rowUp = Math.floor(bIdx / (state.cols - 1));
+  const c = bIdx % (state.cols - 1);
+  const gy = (rowUp + 1) - (n <= nodes + totalBayCount() ? 0.5 : 0.15);
+  return { gx: c + 0.5, gy };
+}
+
+// ---- default command text generated from a solved route -------------------
+function turnCommandBetween(prevHeading, nextHeading) {
+  const order = ["N", "E", "S", "W"];
+  const a = order.indexOf(prevHeading);
+  const b = order.indexOf(nextHeading);
+  if (a < 0 || b < 0 || a === b) return null;
+  const delta = (b - a + 4) % 4;
+  if (delta === 1) return "RIGHT_UNTIL_COLOR";
+  if (delta === 3) return "LEFT_UNTIL_COLOR";
+  return "ROTATE_180";
+}
+
+function dwellCommandLines(seconds, out) {
+  let ms = Math.round(seconds * 1000);
+  while (ms >= DWELL_MIN_MS) {
+    const chunk = Math.min(DWELL_MAX_MS, ms);
+    out.push(`DWELL ${chunk}`);
+    ms -= chunk;
+  }
+}
+
+// Command generation validated against a proven hand-written Alvik1 route
+// file (2026-07-12). Depot legs use fixed templates because the physical
+// depot geometry is mirrored on screen:
+//   exit  (robot parked on its blue sticker facing south):
+//     FWD_BLUE (down stub) . RIGHT . FWD_BLUE x agent (junctions west) .
+//     FWD_RED (node 0 is red) . RIGHT . FWD_RED (node 1)
+//   return: FWD_BLUE (rides the node-0 corner to the first junction) .
+//     FWD_BLUE x agent (east) . LEFT . FWD_BLUE (up stub) . ROTATE_180
+// Grid/bay legs walk the timed segments generically; leaving a workstation
+// emits ROTATE_180 (heading flip) then DWELL for the service pause.
+// Command generation, returning one entry per emitted line tagged with the
+// route segment it belongs to (segIndex = seg.segmentIndex, or null for the
+// depot exit/return templates that don't correspond to a single timed
+// segment). The Plan & Simulate command panel uses segIndex to highlight the
+// line the robot is executing at the current playback time; generateCommandText
+// joins .text for dispatch/mission-send, so on-wire output is unchanged.
+function generateCommandLines(route) {
+  const out = [];
+  const push = (text, segIndex = null, warn = false) => out.push({ text, segIndex, warn });
+  const segs = route.segments;
+  let i = 0;
+
+  if (segs.length && String(segs[0].type).startsWith("DEPOT")) {
+    // Tag the whole depot-exit template with the first depot segment's index so
+    // the panel lights these lines while the robot is still leaving the depot.
+    const de = segs[0].segmentIndex;
+    push("FORWARD_UNTIL_BLUE", de); push("RIGHT_UNTIL_COLOR", de);
+    for (let k = 0; k < route.agent; k++) push("FORWARD_UNTIL_BLUE", de);
+    push("FORWARD_UNTIL_BLUE", de); push("RIGHT_UNTIL_COLOR", de); push("FORWARD_UNTIL_RED", de);
+    while (i < segs.length &&
+           (String(segs[i].type).startsWith("DEPOT") || segs[i].type === "BLUE_TO_RED")) i++;
+  }
+
+  let prevHeading = "N";  // northbound after node0 -> node1
+  let midGridFlips = 0;   // ROTATE_180 belongs at workstations/depot ONLY
+  for (; i < segs.length; i++) {
+    const seg = segs[i];
+    const si = seg.segmentIndex;
+    if (seg.type === "RED_TO_BLUE_RETURN") {
+      const turn = turnCommandBetween(prevHeading, "S");
+      if (turn) push(turn, si);
+      push("FORWARD_UNTIL_BLUE", si); push("LEFT_UNTIL_COLOR", si);
+      for (let k = 0; k < route.agent + 1; k++) push("FORWARD_UNTIL_BLUE", si);
+      push("LEFT_UNTIL_COLOR", si); push("FORWARD_UNTIL_BLUE", si); push("ROTATE_180", si);
+      break;
+    }
+    const leavingWork = seg.from && seg.from.kind === "workstation";
+    if (!leavingWork && seg.waitBeforeSec > 0) {
+      const dw = []; dwellCommandLines(seg.waitBeforeSec, dw); dw.forEach((l) => push(l, si));
+    }
+    const turn = turnCommandBetween(prevHeading, seg.heading);
+    if (turn) {
+      if (turn === "ROTATE_180" && !leavingWork) midGridFlips++;
+      push(turn, si);
+    }
+    if (leavingWork) {
+      push("DWELL", si);  // service pause (AGV_Factory_color_pose.ino default 2000 ms)
+      if (seg.waitBeforeSec > 0) {
+        const dw = []; dwellCommandLines(seg.waitBeforeSec, dw); dw.forEach((l) => push(l, si));
+      }
+    }
+    push(`FORWARD_UNTIL_${dispatchMarkerColor(seg.toNode)}`, si);
+    prevHeading = seg.heading;
+  }
+  if (midGridFlips > 0) {
+    console.warn(`${agvName(route.agent)}: ${midGridFlips} mid-grid ROTATE_180 — route doubles back`);
+    out.unshift({
+      text: `# WARNING: ${midGridFlips} mid-grid ROTATE_180 — route doubles back; fix the route before starting`,
+      segIndex: null, warn: true,
+    });
+  }
+  return out;
+}
+
+function generateCommandText(route) {
+  return generateCommandLines(route).map((l) => l.text).join("\n");
+}
+
+// ---- alignment: command text -> plan items (port of align_commands_to_route)
+function alignCommandsToRoute(route, commandLines) {
+  const segs = [...route.segments].sort((x, y) => x.segmentIndex - y.segmentIndex);
+  const plan = [];
+  let si = 0;
+  let pendingTurnIdxs = [];
+  const segDuration = (seg) => (seg.moveSec || 0) + (seg.turnSec || 0);
+
+  for (const raw of commandLines) {
+    const cmd = raw.trim().toUpperCase();
+    if (!cmd || cmd.startsWith("#")) continue;
+    const base = cmd.split(/\s+/)[0];
+
+    if (base in DISPATCH_TURN_SEC) {
+      plan.push({ command: cmd, kind: "turn", durationSec: DISPATCH_TURN_SEC[base] });
+      pendingTurnIdxs.push(plan.length - 1);
+      continue;
+    }
+    if (base === "DWELL") {
+      const ms = parseInt(cmd.split(/\s+/)[1], 10);
+      const clamped = Number.isFinite(ms) && ms > 0
+        ? Math.max(DWELL_MIN_MS, Math.min(DWELL_MAX_MS, ms)) : DISPATCH_HOLD_MS;
+      plan.push({ command: cmd, kind: "dwell", durationSec: clamped / 1000 });
+      continue;
+    }
+    if (DISPATCH_NOOPS.includes(cmd)) {
+      plan.push({ command: cmd, kind: "noop", durationSec: 0 });
+      continue;
+    }
+    if (base in DISPATCH_MOVE_COLORS) {
+      const colors = DISPATCH_MOVE_COLORS[base];
+      let j = si;
+      let implicit = [];
+      let matched = null;
+      while (j < segs.length) {
+        const seg = segs[j];
+        // Color match first: with node 0 blue, both the exit hop into node 0
+        // and the returning node1->node0 hop match FORWARD_UNTIL_BLUE 1:1.
+        if (colors.includes(dispatchMarkerColor(seg.toNode))) {
+          matched = seg; j += 1; break;
+        }
+        const isDepot = String(seg.type || "").startsWith("DEPOT");
+        if (isDepot) { implicit.push(seg); j += 1; continue; }
+        break;
+      }
+      if (!matched && implicit.length) {
+        matched = implicit[0];
+        implicit = [];
+        j = si + 1;
+      }
+      if (!matched) {
+        const nxt = si < segs.length ? segs[si] : null;
+        throw new Error(
+          `${route ? agvName(route.agent) : "?"}: command #${plan.length + 1} '${cmd}' has no ` +
+          `matching schedule segment (next: ${nxt ? `${nxt.fromNode}->${nxt.toNode} (${nxt.type})` : "none left"}). ` +
+          `Expected destination marker in [${colors.join(", ")}].`);
+      }
+      si = j;
+      let moveSec = matched.moveSec || 0;
+      const turnSec = matched.turnSec || 0;
+      if (pendingTurnIdxs.length === 1 && turnSec > 0) {
+        plan[pendingTurnIdxs[0]].durationSec = turnSec;
+      } else if (!pendingTurnIdxs.length && turnSec > 0) {
+        moveSec += turnSec;
+      }
+      pendingTurnIdxs = [];
+      plan.push({
+        command: cmd, kind: "move", durationSec: moveSec,
+        fromNode: String(matched.fromNode), toNode: String(matched.toNode),
+        toLabel: matched.toNode, segmentIndex: matched.segmentIndex,
+        implicitSegs: implicit.map((s) => [String(s.fromNode), String(s.toNode), segDuration(s)]),
+      });
+      continue;
+    }
+    throw new Error(`unknown command '${cmd}'`);
+  }
+  return plan;
+}
+
+// ---- fleet simulation + conflict detection -------------------------------
+function dEdgeKey(a, b) {
+  return [String(a), String(b)].sort().join("<>");
+}
+
+function simulatePlanItems(plan, startIndex, anchorSec, leadDwellMs = 0) {
+  const events = [];
+  const intervals = [];
+  let t = anchorSec + leadDwellMs / 1000;
+  let pendingTurnStart = null;
+  for (let idx = startIndex; idx < plan.length; idx++) {
+    const item = plan[idx];
+    if (item.kind === "turn") {
+      if (pendingTurnStart === null) pendingTurnStart = t;
+      t += item.durationSec;
+    } else if (item.kind === "dwell" || item.kind === "noop") {
+      t += item.durationSec;
+    } else if (item.kind === "move") {
+      for (const [f, to, dur] of item.implicitSegs || []) {
+        const s0 = t;
+        t += dur;
+        intervals.push({ from: f, to, key: dEdgeKey(f, to), startSec: s0, endSec: t, planIndex: idx });
+        events.push({ node: to, timeSec: t, planIndex: idx });
+      }
+      const s0 = pendingTurnStart !== null ? pendingTurnStart : t;
+      t += item.durationSec;
+      intervals.push({
+        from: item.fromNode, to: item.toNode, key: dEdgeKey(item.fromNode, item.toNode),
+        startSec: s0, endSec: t, planIndex: idx,
+      });
+      events.push({ node: item.toNode, timeSec: t, planIndex: idx });
+      pendingTurnStart = null;
+    }
+  }
+  return { events, intervals, endSec: t };
+}
+
+function detectDispatchConflicts(fleet) {
+  const names = Object.keys(fleet);
+  const out = [];
+  for (let i = 0; i < names.length; i++) {
+    for (let j = i + 1; j < names.length; j++) {
+      const [a, b] = [names[i], names[j]];
+      for (const ea of fleet[a].events) {
+        for (const eb of fleet[b].events) {
+          if (ea.node !== eb.node) continue;
+          const gap = Math.abs(ea.timeSec - eb.timeSec);
+          if (gap <= SAFETY_WINDOW_SEC) {
+            out.push({
+              isEdge: false, key: ea.node, robots: [a, b], gapSec: gap,
+              timeSec: Math.min(ea.timeSec, eb.timeSec),
+              detail: `node ${ea.node}: ${a}@${ea.timeSec.toFixed(1)}s vs ${b}@${eb.timeSec.toFixed(1)}s`,
+              info: { [a]: { time: ea.timeSec, planIndex: ea.planIndex },
+                      [b]: { time: eb.timeSec, planIndex: eb.planIndex } },
+            });
+          }
+        }
+      }
+      for (const ia of fleet[a].intervals) {
+        for (const ib of fleet[b].intervals) {
+          if (ia.key !== ib.key || ia.from === ia.to) continue;
+          const overlap = Math.max(ia.startSec, ib.startSec) < Math.min(ia.endSec, ib.endSec);
+          const gap = overlap ? 0 :
+            Math.max(ia.startSec, ib.startSec) - Math.min(ia.endSec, ib.endSec);
+          if (overlap || gap <= EDGE_SAFETY_WINDOW_SEC) {
+            out.push({
+              isEdge: true, key: ia.key, robots: [a, b], gapSec: gap,
+              timeSec: overlap ? Math.max(ia.startSec, ib.startSec) : Math.min(ia.endSec, ib.endSec),
+              detail: `edge ${ia.key}: ${a} ${ia.startSec.toFixed(1)}-${ia.endSec.toFixed(1)}s vs ` +
+                      `${b} ${ib.startSec.toFixed(1)}-${ib.endSec.toFixed(1)}s`,
+              info: { [a]: { start: ia.startSec, end: ia.endSec, planIndex: ia.planIndex },
+                      [b]: { start: ib.startSec, end: ib.endSec, planIndex: ib.planIndex } },
+            });
+          }
+        }
+      }
+    }
+  }
+  out.sort((x, y) => x.timeSec - y.timeSec);
+  return out;
+}
+
+// ---- dispatch engine -------------------------------------------------------
+const dispatch = { active: false, paused: false, timer: null, t0: 0, robots: {} };
+
+function dispatchNowSec() {
+  return (performance.now() - dispatch.t0) / 1000;
+}
+
+function dispatchLog(text) {
+  const pre = document.getElementById("dispatch-log");
+  pre.style.display = "block";
+  const stamp = dispatch.active ? `t=${dispatchNowSec().toFixed(1)}s ` : "";
+  pre.textContent = `${stamp}${text}\n` + pre.textContent.split("\n").slice(0, 250).join("\n");
+}
+
+function dispatchSetStatus(text) {
+  document.getElementById("dispatch-status").textContent = text;
+}
+
+function dispatchPublish(topic, data) {
+  if (!state.realSocket || state.realSocket.readyState !== 1) return false;
+  state.realSocket.send(JSON.stringify({ op: "publish", topic, msg: { data } }));
+  return true;
+}
+
+function dispatchVisionCell(agent) {
+  const entry = state.visionPositions.get(agent);
+  if (!entry || Date.now() - entry.receivedAt > VISION_FRESH_DISPATCH_MS) return null;
+  if (!Number.isFinite(entry.gridX) || !Number.isFinite(entry.gridY)) return null;
+  return { gx: entry.gridX, gy: entry.gridY };
+}
+
+function dispatchAnchor(rob, nowSec) {
+  if (!rob.launched && rob.pending === null) {
+    return [0, Math.max(nowSec, rob.launchOffsetSec)];
+  }
+  if (rob.pending !== null) {
+    const anchor = rob.lastDoneSec !== null ? rob.lastDoneSec : rob.launchOffsetSec;
+    if (rob.pending.kind === "plan") return [rob.pending.index, anchor];
+    return [rob.nextIndex, anchor + rob.pending.ms / 1000];
+  }
+  const anchor = rob.lastDoneSec !== null ? rob.lastDoneSec : nowSec;
+  return [rob.nextIndex, Math.max(anchor, nowSec)];
+}
+
+function dispatchSimulateFleet(nowSec, decidingName = null, leadDwellMs = 0) {
+  const fleet = {};
+  for (const [name, rob] of Object.entries(dispatch.robots)) {
+    if (rob.phase === "error") continue;
+    const [start, anchor] = dispatchAnchor(rob, nowSec);
+    fleet[name] = simulatePlanItems(
+      rob.plan, start, anchor, name === decidingName ? leadDwellMs : 0);
+  }
+  return fleet;
+}
+
+function dispatchNextMotionEnd(rob) {
+  for (let i = rob.nextIndex; i < rob.plan.length; i++) {
+    if (rob.plan[i].kind === "move") return i;
+  }
+  return null;
+}
+
+// Remaining work (seconds of plan left), independent of how long the robot
+// has been holding — the deadlock-priority metric: the robot with MORE work
+// left proceeds through a mutual conflict, the other keeps dwelling.
+function dispatchRemainingWork(rob) {
+  const start = rob.pending && rob.pending.kind === "plan"
+    ? rob.pending.index : rob.nextIndex;
+  let total = 0;
+  for (let i = start; i < rob.plan.length; i++) {
+    const item = rob.plan[i];
+    total += item.durationSec || 0;
+    for (const seg of item.implicitSegs || []) total += seg[2] || 0;
+  }
+  return total;
+}
+
+// True while the robot is physically translating (an in-flight move item);
+// dwelling, turning in place, or idling counts as stationary.
+function dispatchIsMoving(rob) {
+  if (rob.phase !== "busy" || !rob.pending || rob.pending.kind !== "plan") return false;
+  const item = rob.plan[rob.pending.index];
+  return !!item && item.kind === "move";
+}
+
+function dispatchNeededDwellSec(name, conflict) {
+  const other = conflict.robots[0] === name ? conflict.robots[1] : conflict.robots[0];
+  const mine = conflict.info[name];
+  const theirs = conflict.info[other];
+  if (conflict.isEdge) {
+    return theirs.end + EDGE_SAFETY_WINDOW_SEC + EDGE_RELEASE_BUFFER_SEC - mine.start;
+  }
+  return theirs.time + SAFETY_WINDOW_SEC + EDGE_RELEASE_BUFFER_SEC - mine.time;
+}
+
+function dispatchMyConflicts(name, nowSec, leadDwellMs) {
+  const rob = dispatch.robots[name];
+  const windowEnd = dispatchNextMotionEnd(rob);
+  if (windowEnd === null) return [];
+  const fleet = dispatchSimulateFleet(nowSec, name, leadDwellMs);
+  return detectDispatchConflicts(fleet).filter((c) =>
+    c.robots.includes(name) && c.info[name].planIndex <= windowEnd);
+}
+
+function dispatchSend(rob, command, pending, note) {
+  if (!dispatchPublish(`${rob.name}_cmd`, command)) {
+    dispatchSetStatus("rosbridge socket closed — reconnect Real mode");
+    return;
+  }
+  rob.pending = pending;
+  rob.skipNextIdle = true;
+  rob.sentAtSec = dispatchNowSec();
+  rob.phase = "busy";
+  dispatchLog(`[${rob.name}] -> ${command}${note ? `  (${note})` : ""}`);
+}
+
+function dispatchDecide(rob, nowSec) {
+  if (rob.nextIndex >= rob.plan.length) {
+    rob.phase = "done";
+    dispatchLog(`[${rob.name}] plan complete`);
+    return;
+  }
+  const nextItem = rob.plan[rob.nextIndex];
+
+  // Vision gate 1: am I where the plan thinks I am? (grid labels only)
+  const myCell = dispatchLabelToCell(rob.currentNode);
+  const myVision = dispatchVisionCell(rob.agent);
+  if (myCell && myVision) {
+    const off = Math.hypot(myVision.gx - myCell.gx, myVision.gy - myCell.gy);
+    if (off > VISION_OFFROUTE_CELLS) {
+      dispatchSend(rob, `DWELL ${DISPATCH_HOLD_MS}`, { kind: "dwell", ms: DISPATCH_HOLD_MS },
+        `HOLD: vision says grid=(${myVision.gx.toFixed(2)},${myVision.gy.toFixed(2)}) but plan expects node ${rob.currentNode} — off-route ${off.toFixed(2)} cells`);
+      rob.holdCount += 1;
+      return;
+    }
+  }
+
+  // Vision gate 2: is another robot sitting on my next move's target?
+  if (nextItem.kind === "move") {
+    const target = dispatchLabelToCell(nextItem.toLabel);
+    if (target) {
+      for (const [otherName, other] of Object.entries(dispatch.robots)) {
+        if (otherName === rob.name) continue;
+        const v = dispatchVisionCell(other.agent);
+        if (!v) continue;
+        const d = Math.hypot(v.gx - target.gx, v.gy - target.gy);
+        if (d < VISION_TARGET_BLOCK_CELLS) {
+          dispatchSend(rob, `DWELL ${DISPATCH_HOLD_MS}`, { kind: "dwell", ms: DISPATCH_HOLD_MS },
+            `HOLD: ${otherName} is ${d.toFixed(2)} cells from my next node ${nextItem.toNode} (vision)`);
+          rob.holdCount += 1;
+          return;
+        }
+      }
+    }
+  }
+
+  // Deterministic predicted-conflict gate.
+  // Deadlock breaker (added after the live 2-robot mutual-hold 2026-07-13):
+  // if the conflicting robot is currently stationary and has LESS remaining
+  // work than us, WE proceed and IT keeps yielding at its own gate — the
+  // longer-route robot moves first. The vision gates above still veto if the
+  // other robot physically sits on our next node.
+  const allMine = dispatchMyConflicts(rob.name, nowSec, 0);
+  const myWork = dispatchRemainingWork(rob);
+  const mine = allMine.filter((c) => {
+    const otherName = c.robots.find((r) => r !== rob.name);
+    const other = dispatch.robots[otherName];
+    if (!other || other.phase === "error" || other.phase === "done") return false;
+    if (dispatchIsMoving(other)) return true;  // it's moving: conflict stands
+    const otherWork = dispatchRemainingWork(other);
+    const iHavePriority = myWork > otherWork + 1e-9 ||
+      (Math.abs(myWork - otherWork) <= 1e-9 && rob.agent < other.agent);
+    return !iHavePriority;
+  });
+  if (!mine.length) {
+    rob.lastHoldSig = null;
+    rob.holdCount = 0;
+    dispatchSend(rob, nextItem.command,
+      { kind: "plan", index: rob.nextIndex },
+      allMine.length
+        ? `step ${rob.nextIndex + 1}/${rob.plan.length} — priority over yielding robot(s)`
+        : `step ${rob.nextIndex + 1}/${rob.plan.length}`);
+    return;
+  }
+  const sig = mine.map((c) =>
+    `${c.isEdge ? "e" : "n"}:${c.key}:${c.robots.find((r) => r !== rob.name)}`).sort().join("|");
+  if (rob.lastHoldSig === sig) {
+    dispatchSend(rob, `DWELL ${DISPATCH_HOLD_MS}`, { kind: "dwell", ms: DISPATCH_HOLD_MS },
+      "HOLD repeat (same predicted conflict)");
+    rob.holdCount += 1;
+    return;
+  }
+  const needed = Math.max(...mine.map((c) => dispatchNeededDwellSec(rob.name, c)));
+  const baseMs = Math.max(DWELL_MIN_MS,
+    Math.min(DWELL_MAX_MS, Math.ceil(Math.max(needed, DWELL_MIN_MS / 1000) * 10) * 100));
+  const candidates = [...new Set([
+    baseMs, Math.min(DWELL_MAX_MS, baseMs + 1000),
+    Math.min(DWELL_MAX_MS, baseMs + 2000), DISPATCH_HOLD_MS,
+  ])].sort((a, b) => a - b);
+  for (const ms of candidates) {
+    if (!dispatchMyConflicts(rob.name, nowSec, ms).length) {
+      dispatchSend(rob, `DWELL ${ms}`, { kind: "dwell", ms },
+        `HOLD ${ms}ms clears: ${mine[0].detail}`);
+      rob.holdCount += 1;
+      return;
+    }
+  }
+  rob.lastHoldSig = sig;
+  dispatchSend(rob, `DWELL ${DISPATCH_HOLD_MS}`, { kind: "dwell", ms: DISPATCH_HOLD_MS },
+    `HOLD fallback (no clean dwell): ${mine[0].detail}`);
+  rob.holdCount += 1;
+}
+
+function dispatchOnStatus(name, text) {
+  const rob = dispatch.robots[name];
+  if (!rob) return;
+  rob.lastStatus = text;
+  if (text.startsWith("ERROR")) {
+    rob.phase = "error";
+    rob.pending = null;
+    dispatchLog(`[${name}] ERROR from robot: ${text}`);
+    dispatchRenderRobots();
+    return;
+  }
+  if (rob.skipNextIdle && text === "IDLE") {
+    rob.skipNextIdle = false;
+    return;
+  }
+  rob.skipNextIdle = false;
+  const isDone = DISPATCH_DONE_MARKERS.some((m) => text === m || text.startsWith(`${m} `));
+  if (!isDone || rob.phase !== "busy" || rob.pending === null) return;
+  if (rob.pending.kind === "plan") {
+    const item = rob.plan[rob.pending.index];
+    if (item.kind === "move") rob.currentNode = item.toLabel;
+    rob.nextIndex = rob.pending.index + 1;
+  }
+  rob.pending = null;
+  rob.lastDoneSec = dispatchNowSec();
+  rob.launched = true;
+  rob.phase = rob.nextIndex >= rob.plan.length ? "done" : "idle";
+  if (rob.phase === "done") dispatchLog(`[${name}] plan complete`);
+  dispatchRenderRobots();
+}
+
+function dispatchTick() {
+  if (!dispatch.active || dispatch.paused) return;
+  const nowSec = dispatchNowSec();
+  const robs = Object.values(dispatch.robots);
+
+  for (const rob of robs) {
+    if (rob.phase === "waiting" && nowSec >= rob.launchOffsetSec) rob.phase = "idle";
+    if (rob.phase === "busy" && nowSec - rob.sentAtSec > 90) {
+      rob.phase = "error";
+      dispatchLog(`[${rob.name}] timed out (90s) waiting for done; excluded`);
+    }
+  }
+
+  // Issue order: longest remaining work first, so when two idle robots
+  // conflict, the shorter-makespan robot reaches its gate second and is the
+  // one that dwells.
+  const idle = robs.filter((r) => r.phase === "idle")
+    .sort((a, b) => dispatchRemainingWork(b) - dispatchRemainingWork(a));
+  for (const rob of idle) dispatchDecide(rob, dispatchNowSec());
+
+  if (robs.length && robs.every((r) => r.phase === "done" || r.phase === "error")) {
+    dispatch.active = false;
+    clearInterval(dispatch.timer);
+    dispatchSetStatus("run finished");
+    dispatchLog("dispatch run finished");
+    dispatchButtons();
+  }
+  dispatchRenderRobots();
+}
+
+function dispatchRenderRobots() {
+  const div = document.getElementById("dispatch-robot-status");
+  if (!Object.keys(dispatch.robots).length) { div.textContent = ""; return; }
+  div.textContent = Object.values(dispatch.robots).map((rob) => {
+    const v = dispatchVisionCell(rob.agent);
+    return `${rob.name}  ${rob.phase.padEnd(7)} step ${Math.min(rob.nextIndex + 1, rob.plan.length)}/${rob.plan.length}` +
+      `  node=${rob.currentNode}  holds=${rob.holdCount}` +
+      (v ? `  vision=(${v.gx.toFixed(2)},${v.gy.toFixed(2)})` : "  vision=stale") +
+      (rob.lastStatus ? `  [${rob.lastStatus}]` : "");
+  }).join("\n");
+}
+
+function dispatchButtons() {
+  document.getElementById("dispatch-start").disabled =
+    dispatch.active || !document.querySelectorAll("#dispatch-editors textarea").length;
+  document.getElementById("dispatch-hold").disabled = !dispatch.active;
+  document.getElementById("dispatch-abort").disabled = !dispatch.active;
+  document.getElementById("dispatch-hold").textContent = dispatch.paused ? "Resume" : "Hold";
+}
+
+// ---- mission handoff to the Linux fleet supervisor (--listen mode) --------
+function supPublish(topic, data) {
+  if (!state.realSocket || state.realSocket.readyState !== 1) {
+    document.getElementById("sup-status").textContent = "connecting to rosbridge — retry once connected";
+    connectRealMode();
+    return false;
+  }
+  if (!state.realSocket._supAdvertised) {
+    for (const t of ["fleet_mission", "fleet_control"]) {
+      state.realSocket.send(JSON.stringify(
+        { op: "advertise", topic: t, type: "std_msgs/String" }));
+    }
+    state.realSocket._supAdvertised = true;
+  }
+  state.realSocket.send(JSON.stringify({ op: "publish", topic, msg: { data } }));
+  return true;
+}
+
+function supervisorMissionCommands() {
+  const commands = {};
+  const editors = document.querySelectorAll("#dispatch-editors textarea");
+  const clean = (text) => text.split("\n")
+    .map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+  if (editors.length) {
+    for (const ta of editors) {
+      commands[agvName(parseInt(ta.dataset.agent, 10))] = clean(ta.value);
+    }
+  } else {
+    for (const route of state.routes) {
+      commands[agvName(route.agent)] = clean(generateCommandText(route));
+    }
+  }
+  return commands;
+}
+
+// ---- external solver plan import ------------------------------------------
+// Interchange format (produced by export_plan_json.py running romeshprasad's
+// vrp_rpd solvers — NN / max-regret / greedy-defer / BRKGA — on this
+// testbed's instance):
+//   {"algorithm": "...", "process_sec": 15, "capacity": 3,
+//    "visits": {"Alvik1": [{"bay": 14, "mode": "drop"|"pick"}, ...], ...}}
+// The import replaces only the ASSIGNMENT step; timing, ready-time waits,
+// dwell deconfliction, command generation and dispatch are unchanged — so
+// every algorithm runs through the identical execution stack.
+function importPlanFromJson(data, sourceName) {
+  // Accept either {visits: {Alvik1: [...]}} directly, or this app's own
+  // export shape ({routes: [{agv, visits}, ...]}) — downloadJson() writes
+  // the latter, so re-importing a file you just downloaded must work.
+  let visitsByName = data.visits;
+  if ((!visitsByName || typeof visitsByName !== "object") && Array.isArray(data.routes)) {
+    visitsByName = {};
+    for (const route of data.routes) {
+      if (route && route.agv && Array.isArray(route.visits)) {
+        visitsByName[route.agv] = route.visits;
+      }
+    }
+  }
+  if (!visitsByName || typeof visitsByName !== "object" || !Object.keys(visitsByName).length) {
+    throw new Error("no 'visits' object ({Alvik1: [{bay, mode}, ...], ...}) or 'routes' array with agv+visits");
+  }
+  const names = Object.keys(visitsByName);
+  if (!names.length || names.length > 12) {
+    throw new Error(`bad agent count ${names.length}`);
+  }
+  syncControls();
+  const agentCount = names.length;
+  const visitLists = [];
+  for (let i = 0; i < agentCount; i++) {
+    const key = names.find((n) => n.toUpperCase() === agvName(i).toUpperCase());
+    if (!key) {
+      throw new Error(`missing visits for ${agvName(i)} (got: ${names.join(", ")})`);
+    }
+    visitLists.push(visitsByName[key]);
+  }
+
+  const maxBay = (state.rows - 1) * (state.cols - 1);
+  const selected = new Set();
+  let anyPick = false;
+  const parsed = visitLists.map((list, agent) => (list || []).map((v, k) => {
+    const b = Number(v.bay);
+    if (!Number.isInteger(b) || b < 1 || b > maxBay) {
+      throw new Error(`${agvName(agent)} visit ${k + 1}: bay '${v.bay}' outside 1..${maxBay}`);
+    }
+    const modeRaw = String(v.mode || "drop").toLowerCase();
+    const mode = (modeRaw === "p" || modeRaw === "pick" || modeRaw === "pickup")
+      ? "pick" : "drop";
+    if (mode === "pick") anyPick = true;
+    const { r, c } = bayFromNumber(b);
+    selected.add(bayId(r, c));
+    return mode === "pick" ? { r, c, mode } : { r, c };
+  }).reduce((out, v) => {
+    // Merge an adjacent drop+pick at the SAME bay into one "service" visit:
+    // the robot stays inside the dead-end bay through processing (one entry,
+    // one extended dwell, one exit) instead of leaving, about-facing at the
+    // node and re-entering. Solvers like Max Regret emit this pattern a lot.
+    const prev = out[out.length - 1];
+    if (prev && v.mode === "pick" && !prev.mode &&
+        prev.r === v.r && prev.c === v.c) {
+      prev.mode = "service";
+    } else {
+      out.push(v);
+    }
+    return out;
+  }, []));
+
+  // Capacity feasibility. In the VRP-RPD model resources are REUSABLE: a
+  // robot may serve more drops than its capacity by redepositing parts it
+  // picked up mid-tour (e.g. D D D P D P D with capacity 3). A tour is
+  // feasible iff some initial load L in [0, cap] keeps the running load
+  // (D = -1, P = +1) inside [0, cap] for every prefix.
+  const cap = Number.isFinite(Number(data.capacity))
+    ? Math.round(Number(data.capacity)) : state.capacity;
+  parsed.forEach((list, agent) => {
+    let running = 0;
+    let minPrefix = 0;
+    let maxPrefix = 0;
+    for (const v of list) {
+      const deltas = v.mode === "service" ? [-1, 1]
+        : [v.mode === "pick" ? 1 : -1];
+      for (const d of deltas) {
+        running += d;
+        minPrefix = Math.min(minPrefix, running);
+        maxPrefix = Math.max(maxPrefix, running);
+      }
+    }
+    const loLoad = Math.max(0, -minPrefix);
+    const hiLoad = Math.min(cap, cap - maxPrefix);
+    if (loLoad > hiLoad) {
+      throw new Error(
+        `${agvName(agent)}: tour needs a load swing of ` +
+        `${maxPrefix - minPrefix} parts > capacity ${cap}`);
+    }
+  });
+
+  // Adopt the mission parameters — written to the DOM because syncControls()
+  // reads the controls back on every render.
+  document.getElementById("agents").value = agentCount;
+  document.getElementById("capacity").value = cap;
+  document.getElementById("rpd-mode").checked = anyPick;
+  if (Number.isFinite(Number(data.process_sec))) {
+    document.getElementById("process-sec").value = Math.round(Number(data.process_sec));
+  }
+  syncControls();
+  state.selected = selected;
+  stopPlayback();
+
+  const templates = parsed.map((list, agent) => {
+    const route = buildAgentRoute(agent, list, 0, [], {}, "vh");
+    route.pinnedOrder = true;  // the external solver owns the visit order
+    return route;
+  });
+  const polished = polishCollisionPlan(templates);
+  state.routes = polished.routes;
+  state.conflicts = polished.conflicts;
+  state.schedule = polished.schedule;
+  state.planSource = `${data.algorithm || "external"} (${sourceName})`;
+  computeEdgeUse();
+  refreshScheduleStatus();
+  state.timestep = 0;
+  invalidateDispatchEditors();
+  render();
+  setView("plan");  // successful solve/import: collapse setup
+  showReport();
+}
+
+function supervisorSendMission() {
+  if (!state.routes.length) {
+    document.getElementById("sup-status").textContent = "solve a plan first";
+    return;
+  }
+  const mission = {
+    schedule: buildExportPayload(),
+    commands: supervisorMissionCommands(),
+    ms: Date.now(),
+  };
+  if (supPublish("fleet_mission", JSON.stringify(mission))) {
+    document.getElementById("sup-status").textContent =
+      "mission sent — wait for 'loaded', then Start";
+  }
+}
+
+function renderSupervisorStatus(dataStr) {
+  let s;
+  try { s = JSON.parse(dataStr); } catch (_) { return; }
+  document.getElementById("sup-status").textContent =
+    `supervisor: ${s.state}${s.note ? " — " + s.note : ""}`;
+  const lines = Object.entries(s.robots || {}).map(([name, r]) => {
+    const mark = r.online === true ? "● " : (r.online === false ? "○ OFFLINE " : "");
+    const step = (typeof r.step === "number" && typeof r.total === "number")
+      ? `step ${r.step}/${r.total}` : "";
+    return `${mark}${name}  ${String(r.phase || "").padEnd(7)} ${step}` +
+      `  node=${r.node || "?"}${r.errored ? "  ERRORED" : ""}` +
+      (r.last_status ? `  [${r.last_status}]` : "");
+  });
+  document.getElementById("sup-robot-status").textContent = lines.join("\n");
+}
+
+// ---- Decision Log (Run & Monitor) -----------------------------------------
+// Accumulates /fleet_events from the supervisor: vision warnings, robot
+// errors, recovery, waits, advisor decisions, mission milestones. Kept per-run in
+// state.decisionLog; Clear resets it, Save downloads .json + .txt.
+const DECISION_KIND_STYLE = {
+  vision:   { icon: "⚠", label: "VISION",   cls: "dl-warn" },
+  error:    { icon: "✖", label: "ERROR",    cls: "dl-error" },
+  recovery: { icon: "⟳", label: "RECOVERY", cls: "dl-recovery" },
+  wait:     { icon: "⏸", label: "WAIT",     cls: "dl-wait" },
+  advisor:      { icon: "🧠", label: "advisor",      cls: "dl-advisor" },
+  mission:  { icon: "▣", label: "MISSION", cls: "dl-mission" },
+};
+
+function ingestDecisionEvent(dataStr) {
+  let e;
+  try { e = JSON.parse(dataStr); } catch (_) { return; }
+  if (!e || typeof e.text !== "string") return;
+  // The supervisor stamps a per-run monotonic seq; dedupe rosbridge re-delivery.
+  if (e.seq != null) {
+    if (state.decisionLogSeen.has(e.seq)) return;
+    state.decisionLogSeen.add(e.seq);
+  }
+  state.decisionLog.push({
+    ms: Number(e.ms) || Date.now(),
+    kind: String(e.kind || "mission"),
+    severity: String(e.severity || "info"),
+    robot: e.robot || null,
+    text: String(e.text),
+  });
+  // Cap in-memory history so a very long run can't grow unbounded.
+  if (state.decisionLog.length > 2000) state.decisionLog.shift();
+  renderDecisionLog();
+  renderConflictPane();  // live vision/error events also surface in that pane
+}
+
+function decisionTimeStr(ms) {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function renderDecisionLog() {
+  const box = document.getElementById("decision-log");
+  if (!box) return;
+  const count = document.getElementById("decision-log-count");
+  if (count) count.textContent = `${state.decisionLog.length} event(s)`;
+  if (!state.decisionLog.length) {
+    const connected = state.realSocket && state.realSocket.readyState === 1;
+    const hint = connected
+      ? "Events from the fleet supervisor (vision warnings, errors, recovery, " +
+        "advisor decisions, mission milestones) appear here as the run proceeds."
+      : "Switch to Real or Live mode to connect to rosbridge — then supervisor " +
+        "events (vision warnings, errors, recovery, advisor, mission) stream in here.";
+    box.innerHTML = `<p class="muted" style="margin:6px;">No events yet. ${hint}</p>`;
+    return;
+  }
+  // Newest last, matching a scrolling console; auto-scroll to the bottom.
+  const rows = state.decisionLog.map((ev) => {
+    const style = DECISION_KIND_STYLE[ev.kind] || DECISION_KIND_STYLE.mission;
+    const who = ev.robot ? `<b>${escapeHtml(ev.robot)}</b> ` : "";
+    return `<div class="dl-row ${style.cls}">` +
+      `<span class="dl-time">${decisionTimeStr(ev.ms)}</span>` +
+      `<span class="dl-kind">${escapeHtml(style.label)}</span>` +
+      `<span class="dl-text">${who}${escapeHtml(ev.text)}</span></div>`;
+  }).join("");
+  box.innerHTML = rows;
+  box.scrollTop = box.scrollHeight;
+}
+
+function clearDecisionLog() {
+  if (state.decisionLog.length &&
+      !confirm(`Clear the Decision Log (${state.decisionLog.length} events)? ` +
+               "Save it first if you want to keep this run's history.")) {
+    return;
+  }
+  state.decisionLog = [];
+  state.decisionLogSeen = new Set();
+  renderDecisionLog();
+}
+
+function saveDecisionLog() {
+  if (!state.decisionLog.length) {
+    alert("Decision Log is empty — nothing to save.");
+    return;
+  }
+  const first = state.decisionLog[0].ms;
+  const d = new Date(first);
+  const p = (n) => String(n).padStart(2, "0");
+  const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
+    `_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  const base = `decision_log_${stamp}`;
+
+  // .json — structured, for later analysis/plotting.
+  const json = JSON.stringify({
+    saved_at: new Date().toISOString(),
+    plan_source: state.planSource || "built-in",
+    agents: state.agents,
+    events: state.decisionLog.map((ev) => ({
+      time: new Date(ev.ms).toISOString(),
+      ms: ev.ms, kind: ev.kind, severity: ev.severity,
+      robot: ev.robot, text: ev.text,
+    })),
+  }, null, 2);
+  downloadTextFile(`${base}.json`, json, "application/json");
+
+  // .txt — human-readable, one line per event.
+  const txt = state.decisionLog.map((ev) => {
+    const style = DECISION_KIND_STYLE[ev.kind] || DECISION_KIND_STYLE.mission;
+    const who = ev.robot ? `${ev.robot} ` : "";
+    return `[${decisionTimeStr(ev.ms)}] ${style.label.padEnd(8)} ${who}${ev.text}`;
+  }).join("\n");
+  downloadTextFile(`${base}.txt`,
+    `AGV run decision log — ${state.decisionLog.length} events\n` +
+    `saved ${new Date().toISOString()}  plan: ${state.planSource || "built-in"}\n` +
+    "".padEnd(60, "-") + "\n" + txt + "\n", "text/plain");
+}
+
+function downloadTextFile(filename, content, mime) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function dispatchGenerate() {
+  const editors = document.getElementById("dispatch-editors");
+  editors.innerHTML = "";
+  if (!state.routes.length) {
+    dispatchSetStatus("solve a plan first");
+    return;
+  }
+  for (const route of state.routes) {
+    const label = document.createElement("div");
+    label.className = "muted";
+    label.style.marginTop = "6px";
+    label.textContent = `${agvName(route.agent)} commands (editable — verify the depot exit against a proven route):`;
+    const ta = document.createElement("textarea");
+    ta.dataset.agent = String(route.agent);
+    ta.style.cssText = "width:100%; min-height:90px; font-family:monospace; font-size:11px;";
+    ta.value = generateCommandText(route);
+    editors.appendChild(label);
+    editors.appendChild(ta);
+  }
+  dispatchSetStatus("commands generated — review, then Start");
+  dispatchButtons();
+}
+
+function dispatchStart() {
+  if (dispatch.active) return;
+  if (!state.realSocket || state.realSocket.readyState !== 1) {
+    connectRealMode();
+    dispatchSetStatus("connecting to rosbridge — press Start again once connected");
+    return;
+  }
+  const robots = {};
+  try {
+    for (const ta of document.querySelectorAll("#dispatch-editors textarea")) {
+      const agent = parseInt(ta.dataset.agent, 10);
+      const route = state.routes.find((r) => r.agent === agent);
+      const name = agvName(agent);
+      const plan = alignCommandsToRoute(route, ta.value.split("\n"));
+      robots[name] = {
+        name, agent, plan, nextIndex: 0, phase: "waiting",
+        currentNode: `D${agent + 1}`, pending: null, sentAtSec: 0,
+        lastDoneSec: null, launched: false, skipNextIdle: false,
+        launchOffsetSec: route.launchOffsetSec || 0,
+        lastHoldSig: null, holdCount: 0, lastStatus: "",
+      };
+    }
+  } catch (err) {
+    dispatchSetStatus(`alignment failed: ${err.message}`);
+    dispatchLog(`ALIGNMENT ERROR: ${err.message}`);
+    return;
+  }
+  for (const name of Object.keys(robots)) {
+    state.realSocket.send(JSON.stringify(
+      { op: "advertise", topic: `${name}_cmd`, type: "std_msgs/String" }));
+    state.realSocket.send(JSON.stringify(
+      { op: "subscribe", topic: `${name}_status`, type: "std_msgs/String" }));
+  }
+  dispatch.robots = robots;
+  dispatch.t0 = performance.now();
+  state.missionStartMs = Date.now();  // anchors Real-mode status badges
+  dispatch.active = true;
+  dispatch.paused = false;
+  dispatch.timer = setInterval(dispatchTick, DISPATCH_TICK_MS);
+  dispatchSetStatus(`dispatching ${Object.keys(robots).join(", ")}`);
+  dispatchLog(`dispatch started: ${Object.values(robots).map((r) =>
+    `${r.name} ${r.plan.length} cmds (launch +${r.launchOffsetSec.toFixed(1)}s)`).join("; ")}`);
+  dispatchButtons();
+}
+
+function dispatchHold() {
+  if (!dispatch.active) return;
+  dispatch.paused = !dispatch.paused;
+  dispatchLog(dispatch.paused
+    ? "HOLD: no further commands will be issued (in-flight commands finish)"
+    : "resumed");
+  dispatchSetStatus(dispatch.paused ? "holding (in-flight commands finish)" : "dispatching");
+  dispatchButtons();
+}
+
+function dispatchAbort() {
+  for (const name of Object.keys(dispatch.robots)) {
+    dispatchPublish(`${name}_cmd`, "STOP");
+  }
+  dispatch.active = false;
+  dispatch.paused = false;
+  if (dispatch.timer) clearInterval(dispatch.timer);
+  dispatchSetStatus("aborted — STOP sent to all robots");
+  dispatchLog("ABORT: STOP published to every robot");
+  dispatchButtons();
+}
+
+document.getElementById("build-grid").addEventListener("click", buildGrid);
+document.getElementById("select-all").addEventListener("click", selectAll);
+document.getElementById("clear-bays").addEventListener("click", clearBays);
+document.getElementById("solve").addEventListener("click", solve);
+document.getElementById("open-report").addEventListener("click", showReport);
+document.getElementById("close-report").addEventListener("click", closeReport);
+document.getElementById("download-json").addEventListener("click", downloadJson);
+document.getElementById("dispatch-generate").addEventListener("click", dispatchGenerate);
+document.getElementById("dispatch-start").addEventListener("click", dispatchStart);
+document.getElementById("dispatch-hold").addEventListener("click", dispatchHold);
+document.getElementById("dispatch-abort").addEventListener("click", dispatchAbort);
+document.getElementById("sup-send").addEventListener("click", supervisorSendMission);
+document.getElementById("sup-start").addEventListener("click", () => {
+  if (supPublish("fleet_control", "START")) {
+    state.missionStartMs = Date.now();  // anchors Real-mode status badges
+  }
+});
+document.getElementById("sup-abort").addEventListener("click", () => {
+  if (supPublish("fleet_control", "ABORT")) state.missionStartMs = 0;
+});
+document.getElementById("agents").addEventListener("input", recomputeIfSolved);
+document.getElementById("capacity").addEventListener("input", recomputeIfSolved);
+document.getElementById("rpd-mode").addEventListener("change", recomputeIfSolved);
+document.getElementById("process-sec").addEventListener("input", recomputeIfSolved);
+document.getElementById("import-plan").addEventListener("change", (ev) => {
+  const file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      importPlanFromJson(JSON.parse(reader.result), file.name);
+    } catch (err) {
+      alert(`Plan import failed: ${err.message}`);
+    }
+    ev.target.value = "";  // allow re-importing the same file
+  };
+  reader.readAsText(file);
+});
+document.getElementById("route-mode").addEventListener("change", recomputeIfSolved);
+document.getElementById("seed").addEventListener("change", recomputeIfSolved);
+document.getElementById("rows").addEventListener("change", buildGrid);
+document.getElementById("cols").addEventListener("change", buildGrid);
+document.getElementById("play-route").addEventListener("click", togglePlayback);
+document.getElementById("step-route").addEventListener("click", stepRoute);
+document.getElementById("timestep-slider").addEventListener("input", (event) => setTimestep(event.target.value));
+document.getElementById("mode-sim").addEventListener("click", () => setMode("sim"));
+document.getElementById("mode-real").addEventListener("click", () => setMode("real"));
+document.getElementById("mode-live").addEventListener("click", () => setMode("live"));
+document.getElementById("view-setup").addEventListener("click", () => setView("setup"));
+document.getElementById("view-plan").addEventListener("click", () => setView("plan"));
+document.getElementById("view-run").addEventListener("click", () => setView("run"));
+document.getElementById("edit-setup").addEventListener("click", () => setView("setup"));
+document.getElementById("decision-log-save").addEventListener("click", saveDecisionLog);
+document.getElementById("decision-log-clear").addEventListener("click", clearDecisionLog);
+renderDecisionLog();  // paint the empty-state hint on load
+document.getElementById("side-tabs").addEventListener("click", (ev) => {
+  const btn = ev.target.closest("button[data-tab]");
+  if (!btn) return;
+  for (const b of document.querySelectorAll("#side-tabs button")) {
+    b.className = b === btn ? "secondary active" : "secondary";
+  }
+  for (const pane of document.querySelectorAll(".side-tab-pane")) {
+    pane.classList.toggle("active", pane.id === `tab-${btn.dataset.tab}`);
+  }
+});
+document.getElementById("toggle-edit-route").addEventListener("click", () => {
+  state.editMode = !state.editMode;
+  render();
+});
+document.getElementById("clear-route-edit").addEventListener("click", () => {
+  setManualWaypoints(state.editAgent, []);
+  rescheduleCurrentRoutes(true);
+  render();
+});
+document.getElementById("route-modal").addEventListener("click", (event) => {
+  if (event.target.id === "route-modal") closeReport();
+});
+
+applyDefaultBays();
+solve(false);
+</script>
+</body>
+</html>
