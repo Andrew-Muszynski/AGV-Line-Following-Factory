@@ -27,10 +27,26 @@ demonstrated 60-70RPM constant-speed-then-instant-hard-stop behavior.
 stop_test_route(), a dedicated constant-cruise-then-brake measurement mode),
 not a guess -- re-measure with --stop-test if --cruise-rpm changes.
 
-Turning between legs is unchanged: turn_to_heading() pivots in place (one
-wheel +speed, one wheel -speed) until camera yaw reaches the next leg's
-heading -- see that function for its own tuning notes (bench-verified
-2026-07-27, turn-min/max-speed 10/70, turn-tol-deg 1.0).
+Turning between legs: turn_to_heading() streams WHEEL_FOLLOW_MODE
+wheel-speed setpoints computed from vision yaw every tick (bench-tuned
+2026-07-27/28: turn_rpm=35, turn_brake_lead_deg=30 -- see that function's
+own docstring); kept as the fallback when no onboard yaw is available yet
+(see turn_to_heading_rotate_rel()). An EARLIER ROTATE_REL-based turn
+(alvik.rotate(), closed-loop on Alvik's own motor-control MCU) was tried
+2026-07-30 and reverted the same day after multiple firmware hangs on real
+hardware, root cause unresolved at the time. That hang was later
+root-caused and FIXED at the firmware level (see AGV_Factory_camera_
+correction.ino's ROTATE_REL handler comment) and re-validated 2026-08-13
+with a 128-rotation hardware stress test (zero hangs) -- turn_to_heading_
+rotate_rel() is the current, actively-used ROTATE_REL turn path: sizes
+from onboard odometry (corrected_odom_yaw()), then samples vision once
+after settling and sends ONE corrective ROTATE_REL if still outside
+--turn-tol-deg (default 2026-08-13 after a --yaw-stress-test comparison,
+Alvik6, 128 rotations/tier: odom-only mean error 2.46deg/1.30s per turn vs.
+this camera-assisted approach's 0.91deg/2.01s -- ~2.7x more accurate for
++0.7s/turn, judged worth it for a research testbed). See that method's own
+docstring for the full hang-history and design rationale
+before ever changing its completion-check pattern.
 
 Grid <-> world conversion mirrors apriltag_localize.py's world_to_grid()
 and agv_grid_workstation_solver.html's node numbering (nodeNumber(r,c) =
@@ -41,9 +57,14 @@ remeasured on the physical table 2026-07-27 (bay 1, node114/node65) -- see
 node_to_world()'s comment for the corrected values vs. the dispatch model's
 assumed ones.
 
-Run on the LINUX laptop (ROS 2 sourced, native rclpy), with the micro-ROS
-agent up, the robot powered/green, running AGV_Factory_camera_correction.ino,
-and apriltag_localize.py --rosbridge running on the camera laptop:
+Run inside WSL2 (ROS 2 sourced, native rclpy) as of the 2026-07-29/30
+migration off the separate Linux laptop -- see wsl2_microros_migration
+notes. Needs: the micro-ROS agent up (WSL2), rosbridge up (WSL2), the robot
+powered/green running AGV_Factory_camera_correction.ino with its firmware
+ROTATE_REL command (added 2026-07-30 -- older firmware without it will
+reject ROTATE_REL as ERROR UNKNOWN_COMMAND), and
+camera_bridge_windows.py (native Windows) + apriltag_localize.py
+--frame-source-port ... --rosbridge=... (WSL2) for vision:
 
     python3 camera_grid_navigate.py --robot Alvik3 --route 1,8,16
 
@@ -55,8 +76,10 @@ import argparse
 import json
 import math
 import time
+from typing import Callable
 
 import rclpy
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
@@ -96,21 +119,38 @@ GRID_PITCH_IN = 10.0
 
 # Depot-exit waypoints -- outside the rows*cols lattice/workstation/entry
 # numbering entirely (a physically separate lane south of the grid), so they
-# get reserved node IDs rather than fitting the numeric scheme: D1=-1
-# (depot/home, robot always starts here facing south/yaw~0), DE1=-2 (depot
-# entry, straight south of D1), 0=node0 (west of DE1, turns to face north
-# onto node1's column). Measured on the physical table 2026-07-28 (Alvik1):
-# D1=(19.7,10.3,yaw~0 south), DE1=(19.6,3.0,yaw~0 south), node0=(13.3,3.2,
-# yaw varies -- robot turns in place here from west-facing to north-facing).
-# String tokens "D1"/"DE1"/"0" in --route map to these, matching the exact
-# names already used in agv_grid_workstation_solver.html's own route output
-# (e.g. "D1-DE1-0-1-9-114-...") so a route can be copied over with minimal
-# translation.
-DEPOT_WORLD_IN = {-1: (19.7, 10.3), -2: (19.6, 3.0), 0: (13.3, 3.2)}
-DEPOT_NODE_TOKENS = {"D1": -1, "DE1": -2, "0": 0}
+# get reserved node IDs rather than fitting the numeric scheme. All 6 depot
+# slots/entries measured on the physical table 2026-07-29 by parking each of
+# the 6 Alvik robots in turn and reading camera-tracked position off
+# apriltag_localize.py's preview overlay -- SAME real-measured numbers as
+# apriltag_localize.py's DEPOT_SLOT_WORLD_IN/DEPOT_ENTRY_WORLD_IN/
+# NODE0_WORLD_IN (added there 2026-07-30 for the 'o' overlay); keep both
+# copies in sync if either is re-measured. Real spacing is NOT uniform
+# (5.0-7.3in between slots) -- confirmed the HTML's nominal DEPOT_SLOT_PITCH
+# assumption doesn't match hardware, so these are looked up by label, never
+# interpolated from a pitch constant. String tokens "D1".."D6"/"DE1".."DE6"/
+# "0" in --route map to these, matching the exact labels already used in
+# agv_grid_workstation_solver.html's own route/schedule export (e.g.
+# "D3-DE3-0-1-9-114-...") so a route can be copied over with no translation.
+DEPOT_SLOT_WORLD_IN = {
+    "D1": (20.0, 10.5), "D2": (25.3, 10.7), "D3": (30.3, 10.8),
+    "D4": (35.7, 10.7), "D5": (42.0, 10.6), "D6": (49.3, 10.6),
+}
+DEPOT_ENTRY_WORLD_IN = {
+    "DE1": (19.6, 3.0), "DE2": (24.9, 3.0), "DE3": (30.2, 3.3),
+    "DE4": (35.4, 3.2), "DE5": (41.9, 3.2), "DE6": (49.1, 3.2),
+}
+NODE0_WORLD_IN = (13.3, 2.9)
+
+DEPOT_NODE_TOKENS: dict[str, str] = {"0": "0"}
+DEPOT_NODE_TOKENS.update({k: k for k in DEPOT_SLOT_WORLD_IN})
+DEPOT_NODE_TOKENS.update({k: k for k in DEPOT_ENTRY_WORLD_IN})
+# Kept for single-robot CLI callers that still pass bare -1/-2/0 ints.
+DEPOT_WORLD_IN = {-1: DEPOT_SLOT_WORLD_IN["D1"], -2: DEPOT_ENTRY_WORLD_IN["DE1"],
+                  0: NODE0_WORLD_IN}
 
 
-def node_to_world(n: int, rows: int, cols: int) -> tuple[float, float]:
+def node_to_world(n: int | str, rows: int, cols: int) -> tuple[float, float]:
     """Grid/workstation node number -> world (x_in, y_in). Node numbering
     matches agv_grid_workstation_solver.html's nodeNumber() and
     the dispatch model's label_to_cell() (kept in sync with that function --
@@ -122,7 +162,17 @@ def node_to_world(n: int, rows: int, cols: int) -> tuple[float, float]:
                                               north edge of the bay's row)
     where bays = (rows-1)*(cols-1). Node 1 is the bottom-left (depot-adjacent)
     lattice point, numbering increases left to right then bottom to top.
-    Negative/zero n -> DEPOT_WORLD_IN (see comment above)."""
+    Depot labels ("D1".."D6", "DE1".."DE6", "0", or the legacy bare -1/-2/0
+    ints) -> the real-measured DEPOT_SLOT_WORLD_IN/DEPOT_ENTRY_WORLD_IN/
+    NODE0_WORLD_IN tables above."""
+    if isinstance(n, str):
+        if n in DEPOT_SLOT_WORLD_IN:
+            return DEPOT_SLOT_WORLD_IN[n]
+        if n in DEPOT_ENTRY_WORLD_IN:
+            return DEPOT_ENTRY_WORLD_IN[n]
+        if n == "0":
+            return NODE0_WORLD_IN
+        n = int(n)
     if n in DEPOT_WORLD_IN:
         return DEPOT_WORLD_IN[n]
     nodes = rows * cols
@@ -184,17 +234,19 @@ def heading_to_target_deg(dx: float, dy: float) -> float:
     return math.degrees(math.atan2(dx, -dy)) % 360.0
 
 
-def parse_route_token(tok: str) -> int:
-    """"9" -> 9, "D1"/"DE1"/"0" -> the matching DEPOT_NODE_TOKENS ID."""
+def parse_route_token(tok: str) -> int | str:
+    """"9" -> 9, "D3"/"DE5"/"0" -> the matching DEPOT_NODE_TOKENS label
+    (passed through as a string; node_to_world() resolves it)."""
     tok = tok.strip()
     if tok in DEPOT_NODE_TOKENS:
         return DEPOT_NODE_TOKENS[tok]
     return int(tok)
 
 
-def parse_route(route_str: str, rows: int, cols: int) -> list[tuple[int, float, float]]:
+def parse_route(route_str: str, rows: int, cols: int) -> list[tuple[int | str, float, float]]:
     """"1,8,16" -> [(1, x1, y1), (8, x8, y8), (16, x16, y16)]. Also accepts
-    "D1"/"DE1"/"0" depot tokens, e.g. "D1,DE1,0,1,9,114" (see DEPOT_NODE_TOKENS)."""
+    any "D1".."D6"/"DE1".."DE6"/"0" depot token, e.g. "D3,DE3,0,1,9,114"
+    (see DEPOT_NODE_TOKENS)."""
     nodes = [parse_route_token(tok) for tok in route_str.split(",") if tok.strip()]
     if len(nodes) < 2:
         raise ValueError("--route needs at least 2 nodes (a start and a destination)")
@@ -203,19 +255,64 @@ def parse_route(route_str: str, rows: int, cols: int) -> list[tuple[int, float, 
 
 class CameraGridNavigator(Node):
     def __init__(self, robot: str, args: argparse.Namespace):
-        super().__init__("camera_grid_navigate")
+        # Per-robot node name (not a shared "camera_grid_navigate") -- required
+        # so fleetSupervisor.py's vision drive mode can run one instance per
+        # robot in a single process/ROS graph without name collisions; also
+        # just more useful in `ros2 node list` for the single-robot CLI case.
+        super().__init__(f"camera_grid_navigate_{robot.lower()}")
         self.robot = robot
         self.args = args
+
+        # Own dedicated executor (added for fleetSupervisor.py's vision drive
+        # mode, 2026-07-30): every internal wait/control loop below spins via
+        # self._spin_once() instead of the bare rclpy.spin_once(self, ...),
+        # which implicitly uses the process's single global default executor.
+        # Confirmed on hardware: with multiple CameraGridNavigator instances
+        # running on separate threads (one per robot) alongside
+        # FleetSupervisor's own rclpy.spin(node) background thread, that
+        # shared global executor raised "RuntimeError: Executor is already
+        # spinning" the instant a second thread tried to spin_once through
+        # it. A private SingleThreadedExecutor bound only to this node is
+        # unaffected by any other node/thread's spinning.
+        self._executor = SingleThreadedExecutor()
+        self._executor.add_node(self)
 
         qos_status = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         qos_best_effort = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
 
         self.cmd_pub = self.create_publisher(String, f"{robot}_cmd", qos_best_effort)
         self.wheel_pub = self.create_publisher(String, f"{robot}_wheel_cmd", qos_best_effort)
-        self.create_subscription(
+        # Saved (not discarded) so wait_for_cmd_match() can also confirm
+        # THIS subscription sees the robot's status publisher -- confirmed
+        # 2026-07-31: cmd_pub matching (get_subscription_count() > 0) is not
+        # proof status_sub has ALSO matched; the two are independent DDS
+        # discovery events even though both concern the same two nodes, and
+        # a real hardware run showed cmd_pub matched (WHEEL_FOLLOW_MODE was
+        # sent) while status_sub had not (last_status stayed '' for a full
+        # 3s poll, zero callbacks fired -- not a slow ack, no ack traffic
+        # arrived at all).
+        self.status_sub = self.create_subscription(
             String, f"{robot}_status", self._on_status, qos_status)
-        self.create_subscription(
+        # Saved (not discarded) so callers can poll get_publisher_count() --
+        # a freshly-created node's subscription is not instantly matched to
+        # apriltag_localize.py's publisher (DDS/rosbridge discovery takes a
+        # real, variable amount of time), and racing that discovery against
+        # wait_for_fresh_vision()'s own data timeout can burn the whole
+        # timeout on discovery alone with zero actual messages received.
+        # See VisionLegWorker._run() in fleetSupervisor.py, which waits for
+        # this match before starting that timeout.
+        self.vision_pose_sub = self.create_subscription(
             String, f"{robot}_vision_pose", self._on_vision_pose, qos_best_effort)
+        # Onboard odometry (alvik.get_pose(), published by the firmware's
+        # own publish_pose() -- {"x":..,"y":..,"yaw":..,"battery":..,"ms":..},
+        # CM/DEG, NOT the same JSON shape as _vision_pose's x_in/y_in/
+        # yaw_deg). Added 2026-08-13 for turn_to_heading_rotate_rel(): local
+        # yaw with no camera round-trip, fast enough to size a single
+        # ROTATE_REL accurately (see that method's docstring for why vision
+        # yaw alone is too laggy for this). Never used for x/y position --
+        # only yaw_offset-corrected yaw, see corrected_odom_yaw().
+        self.odom_pose_sub = self.create_subscription(
+            String, f"{robot}_pose", self._on_odom_pose, qos_best_effort)
 
         self.last_status = ""
         self.mode_ack_seen = False
@@ -225,6 +322,45 @@ class CameraGridNavigator(Node):
 
         self.last_pose: Pose | None = None
         self._last_stale_warn_at = 0.0
+        self.rotate_rel_done_seen = False  # ROTATE_REL COMPLETE, see turn_to_heading()
+        self.pose_reset_seen = False  # POSE_RESET, see reset_onboard_pose()
+
+        # Onboard yaw drift correction (2026-08-13, see corrected_odom_yaw()
+        # and resync_yaw_offset()): raw_odom_yaw + yaw_offset ~= vision yaw
+        # at the moment of the last resync. reset_pose() zeroes the Alvik's
+        # own onboard yaw reference on connect/RESET_POSE, which will not in
+        # general match vision's absolute heading convention -- yaw_offset
+        # is how the two get reconciled WITHOUT a firmware change (no new
+        # UART command near the ROTATE_REL hang history, see that method's
+        # docstring). None until the first resync succeeds.
+        self.last_odom_yaw: float | None = None
+        self.last_odom_yaw_at: float = 0.0
+        self.yaw_offset: float | None = None
+
+        # Diagnostic instrumentation added 2026-08-06 to directly measure
+        # (not just infer from log timestamps) the real gap between the
+        # last wheel_cmd this side sent and any WHEEL_CMD_TIMEOUT the
+        # firmware reports -- see _on_status()'s use of this and
+        # send_wheel() below. Confirms or disproves the theory (root-caused
+        # 2026-08-05 from reading the firmware source + the supervisor's
+        # wait-loop code, but never directly measured against a live
+        # failure) that the firmware's unconditional 300ms STATE_WHEEL_
+        # FOLLOW watchdog fires because nothing refreshes wheel_cmd_last_ms
+        # while a robot legitimately waits on another robot's reservation.
+        self.last_wheel_cmd_at: float | None = None
+
+    def _spin_once(self, timeout_sec: float) -> None:
+        self._executor.spin_once(timeout_sec=timeout_sec)
+
+    def destroy_node(self) -> None:
+        # Own executor must release this node before the base class destroys
+        # it, or the executor is left holding a dangling reference.
+        try:
+            self._executor.remove_node(self)
+            self._executor.shutdown()
+        except Exception:
+            pass
+        super().destroy_node()
 
     # -- status / vision callbacks (identical to camera_line_follow.py) ---
     def _on_status(self, msg: String) -> None:
@@ -235,10 +371,28 @@ class CameraGridNavigator(Node):
         if text.startswith("ERROR"):
             self.errored = True
             self.error_text = text
+            if "WHEEL_CMD_TIMEOUT" in text:
+                # Diagnostic instrumentation, see last_wheel_cmd_at's own
+                # comment in __init__ -- this is the DIRECT measurement
+                # (not log-timestamp inference) of the gap that theory is
+                # about. Logged unconditionally (not gated behind
+                # args.verbose) since it's specifically instrumenting the
+                # failure this session is trying to root-cause; remove once
+                # confirmed on hardware.
+                gap = (None if self.last_wheel_cmd_at is None
+                       else time.monotonic() - self.last_wheel_cmd_at)
+                gap_str = f"{gap*1000:.0f}ms" if gap is not None else "never sent"
+                self.get_logger().warning(
+                    f"[DIAG] WHEEL_CMD_TIMEOUT: {gap_str} since this side's "
+                    f"last send_wheel() call (firmware watchdog is 300ms)")
         elif text.startswith("BUSY WHEEL_FOLLOW_MODE"):
             self.mode_ack_seen = True
         elif text == "DWELL COMPLETE":
             self.dwell_done_seen = True
+        elif text == "ROTATE_REL COMPLETE":
+            self.rotate_rel_done_seen = True
+        elif text == "POSE_RESET":
+            self.pose_reset_seen = True
 
     def _on_vision_pose(self, msg: String) -> None:
         try:
@@ -260,6 +414,90 @@ class CameraGridNavigator(Node):
                 return
         self.last_pose = Pose(x, y, yaw, now)
 
+    def _on_odom_pose(self, msg: String) -> None:
+        """Firmware's publish_pose(): {"x":..,"y":..,"yaw":..,"battery":..,
+        "ms":..} -- a DIFFERENT key set than _on_vision_pose's x_in/y_in/
+        yaw_deg (this one is CM/DEG straight from alvik.get_pose(), no unit
+        suffix). Only yaw is used (see corrected_odom_yaw()) -- x/y aren't
+        trusted here since onboard odometry drifts with wheel slip over a
+        route the way yaw does not (yaw is IMU-fused, not pure encoder
+        integration -- see the Alvik library). No jump-rejection like
+        _on_vision_pose's: this is a much higher-trust, lower-latency local
+        link (no camera/rosbridge round-trip), and turn_to_heading_rotate_
+        rel() only ever reads the single latest value right before a turn,
+        never integrates it over time the way drive_leg() does with vision."""
+        try:
+            d = json.loads(msg.data)
+            yaw = float(d["yaw"])
+        except (ValueError, KeyError, TypeError):
+            return
+        self.last_odom_yaw = yaw
+        self.last_odom_yaw_at = time.monotonic()
+
+    def corrected_odom_yaw(self) -> float | None:
+        """Onboard yaw translated into vision's absolute heading frame via
+        the last resync_yaw_offset() reading. Returns None if no odom
+        sample has ever arrived, OR no resync has happened yet (yaw_offset
+        is None) -- an uncorrected raw onboard yaw is meaningless here since
+        reset_pose()'s zero point has no defined relationship to vision's
+        heading convention until offset by a real vision-anchored sample."""
+        if self.last_odom_yaw is None or self.yaw_offset is None:
+            return None
+        return normalize_deg(self.last_odom_yaw + self.yaw_offset)
+
+    def resync_yaw_offset(self) -> bool:
+        """Recomputes yaw_offset from the CURRENT vision + odom readings:
+        offset = vision_yaw - raw_odom_yaw, so future corrected_odom_yaw()
+        calls track vision's absolute frame. Only call this with the robot
+        KNOWN STATIONARY (e.g. right after a turn settles, before the next
+        drive_leg()/turn_to_heading_rotate_rel() starts) -- vision and odom
+        samples are not timestamp-synchronized, so resyncing while moving
+        bakes in whatever gap existed between the two most recent samples
+        as if it were true drift. Returns False (leaves yaw_offset
+        untouched) if either reading is missing/stale, so a resync attempt
+        during a vision dropout can't silently corrupt a previously-good
+        offset with garbage."""
+        vision = self.fresh_pose()
+        if vision is None or self.last_odom_yaw is None:
+            return False
+        if time.monotonic() - self.last_odom_yaw_at > VISION_STALE_SEC:
+            return False
+        self.yaw_offset = normalize_deg(vision.yaw - self.last_odom_yaw)
+        return True
+
+    def reset_onboard_pose(self, leg_label: str, timeout_sec: float = 3.0) -> bool:
+        """Sends RESET_POSE (alvik.reset_pose(0,0,0)) and waits for the
+        firmware's POSE_RESET ack. Added 2026-08-13 per explicit user
+        direction: yaw_stress_test_route() previously ran encoder ->
+        camera_assist -> camera_only back-to-back with NO reset between
+        tiers, so 256 rotations' worth of onboard-encoder drift from the
+        first two tiers could carry into camera_only's readings even though
+        that tier ignores odom for CONTROL -- reset_onboard_pose() should be
+        called once at the START of each tier (see yaw_stress_test_route())
+        so every tier begins from the same known-zero onboard reference,
+        making the 3 tiers a fair comparison rather than a de facto 4th
+        variable (accumulated drift) riding along with tier order.
+
+        Invalidates yaw_offset (the old offset was computed against the
+        PRE-reset onboard zero point, now meaningless) and last_odom_yaw
+        (stale until a fresh _on_odom_pose() sample arrives post-reset) --
+        caller should resync_yaw_offset() again once vision confirms the
+        robot is stationary after this returns."""
+        self.pose_reset_seen = False
+        self.send_cmd("RESET_POSE")
+        t0 = time.monotonic()
+        while rclpy.ok() and time.monotonic() - t0 < timeout_sec:
+            self._spin_once(0.1)
+            if self.pose_reset_seen:
+                break
+        else:
+            self.get_logger().error(
+                f"{leg_label}: no POSE_RESET ack within {timeout_sec:.1f}s -- aborting")
+            return False
+        self.yaw_offset = None
+        self.last_odom_yaw = None
+        return True
+
     # -- lifecycle ----------------------------------------------------
     def send_cmd(self, cmd: str) -> None:
         msg = String()
@@ -270,11 +508,12 @@ class CameraGridNavigator(Node):
         msg = String()
         msg.data = f"{left_rpm:.1f} {right_rpm:.1f}"
         self.wheel_pub.publish(msg)
+        self.last_wheel_cmd_at = time.monotonic()
 
     def spin_for(self, duration_sec: float) -> None:
         t0 = time.monotonic()
         while rclpy.ok() and time.monotonic() - t0 < duration_sec:
-            rclpy.spin_once(self, timeout_sec=0.05)
+            self._spin_once(0.05)
 
     def fresh_pose(self) -> Pose | None:
         pose = self.last_pose
@@ -285,10 +524,91 @@ class CameraGridNavigator(Node):
     def wait_for_fresh_vision(self, timeout_sec: float) -> bool:
         t0 = time.monotonic()
         while rclpy.ok() and time.monotonic() - t0 < timeout_sec:
-            rclpy.spin_once(self, timeout_sec=0.1)
+            self._spin_once(0.1)
             if self.fresh_pose() is not None:
                 return True
         return False
+
+    def wait_for_cmd_match(self, timeout_sec: float = 5.0,
+                           recreate_after_sec: float = 2.5) -> bool:
+        """Block until BOTH directions of the command/status link are
+        matched: cmd_pub has a subscriber (the robot's /<robot>_cmd
+        subscription) AND status_sub has a publisher (the robot's
+        /<robot>_status publisher) -- before any send_cmd() call.
+
+        REAL BUG confirmed on hardware 2026-07-31, in three parts:
+
+        (1) enter_wheel_follow_mode() used to call
+        send_cmd("WHEEL_FOLLOW_MODE") immediately on node construction, with
+        nothing having ever waited for pub/sub discovery first. cmd_pub is
+        BEST_EFFORT, so a publish before the match completes is silently
+        dropped -- no error, and the poll loop only waits for an ACK, never
+        re-sending the original command.
+
+        (2) After fixing (1) to wait for cmd_pub's OWN match, a hardware
+        retry still failed the same way -- but this time with --verbose
+        proof that WHEEL_FOLLOW_MODE really was sent (cmd_pub matched) and
+        the full 3s ack-poll produced ZERO status callbacks, not a slow
+        ack. cmd_pub matching does NOT prove status_sub has also matched --
+        they are two independent DDS discovery events (subscriber-sees-
+        publisher on this node's cmd topic vs. publisher-sees-subscriber on
+        the robot's status topic), even though both concern the same two
+        ROS2 nodes. Both directions must be confirmed before trusting a
+        send/ack round trip.
+
+        (3) After fixing (1) and (2), hardware testing showed a genuinely
+        INTERMITTENT failure -- diagnostic logging (added, then removed
+        after confirming this) proved the poll loop itself was correct:
+        rclpy.ok() stayed True the whole time, ~50 real ticks/second ran for
+        the full 5s, yet status_sub's publisher count stayed 0 the entire
+        window on a real failing run, while a separate `ros2 topic echo
+        /Alvik1_status` in another terminal connected to the SAME topic in
+        under a second at the same time. A passive wait cannot recover from
+        a lost/dropped discovery announcement -- if the packet that would
+        have completed the handshake never arrives, waiting longer for it
+        changes nothing. Fixed by, after recreate_after_sec with no match,
+        DESTROYING and RECREATING cmd_pub and status_sub (a fresh
+        create_publisher()/create_subscription() forces a brand new
+        discovery announcement, giving the handshake a real second chance
+        instead of waiting on one that may already be lost) -- repeated
+        until timeout_sec is exhausted. This is a standard DDS-level
+        recovery for exactly this failure mode; a passive-only wait
+        (however long) cannot substitute for it."""
+        t0 = time.monotonic()
+        last_recreate = 0.0
+        while rclpy.ok() and time.monotonic() - t0 < timeout_sec:
+            self._spin_once(0.1)
+            if (self.cmd_pub.get_subscription_count() > 0
+                    and self.status_sub.get_publisher_count() > 0):
+                return True
+            elapsed = time.monotonic() - t0
+            if elapsed - last_recreate >= recreate_after_sec:
+                last_recreate = elapsed
+                self.get_logger().warning(
+                    f"  [rearm] no cmd/status match after {elapsed:.1f}s -- "
+                    "recreating cmd_pub/status_sub to force fresh discovery")
+                self._recreate_cmd_status_endpoints()
+        return False
+
+    def _recreate_cmd_status_endpoints(self) -> None:
+        """Destroy and recreate cmd_pub and status_sub with identical
+        topic/QoS/callback -- see wait_for_cmd_match()'s docstring, part
+        (3), for why a passive wait alone cannot recover a lost discovery
+        announcement."""
+        qos_status = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+        qos_best_effort = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+        try:
+            self.destroy_publisher(self.cmd_pub)
+        except Exception:
+            pass
+        try:
+            self.destroy_subscription(self.status_sub)
+        except Exception:
+            pass
+        self.cmd_pub = self.create_publisher(
+            String, f"{self.robot}_cmd", qos_best_effort)
+        self.status_sub = self.create_subscription(
+            String, f"{self.robot}_status", self._on_status, qos_status)
 
     def enter_wheel_follow_mode(self, timeout_sec: float = 3.0) -> bool:
         """Confirmed 2026-07-28 (5th-workstation leg, node35 square-up): the
@@ -305,14 +625,24 @@ class CameraGridNavigator(Node):
         a route step that otherwise looked totally clean. Send a hold
         command immediately on ack, before returning, so wheel_cmd_last_ms
         gets refreshed as close as possible to when the mode actually took
-        effect rather than whenever the caller gets around to it."""
+        effect rather than whenever the caller gets around to it.
+
+        Waits for cmd_pub's subscriber match first (see wait_for_cmd_match())
+        -- cheap/instant once already matched (the common case, every
+        re-arm after the first), but real insurance on the very first call
+        of a fresh node, where this used to be the actual failure point."""
+        if not self.wait_for_cmd_match():
+            self.get_logger().error(
+                f"{self.robot}_cmd has no matched subscriber -- is the "
+                "robot powered on and connected to the micro-ROS agent?")
+            return False
         self.mode_ack_seen = False
         self.send_cmd("WHEEL_FOLLOW_MODE")
         if self.args.verbose:
             self.get_logger().info("  [rearm] WHEEL_FOLLOW_MODE sent, polling for ack...")
         t0 = time.monotonic()
         while rclpy.ok() and time.monotonic() - t0 < timeout_sec:
-            rclpy.spin_once(self, timeout_sec=0.1)
+            self._spin_once(0.1)
             if self.mode_ack_seen:
                 if self.args.verbose:
                     self.get_logger().info(
@@ -419,7 +749,7 @@ class CameraGridNavigator(Node):
         period = 1.0 / CONTROL_HZ
         while rclpy.ok():
             loop_t0 = time.monotonic()
-            rclpy.spin_once(self, timeout_sec=0.0)
+            self._spin_once(0.0)
 
             if self.errored:
                 self.get_logger().error(
@@ -574,7 +904,7 @@ class CameraGridNavigator(Node):
                 period = 1.0 / CONTROL_HZ
                 while rclpy.ok() and time.monotonic() - t_settle0 < settle_sec:
                     loop_t0 = time.monotonic()
-                    rclpy.spin_once(self, timeout_sec=0.0)
+                    self._spin_once(0.0)
                     self.send_wheel(0.0, 0.0)
                     elapsed = time.monotonic() - loop_t0
                     time.sleep(max(0.0, period - elapsed))
@@ -604,18 +934,20 @@ class CameraGridNavigator(Node):
     # -- turn stopping-angle measurement (2026-07-28) ----------------------
     def turn_test(self, target_heading_deg: float, turn_rpm: float,
                    brake_lead_deg: float, leg_label: str) -> dict | None:
-        """Rotate in place at a CONSTANT turn_rpm (no decel-zone taper, unlike
-        turn_to_heading()'s tapered speed law) until |yaw error| <=
-        brake_lead_deg, then fire one hard STOP. Reports target vs. actual
-        final heading, so brake_lead_deg can be tuned from real angular
-        stopping-distance data -- same rationale as stop_test() for straight
-        driving, applied to rotation 2026-07-28 after the user reported
-        turn_to_heading()'s existing tapered-decel-zone law (turn-min-speed/
-        turn-decel-zone-deg/turn-creep-speed/turn-scale-deg/turn-max-speed,
-        all tuned by hand earlier this session) was STILL overshooting the
-        target yaw and correcting back, sometimes more than once, instead of
-        completing in one smooth rotation -- exactly the guessed-not-measured
-        failure mode drive_leg()'s old kp_dist law had.
+        """Rotate in place at a CONSTANT turn_rpm (no decel-zone taper) until
+        |yaw error| <= brake_lead_deg, then fire one hard STOP. Reports
+        target vs. actual final heading, so brake_lead_deg can be tuned from
+        real angular stopping-distance data -- same rationale as stop_test()
+        for straight driving, applied to rotation 2026-07-28 after the user
+        reported turn_to_heading()'s THEN-current tapered-decel-zone law
+        (turn-min-speed/turn-decel-zone-deg/turn-creep-speed/turn-scale-deg/
+        turn-max-speed, all tuned by hand earlier this session) was STILL
+        overshooting the target yaw and correcting back, sometimes more than
+        once, instead of completing in one smooth rotation -- exactly the
+        guessed-not-measured failure mode drive_leg()'s old kp_dist law had.
+        This function's measurements are what turn_to_heading() now
+        actually uses (see its docstring) -- the tapered law described here
+        no longer exists in that function, only in this historical note.
 
         Returns a result dict on success (does NOT re-arm WHEEL_FOLLOW_MODE --
         the caller, e.g. turn_test_route(), controls when/if the next turn
@@ -639,7 +971,7 @@ class CameraGridNavigator(Node):
         period = 1.0 / CONTROL_HZ
         while rclpy.ok():
             loop_t0 = time.monotonic()
-            rclpy.spin_once(self, timeout_sec=0.0)
+            self._spin_once(0.0)
 
             if self.errored:
                 self.get_logger().error(
@@ -696,6 +1028,18 @@ class CameraGridNavigator(Node):
                     f"pose_age={pose_age_ms:5.0f}ms{stale_flag}")
             elapsed = time.monotonic() - loop_t0
             time.sleep(max(0.0, period - elapsed))
+        else:
+            # while rclpy.ok() went false without ever hitting the brake
+            # break above (e.g. external shutdown/Ctrl+C mid-turn) -- REAL
+            # BUG confirmed on hardware 2026-07-31: brake_yaw was only ever
+            # assigned inside the brake branch, so falling through here
+            # raised UnboundLocalError instead of a clean abort. STOP is
+            # still safe to attempt (best-effort, no-op if the context is
+            # already gone) and returning None matches every other abort
+            # path in this function.
+            self.send_cmd("STOP")
+            self.get_logger().error(f"{leg_label}: rclpy shut down mid-turn -- aborting")
+            return None
 
         # Let the robot actually come to rest before reading the final yaw --
         # but SAMPLE yaw throughout the settle window instead of a blind
@@ -708,7 +1052,7 @@ class CameraGridNavigator(Node):
         settle_t0 = time.monotonic()
         last_seen_yaw = brake_yaw
         while rclpy.ok() and time.monotonic() - settle_t0 < 1.0:
-            rclpy.spin_once(self, timeout_sec=0.05)
+            self._spin_once(0.05)
             p = self.fresh_pose()
             if p is not None and p.yaw != last_seen_yaw:
                 if self.args.verbose:
@@ -778,7 +1122,7 @@ class CameraGridNavigator(Node):
                 period = 1.0 / CONTROL_HZ
                 while rclpy.ok() and time.monotonic() - t_settle0 < settle_sec:
                     loop_t0 = time.monotonic()
-                    rclpy.spin_once(self, timeout_sec=0.0)
+                    self._spin_once(0.0)
                     self.send_wheel(0.0, 0.0)
                     elapsed = time.monotonic() - loop_t0
                     time.sleep(max(0.0, period - elapsed))
@@ -802,6 +1146,457 @@ class CameraGridNavigator(Node):
             f"min={min(final_errs):.2f}deg max={max(final_errs):.2f}deg  "
             f"overshoots={overshoot_count}/{n}")
 
+    def rotate_test(self, target_heading_deg: float, leg_label: str) -> dict | None:
+        """Added 2026-07-30, mirrors turn_test() but exercises ROTATE_REL
+        (alvik.rotate(), closed-loop on Alvik's motor-control MCU) instead
+        of streaming WHEEL_FOLLOW_MODE wheel-speed setpoints -- this is the
+        measurement mode used to validate the ROTATE_REL replacement for
+        turn_to_heading() before trusting it inside a full route. Sends ONE
+        relative-angle command computed from current vision yaw, waits for
+        the firmware's ROTATE_REL COMPLETE ack, then (like turn_test())
+        keeps sampling vision through a short settle window before reading
+        the REAL final heading -- so this reports true accuracy, not just
+        "did the firmware say complete."
+
+        Returns a result dict on success (does NOT send another command --
+        the caller, e.g. rotate_test_route(), controls what happens next)
+        or None on abort (vision lost / errored)."""
+        pose = self.fresh_pose()
+        if pose is None:
+            self.get_logger().error(f"{leg_label}: lost vision -- aborting")
+            return None
+
+        start_yaw = pose.yaw
+        rel_deg = yaw_error_deg(target_heading_deg, start_yaw)
+        self.get_logger().info(
+            f"{leg_label}: rotate-test from {start_yaw:+.1f} to "
+            f"{target_heading_deg:.0f}deg via ROTATE_REL {rel_deg:+.2f}deg")
+
+        self.rotate_rel_done_seen = False
+        self.errored = False
+        self.error_text = ""
+        self.send_cmd(f"ROTATE_REL {rel_deg:.2f}")
+
+        # RAISED 2026-07-30 after real hardware data showed the previous
+        # formula (abs(deg)/15+2, e.g. 8.0s for a -90.3deg turn, 3.0s floor
+        # for small angles) was WAY too tight: a real +179.00deg ROTATE_REL
+        # took 10.23s to ack (vs. ~2.3s the firmware's own
+        # ROTATE_DEG_PER_SEC=100 estimate predicts), and every "hang" this
+        # session that required a hardware power-cycle turned out, on
+        # closer look, to have timed out at almost EXACTLY its own
+        # (too-short) timeout_sec value -- meaning the robot was very
+        # likely still legitimately rotating, not actually stuck, and
+        # sending STOP mid-rotation is what corrupted the UART/ack state
+        # and caused the subsequent total silence, not a firmware bug.
+        # 0.15s/deg (vs. the ~0.057s/deg the one 179deg sample implies)
+        # bakes in a large safety factor since we only have ONE large-angle
+        # timing sample so far; 5.0s floor covers whatever fixed overhead
+        # (UART round-trip, alvik.rotate()'s own internal delay(200), ack
+        # polling) makes even SMALL commanded angles take several seconds.
+        # Re-tighten only after gathering more real timing data across a
+        # range of angles -- do not shrink this blind.
+        timeout_sec = max(5.0, abs(rel_deg) * 0.15 + 3.0)
+        t0 = time.monotonic()
+        while rclpy.ok() and time.monotonic() - t0 < timeout_sec:
+            self._spin_once(0.1)
+            if self.rotate_rel_done_seen:
+                break
+            if self.errored:
+                self.get_logger().error(
+                    f"{leg_label}: robot reported {self.error_text} -- aborting")
+                return None
+        else:
+            self.get_logger().error(
+                f"{leg_label}: no ROTATE_REL COMPLETE within "
+                f"{timeout_sec:.1f}s -- aborting")
+            return None
+
+        ack_elapsed = time.monotonic() - t0
+        ack_yaw_pose = self.fresh_pose()
+        ack_yaw = ack_yaw_pose.yaw if ack_yaw_pose is not None else None
+
+        # Same rationale as turn_test()'s settle window: sample vision
+        # through a short window after the ack instead of a blind sleep,
+        # so a still-settling robot (or a stale/catching-up camera frame)
+        # doesn't get misreported as already at rest.
+        settle_t0 = time.monotonic()
+        last_seen_yaw = ack_yaw
+        while rclpy.ok() and time.monotonic() - settle_t0 < 0.5:
+            self._spin_once(0.05)
+            p = self.fresh_pose()
+            if p is not None and p.yaw != last_seen_yaw:
+                if self.args.verbose:
+                    self.get_logger().info(
+                        f"  [settle] yaw={p.yaw:+6.1f} "
+                        f"(+{time.monotonic() - settle_t0:.2f}s since ack)")
+                last_seen_yaw = p.yaw
+        final_pose = self.fresh_pose()
+        if final_pose is None:
+            self.get_logger().error(
+                f"{leg_label}: lost vision after ack -- cannot report final heading")
+            return None
+
+        final_error = yaw_error_deg(target_heading_deg, final_pose.yaw)
+        self.get_logger().info(
+            f"{leg_label}: RESULT final_yaw={final_pose.yaw:+.1f} "
+            f"target={target_heading_deg:.1f} commanded={rel_deg:+.2f}deg "
+            f"final_error={final_error:+.2f}deg  ack_after={ack_elapsed:.2f}s")
+
+        return {
+            "leg_label": leg_label,
+            "target_heading": target_heading_deg,
+            "start_yaw": start_yaw,
+            "commanded_rel_deg": rel_deg,
+            "final_yaw": final_pose.yaw,
+            "final_error": final_error,
+            "ack_elapsed": ack_elapsed,
+        }
+
+    def rotate_test_route(self, headings: list[float]) -> None:
+        """Chain rotate_test() across a list of target headings -- mirrors
+        turn_test_route(), but no re-arm step needed between turns since
+        ROTATE_REL is a standalone command (not a WHEEL_FOLLOW_MODE
+        streaming session), just a brief pause for full mechanical rest."""
+        results: list[dict] = []
+        for i, target_heading in enumerate(headings):
+            leg_label = f"rotate-test #{i + 1}->{target_heading:.0f}deg"
+            result = self.rotate_test(target_heading, leg_label)
+            if result is None:
+                self.get_logger().error(
+                    f"{leg_label}: aborting remainder of rotate-test route")
+                break
+            results.append(result)
+            if i < len(headings) - 1:
+                self.spin_for(0.3)
+
+        if not results:
+            return
+        self.get_logger().info(
+            f"rotate-test route summary ({len(results)}/{len(headings)} turns):")
+        for r in results:
+            self.get_logger().info(
+                f"  {r['leg_label']:<26s} cmd={r['commanded_rel_deg']:+7.2f}deg  "
+                f"final_err={r['final_error']:+6.2f}deg  "
+                f"ack_after={r['ack_elapsed']:.2f}s")
+        final_errs = [abs(r["final_error"]) for r in results]
+        ack_times = [r["ack_elapsed"] for r in results]
+        n = len(results)
+        self.get_logger().info(
+            f"  |final_error|: mean={sum(final_errs)/n:.2f}deg "
+            f"min={min(final_errs):.2f}deg max={max(final_errs):.2f}deg")
+        self.get_logger().info(
+            f"  ack_elapsed: mean={sum(ack_times)/n:.2f}s "
+            f"min={min(ack_times):.2f}s max={max(ack_times):.2f}s")
+
+    # -- yaw-source stress test (encoder / camera_assist / camera_only) ---
+    # Added 2026-08-13, ROS2/rosbridge equivalent of TurnSpeedBenchAlvik6.ino's
+    # standalone-Arduino stress test -- exercises the REAL production code
+    # path (turn_to_heading_rotate_rel()'s ROTATE_REL send + this file's own
+    # _on_odom_pose/_on_vision_pose callbacks, over the actual wireless
+    # link) rather than a bare alvik.rotate() call on the bench. Same
+    # angle set and there-then-back pairing as the Arduino sketch (see its
+    # STRESS_ANGLES_DEG/STRESS_REPEATS comment for the cable-safety
+    # rationale) so results are directly comparable across both tiers.
+    YAW_STRESS_ANGLES_DEG = [0.9, 2.6, 3.0, 1.5, 90.0, 90.3, 179.0, 177.5]
+    YAW_STRESS_REPEATS = 8  # 8 * 8 * 2 (there+back) = 128 total rotations
+
+    def yaw_stress_rotation(self, mode: str, target_heading_deg: float,
+                             leg_label: str, resync_after: bool = True) -> dict | None:
+        """One rotation in one of four yaw-source modes:
+
+        "encoder": size ONE ROTATE_REL from corrected_odom_yaw() (local,
+        fast) and trust it -- exactly what turn_to_heading_rotate_rel()
+        does today, exercised directly here so a route doesn't have to be
+        running to test it.
+
+        "camera_assist": same odom-sized ROTATE_REL as "encoder", but after
+        it settles, sample vision and send ONE corrective ROTATE_REL sized
+        from the vision error if still outside --turn-tol-deg. Tests
+        whether a cheap vision safety-net (paid only when needed, not every
+        turn) catches cases where odom alone lands outside tolerance --
+        per explicit user direction 2026-08-13, chosen over resyncing
+        before every rotation (which would pay vision latency unconditionally).
+
+        "camera_only": size the ROTATE_REL directly from fresh_pose()
+        (vision yaw), ignoring odom entirely. This exercises the SAME
+        firmware ROTATE_REL path as the other two modes -- the only
+        difference from the deleted turn_to_heading_ROTATE_REL_EXPERIMENTAL()
+        is that this now runs through the fixed firmware handler (see
+        turn_to_heading_rotate_rel()'s docstring for the hang history and
+        fix), not a re-litigation of that old, already-broken version.
+
+        "encoder_drift": SAME sizing as "encoder" (corrected_odom_yaw()),
+        but intended to be called with resync_after=False so error can
+        accumulate freely across many rotations -- see resync_after's own
+        docstring below. Treated identically to "encoder" for sizing
+        purposes; the mode string only exists so results/logging/CSVs can
+        tell this phase apart from the resync-every-turn "encoder" tier.
+
+        resync_after: if True (default), calls resync_yaw_offset() at the
+        end of this rotation, same as every mode has always done -- this
+        means even "encoder" mode has NEVER tested raw uncorrected drift
+        until this parameter existed (2026-08-20), since every prior tier
+        resynced after every single rotation regardless of mode. Pass
+        False (intended for "encoder_drift", chained across many rotations
+        with no tier-start reset either -- see yaw_stress_test_route()'s
+        resync_between_rotations param) to see real accumulated onboard-
+        encoder drift over a long run instead of a corrected snapshot.
+
+        Returns a result dict (mirrors rotate_test()'s shape, plus
+        "mode"/"corrected" fields) or None on abort (vision/odom
+        unavailable, errored, or ROTATE_REL timeout)."""
+        if mode == "camera_only":
+            start_pose = self.fresh_pose()
+            if start_pose is None:
+                self.get_logger().error(f"{leg_label}: lost vision -- aborting")
+                return None
+            start_yaw = start_pose.yaw
+        else:
+            start_yaw = self.corrected_odom_yaw()
+            if start_yaw is None:
+                self.get_logger().error(
+                    f"{leg_label}: no corrected onboard yaw yet -- aborting "
+                    "(try again once resync_yaw_offset() has succeeded once)")
+                return None
+
+        rel_deg = yaw_error_deg(target_heading_deg, start_yaw)
+        # elapsed_sec measures TIME TO COMPLETION -- the real cost the user
+        # explicitly flagged as missing 2026-08-13: accuracy alone doesn't
+        # tell you whether a method is worth using if it takes much longer.
+        # Starts here (just before the first send) and stops the instant the
+        # last relevant ack lands (including a camera_assist correction, if
+        # any) -- deliberately EXCLUDES the 0.5s vision settle-sample window
+        # below, since that's measurement overhead this test adds for
+        # reporting, not part of the maneuver itself, and would inflate
+        # every mode's number equally rather than reflect a real difference.
+        maneuver_t0 = time.monotonic()
+        ok = self._send_rotate_rel_and_wait(rel_deg, leg_label)
+        if not ok:
+            return None
+
+        corrected = False
+        if mode == "camera_assist":
+            self._spin_once(0.0)
+            check_pose = self.fresh_pose()
+            if check_pose is not None:
+                remaining = yaw_error_deg(target_heading_deg, check_pose.yaw)
+                if abs(remaining) > self.args.turn_tol_deg:
+                    self.get_logger().info(
+                        f"{leg_label}: camera_assist correction, vision "
+                        f"yaw={check_pose.yaw:+.1f} still {remaining:+.2f}deg "
+                        "off -- sending corrective ROTATE_REL")
+                    ok = self._send_rotate_rel_and_wait(
+                        remaining, f"{leg_label} (correction)")
+                    if not ok:
+                        return None
+                    corrected = True
+        elapsed_sec = time.monotonic() - maneuver_t0
+
+        # Settle-sample vision (same rationale as rotate_test()) then report
+        # the REAL final heading, regardless of mode -- vision is always
+        # the ground-truth measurement for reporting, even in "encoder"
+        # mode where it played no role in CONTROLLING the turn.
+        settle_t0 = time.monotonic()
+        while rclpy.ok() and time.monotonic() - settle_t0 < 0.5:
+            self._spin_once(0.05)
+        final_pose = self.fresh_pose()
+        if final_pose is None:
+            self.get_logger().error(
+                f"{leg_label}: lost vision after ack -- cannot report final heading")
+            return None
+
+        final_error = yaw_error_deg(target_heading_deg, final_pose.yaw)
+        self.get_logger().info(
+            f"{leg_label}: [{mode}] RESULT final_yaw={final_pose.yaw:+.1f} "
+            f"target={target_heading_deg:.1f} final_error={final_error:+.2f}deg "
+            f"elapsed={elapsed_sec:.2f}s"
+            f"{' (corrected)' if corrected else ''}")
+
+        # Resync odom<->vision now, stationary, same as
+        # turn_to_heading_rotate_rel() does -- keeps "encoder"/"camera_
+        # assist" mode's next rotation from drifting further, and is
+        # harmless for "camera_only" (it doesn't depend on odom, but
+        # nothing else will resync otherwise since this test never calls
+        # turn_to_heading_rotate_rel()). Skipped when resync_after=False
+        # (see this method's own docstring) -- that's the whole point of
+        # "encoder_drift": let real onboard-encoder error accumulate
+        # instead of correcting it away after every single rotation.
+        if resync_after:
+            self.resync_yaw_offset()
+        else:
+            self.get_logger().info(
+                f"{leg_label}: resync_after=False -- yaw_offset left as-is, "
+                "drift accumulates into the next rotation")
+
+        return {
+            "leg_label": leg_label,
+            "mode": mode,
+            "target_heading": target_heading_deg,
+            "start_yaw": start_yaw,
+            "commanded_rel_deg": rel_deg,
+            "final_yaw": final_pose.yaw,
+            "final_error": final_error,
+            "corrected": corrected,
+            "elapsed_sec": elapsed_sec,
+        }
+
+    def _send_rotate_rel_and_wait(self, rel_deg: float, leg_label: str) -> bool:
+        """Shared send+wait core of rotate_test()/yaw_stress_rotation() --
+        same proven timeout formula, same ack/errored handling. Extracted
+        2026-08-13 so yaw_stress_rotation()'s optional correction pass can
+        reuse it without duplicating the timeout logic."""
+        self.rotate_rel_done_seen = False
+        self.errored = False
+        self.error_text = ""
+        self.send_cmd(f"ROTATE_REL {rel_deg:.2f}")
+        timeout_sec = max(5.0, abs(rel_deg) * 0.15 + 3.0)
+        t0 = time.monotonic()
+        while rclpy.ok() and time.monotonic() - t0 < timeout_sec:
+            self._spin_once(0.1)
+            if self.rotate_rel_done_seen:
+                return True
+            if self.errored:
+                self.get_logger().error(
+                    f"{leg_label}: robot reported {self.error_text} -- aborting")
+                return False
+        self.get_logger().error(
+            f"{leg_label}: no ROTATE_REL COMPLETE within {timeout_sec:.1f}s -- aborting")
+        return False
+
+    def yaw_stress_test_route(self, mode: str, reset_first: bool = True,
+                               resync_after_each: bool = True,
+                               on_result: Callable[[dict], None] | None = None
+                               ) -> list[dict]:
+        """Runs the full 128-rotation there-and-back stress sequence (see
+        YAW_STRESS_ANGLES_DEG/YAW_STRESS_REPEATS) in the given mode
+        ("encoder"/"camera_assist"/"camera_only"/"encoder_drift"), against
+        a FIXED absolute target derived from the robot's own starting
+        heading -- mirrors the Arduino bench sketch's cable-safety design:
+        every angle is rotated there then immediately back, so net
+        rotation returns to ~0 every 2 iterations regardless of mode or
+        outcome.
+
+        on_result (added 2026-08-20, per explicit user direction after a
+        real hardware run lost mid-tier data): if given, called with each
+        rotation's result dict IMMEDIATELY after it completes, not just
+        collected into the returned list -- lets a caller (e.g.
+        fleet_yaw_stress_test.py) flush every row to disk as it happens,
+        so a crash/hang partway through a 128-rotation tier doesn't lose
+        the rotations that already succeeded. Never called for aborted
+        rotations (yaw_stress_rotation() returning None) -- only real
+        results.
+
+        reset_first (default True): calls reset_onboard_pose() +
+        resync_yaw_offset() FIRST -- per explicit user direction
+        2026-08-13: running encoder -> camera_assist -> camera_only back-
+        to-back with no reset between tiers let ~256 rotations of
+        accumulated onboard-encoder drift from the first two tiers carry
+        into later readings, making tier order itself a hidden confound.
+        Pass False (intended for "encoder_drift", run LAST after the other
+        three tiers, per explicit user direction 2026-08-20) to
+        DELIBERATELY inherit whatever onboard yaw state the previous tier
+        left, as the starting point for observing real drift accumulation.
+
+        resync_after_each (default True): passed through to every
+        yaw_stress_rotation() call as resync_after -- see that parameter's
+        own docstring. Pass False (again, "encoder_drift") so error
+        accumulates freely across all 128 rotations instead of being
+        corrected away after each one, which is what EVERY tier has done
+        until this parameter existed, including "encoder" -- see
+        yaw_stress_rotation()'s docstring for why that means "encoder" has
+        never actually shown raw uncorrected drift.
+
+        Returns the list of per-rotation result dicts (see
+        yaw_stress_rotation()'s docstring for the shape) -- empty list on
+        an early abort (reset/resync/vision failure) or if every rotation
+        aborted. Added 2026-08-20 (was previously -> None, summary-only)
+        so a multi-robot caller (fleet_yaw_stress_test.py) can write its
+        own per-robot files from the real data instead of scraping this
+        method's get_logger() output, which is process-wide and unusable
+        once 6 robots' messages are interleaved on one terminal."""
+        if reset_first:
+            if not self.reset_onboard_pose("stress-test-start reset"):
+                self.get_logger().error(
+                    "could not reset onboard pose -- aborting stress test")
+                return []
+            self.spin_for(0.3)  # let the robot fully settle post-reset
+            resync_t0 = time.monotonic()
+            while rclpy.ok() and time.monotonic() - resync_t0 < 2.0:
+                self._spin_once(0.1)
+                if self.resync_yaw_offset():
+                    break
+        else:
+            self.get_logger().info(
+                f"[{mode}]: reset_first=False -- starting from whatever "
+                "onboard yaw state the previous tier left (deliberate, "
+                "for observing drift accumulation)")
+        if self.yaw_offset is None and mode != "camera_only":
+            self.get_logger().error(
+                "no odom-vision offset available -- aborting stress test "
+                f"(mode={mode!r} requires odom; camera_only does not)")
+            return []
+
+        start_pose = self.fresh_pose()
+        if start_pose is None:
+            self.get_logger().error("no vision at stress-test start -- aborting")
+            return []
+        base_heading = start_pose.yaw
+
+        total = self.YAW_STRESS_REPEATS * len(self.YAW_STRESS_ANGLES_DEG) * 2
+        self.get_logger().info(
+            f"### yaw-source stress test [{mode}]: {total} rotations "
+            f"({self.YAW_STRESS_REPEATS} repeats x {len(self.YAW_STRESS_ANGLES_DEG)} "
+            "angles x there+back) ###")
+
+        results: list[dict] = []
+        abort_count = 0
+        iter_num = 0
+        for rep in range(self.YAW_STRESS_REPEATS):
+            first_sign = 1.0 if rep % 2 == 0 else -1.0
+            for mag in self.YAW_STRESS_ANGLES_DEG:
+                for sign in (first_sign, -first_sign):
+                    iter_num += 1
+                    target = normalize_deg(base_heading + sign * mag)
+                    leg_label = f"[stress {iter_num}/{total}] angle={sign * mag:+.1f}"
+                    result = self.yaw_stress_rotation(
+                        mode, target, leg_label, resync_after=resync_after_each)
+                    if result is None:
+                        abort_count += 1
+                        self.get_logger().error(
+                            f"{leg_label}: aborted -- continuing with next rotation "
+                            "(unlike rotate_test_route(), one bad rotation "
+                            "shouldn't stop a 128-rotation stress run)")
+                        self.spin_for(0.3)
+                        continue
+                    results.append(result)
+                    if on_result is not None:
+                        on_result(result)
+                    self.spin_for(0.3)
+
+        self.get_logger().info(
+            f"### yaw-source stress test [{mode}] complete: "
+            f"{len(results)}/{total} succeeded, {abort_count} aborted ###")
+        if not results:
+            return results
+        final_errs = [abs(r["final_error"]) for r in results]
+        elapsed_secs = [r["elapsed_sec"] for r in results]
+        n = len(results)
+        corrected_count = sum(1 for r in results if r["corrected"])
+        self.get_logger().info(
+            f"  |final_error|: mean={sum(final_errs)/n:.2f}deg "
+            f"min={min(final_errs):.2f}deg max={max(final_errs):.2f}deg")
+        self.get_logger().info(
+            f"  elapsed_sec:   mean={sum(elapsed_secs)/n:.2f}s "
+            f"min={min(elapsed_secs):.2f}s max={max(elapsed_secs):.2f}s "
+            f"total={sum(elapsed_secs):.1f}s -- THE COST NUMBER: compare "
+            "this against the other two tiers' mean before trusting an "
+            "accuracy win alone (a slightly-more-accurate mode that takes "
+            "much longer per rotation isn't necessarily worth it)")
+        if mode == "camera_assist":
+            self.get_logger().info(
+                f"  corrective ROTATE_REL sent on {corrected_count}/{n} rotations")
+        return results
+
     def dwell(self, dwell_ms: int | None, label: str) -> bool:
         """Send DWELL (or "DWELL <ms>"), wait for the firmware's own
         DWELL COMPLETE, then re-enter WHEEL_FOLLOW_MODE -- same STATE_DWELL
@@ -818,7 +1613,7 @@ class CameraGridNavigator(Node):
         self.get_logger().info(f"{label}: {cmd}")
         t0 = time.monotonic()
         while rclpy.ok() and time.monotonic() - t0 < timeout_sec:
-            rclpy.spin_once(self, timeout_sec=0.1)
+            self._spin_once(0.1)
             if self.dwell_done_seen:
                 break
             if self.errored:
@@ -854,15 +1649,24 @@ class CameraGridNavigator(Node):
         gradually-decelerating approach doesn't reproduce the old color-
         sensor firmware's demonstrated 60-70RPM constant-speed-then-instant-
         hard-stop behavior, and repeated hardware tuning of drive_min_speed/
-        kp_dist never converged on a reliably sharp stop. --brake-lead-in's
-        default (3.7) is taken directly from a 7-leg --stop-test route run
-        at --cruise-rpm=60 with this SAME heading-correction law: mean
-        slide-after-brake 3.21in (range 3.04-3.42in across all 7 legs),
-        every leg landing short of target (never overshooting, mean 0.39in
-        short) -- see stop_test()/stop_test_route() for the measurement
-        tool. If --cruise-rpm is changed from the bench-tested 60, re-measure
-        via --stop-test before trusting the default lead-in at the new
-        speed (stopping distance is not necessarily linear in RPM)."""
+        kp_dist never converged on a reliably sharp stop.
+
+        --brake-lead-in's default (1.9, RE-MEASURED 2026-07-28 later the
+        same day) is taken from a 7-leg --stop-test route run at
+        --cruise-rpm=60 with this SAME heading-correction law, AFTER a
+        vision-pipeline fix (TcpFrameSource.read() in apriltag_localize.py,
+        draining stale backlogged frames instead of serving them oldest-
+        first) changed real measured stopping distance: mean slide-after-
+        brake 1.61in (range 1.55-1.67in), mean along-path error only 0.23in
+        short of target (range 0.11-0.30in), never overshooting -- see
+        stop_test()/stop_test_route() for the measurement tool. An earlier
+        3.7in value, measured before that vision fix, was landing every leg
+        ~2in short once the fix was in (stale calibration, not a new
+        problem) -- see --brake-lead-in's own CLI help text for the full
+        before/after numbers. If --cruise-rpm changes, or the vision
+        pipeline changes again, re-measure via --stop-test before trusting
+        this default (stopping distance is not necessarily linear in RPM,
+        and is sensitive to real pose latency)."""
         pose = self.fresh_pose()
         if pose is None:
             self.get_logger().error(f"{leg_label}: lost vision -- aborting route")
@@ -885,7 +1689,7 @@ class CameraGridNavigator(Node):
         period = 1.0 / CONTROL_HZ
         while rclpy.ok():
             loop_t0 = time.monotonic()
-            rclpy.spin_once(self, timeout_sec=0.0)
+            self._spin_once(0.0)
 
             if self.errored:
                 self.get_logger().error(
@@ -981,7 +1785,177 @@ class CameraGridNavigator(Node):
         return False
 
     # -- one turn-in-place: pivot to a new absolute heading ---------------
+    def turn_to_heading_rotate_rel(self, target_heading_deg: float, leg_label: str) -> bool:
+        """Added 2026-08-13, per explicit user direction after a bench
+        comparison (TurnSpeedBenchAlvik6.ino, Alvik6) showed alvik.rotate()
+        settling in ~1.0-1.7s at ~1-3deg accuracy, vs. turn_to_heading()'s
+        wheel-streaming taper at 3.4-5.7s / ~2.8-2.9deg for the same 90deg
+        turn -- a 2-4x speed win with comparable or better accuracy.
+
+        Sizes its ROTATE_REL from corrected_odom_yaw() (the robot's own
+        onboard get_pose() yaw, local UART link, no camera round-trip --
+        see _on_odom_pose()/resync_yaw_offset()), NOT fresh_pose() (camera/
+        AprilTag yaw). Camera latency (the "yaw swinging 85-95deg while
+        driving" the user described) makes vision yaw a genuinely bad
+        "current heading" input for sizing a single relative-angle command
+        -- an onboard reading taken the instant before the turn is far
+        closer to the robot's TRUE heading at send-time. Vision remains the
+        ABSOLUTE ground truth for the overall route (drive_leg() still
+        steers off it, and resync_yaw_offset() re-anchors onboard yaw to
+        it), just not the input to this one relative-angle calculation.
+
+        HANG HISTORY -- read before ever changing this method's completion
+        check: an EARLIER ROTATE_REL implementation (removed 2026-08-13,
+        see git history if the old docstring is needed) hit multiple
+        confirmed FULL FIRMWARE HANGS on 2026-07-30 (LED frozen, zero ROS
+        traffic, power-cycle required). Root-caused at the FIRMWARE level
+        (AGV_Factory_camera_correction.ino's ROTATE_REL handler comment) to
+        a parse_message() ack-discard race, made likely by an alvik.brake()
+        call immediately before alvik.rotate(). Fixed by (1) removing that
+        brake() (the robot is already stationary between commands) and (2)
+        abandoning is_target_reached() polling entirely for a timed
+        millis() deadline (ROTATE_DEG_PER_SEC). Both fixes are already
+        deployed in the firmware's current ROTATE_REL handler -- this
+        method just calls it, same as rotate_test() already does.
+        Independently re-stress-tested 2026-08-13 on Alvik6 (bench sketch,
+        128 back-to-back rotate() calls incl. small angles specifically --
+        the exact condition that hung before): 128/128 settled cleanly,
+        zero hangs, zero is_on()-detected STM32 unresponsiveness. Do not
+        reintroduce alvik.brake() before alvik.rotate() (in firmware) or
+        is_target_reached()-style polling (here) without re-reading the
+        firmware's ROTATE_REL handler comment first.
+
+        Falls back to turn_to_heading() (the proven wheel-streaming taper)
+        if no odom yet -- see corrected_odom_yaw()'s None cases -- rather
+        than guessing or blocking; that keeps this safe to call even on the
+        very first leg of a route, before any odom/vision resync has had a
+        chance to happen.
+
+        CAMERA-ASSIST CORRECTION (added 2026-08-13, made the default after
+        --yaw-stress-test results on Alvik6, 128 rotations/tier, all 3
+        tiers self-resetting so comparable): after the odom-sized
+        ROTATE_REL settles, sample vision once and send ONE corrective
+        ROTATE_REL if still outside --turn-tol-deg. Real hardware numbers
+        that motivated this: encoder-only mean |final_error| 2.46deg
+        (max 7.10deg) at 1.30s mean/turn; camera_assist mean 0.91deg
+        (max 3.10deg) at 2.01s mean/turn -- ~2.7x more accurate for +0.7s/
+        turn. camera_only (vision sizes EVERY ROTATE_REL, odom unused) was
+        statistically indistinguishable from encoder-only on both accuracy
+        (2.33deg) and speed (1.28s), so it bought nothing over odom alone
+        and was not adopted -- see yaw_stress_rotation()'s docstring for
+        all three modes if this needs re-litigating."""
+        odom_yaw = self.corrected_odom_yaw()
+        if odom_yaw is None:
+            self.get_logger().info(
+                f"{leg_label}: no corrected onboard yaw yet -- falling back "
+                "to turn_to_heading() (wheel-streaming)")
+            return self.turn_to_heading(target_heading_deg, leg_label)
+
+        rel_deg = yaw_error_deg(target_heading_deg, odom_yaw)
+        if abs(rel_deg) <= self.args.turn_tol_deg:
+            self.get_logger().info(
+                f"{leg_label}: already within {self.args.turn_tol_deg:.1f} "
+                f"deg of target heading {target_heading_deg:.0f} (odom "
+                f"yaw={odom_yaw:+.1f}), skipping turn")
+            return True
+
+        self.get_logger().info(
+            f"{leg_label}: turning from odom yaw {odom_yaw:+.1f} to "
+            f"{target_heading_deg:.0f} deg via ROTATE_REL {rel_deg:+.2f}deg")
+        if not self._rotate_rel_and_wait_or_abort(rel_deg, leg_label):
+            return False
+
+        # Camera-assist correction: sample vision once, right after the
+        # odom-sized turn settles, and send ONE corrective ROTATE_REL if
+        # still outside tolerance -- see this method's own docstring for
+        # the real hardware numbers behind making this the default.
+        self._spin_once(0.0)
+        check_pose = self.fresh_pose()
+        if check_pose is not None:
+            remaining = yaw_error_deg(target_heading_deg, check_pose.yaw)
+            if abs(remaining) > self.args.turn_tol_deg:
+                self.get_logger().info(
+                    f"{leg_label}: camera-assist correction, vision "
+                    f"yaw={check_pose.yaw:+.1f} still {remaining:+.2f}deg "
+                    "off -- sending corrective ROTATE_REL")
+                if not self._rotate_rel_and_wait_or_abort(
+                        remaining, f"{leg_label} (correction)"):
+                    return False
+
+        # Resync onboard yaw to vision now, while the robot is stationary
+        # (right after a completed turn is exactly the safe window
+        # resync_yaw_offset() calls for) -- keeps the NEXT turn's odom
+        # reading from drifting further from ground truth. Not fatal if it
+        # fails (e.g. vision briefly stale) -- the turn itself already
+        # completed; this only affects the next one, which will retry the
+        # resync when it starts.
+        self._spin_once(0.0)  # pump one callback pass so odom/vision are current
+        if not self.resync_yaw_offset():
+            self.get_logger().info(
+                f"{leg_label}: turn complete but yaw resync skipped "
+                "(vision/odom not both fresh) -- next turn will retry")
+        else:
+            self.get_logger().info(
+                f"{leg_label}: turn complete, yaw resynced "
+                f"(offset={self.yaw_offset:+.2f})")
+        return True
+
+    def _rotate_rel_and_wait_or_abort(self, rel_deg: float, leg_label: str) -> bool:
+        """turn_to_heading_rotate_rel()'s send+wait core, with THIS
+        method's route-abort logging (distinct from _send_rotate_rel_and_
+        wait()'s measurement-mode logging, which callers like
+        yaw_stress_rotation() rely on saying "aborting" not "aborting
+        route"). Same proven timeout formula as rotate_test()/
+        _send_rotate_rel_and_wait() -- do not shrink without new timing
+        data across a range of angles."""
+        self.rotate_rel_done_seen = False
+        self.errored = False
+        self.error_text = ""
+        self.send_cmd(f"ROTATE_REL {rel_deg:.2f}")
+        timeout_sec = max(5.0, abs(rel_deg) * 0.15 + 3.0)
+        t0 = time.monotonic()
+        while rclpy.ok() and time.monotonic() - t0 < timeout_sec:
+            self._spin_once(0.1)
+            if self.rotate_rel_done_seen:
+                return True
+            if self.errored:
+                self.get_logger().error(
+                    f"{leg_label}: robot reported {self.error_text} "
+                    "during ROTATE_REL -- aborting route")
+                return False
+        self.get_logger().error(
+            f"{leg_label}: no ROTATE_REL COMPLETE within "
+            f"{timeout_sec:.1f}s -- aborting route")
+        return False
+
     def turn_to_heading(self, target_heading_deg: float, leg_label: str) -> bool:
+        """REVERTED 2026-07-31 to the tapered proportional-speed law -- the
+        version actually committed to GitHub (commit 0634800) and the one
+        that produced the accurate, no-overshoot, single-pass perimeter
+        run. Session history: this file's turn law was later REWRITTEN
+        2026-07-28 (same day, after that commit) to a constant-turn_rpm-
+        then-hard-brake-then-discrete-re-approach law, chasing a different
+        problem (drive_leg()'s straight-line brake behavior) -- that
+        rewrite was never re-validated against the perimeter-run baseline
+        and, confirmed on real 2-robot hardware testing 2026-07-31, showed
+        real turn-to-turn coast-distance INCONSISTENCY at turn_rpm=35 (some
+        turns settled within a few degrees on the first brake, others
+        overshot 60+deg and needed a slow ~4s turn_creep_rpm re-approach to
+        recover) -- exactly the kind of instability a hard-brake law is
+        prone to and a smooth taper is not. Restored verbatim (adapted only
+        to this file's self._spin_once() executor, not the module-level
+        rclpy.spin_once() the original used) rather than re-tuned, since the
+        original was proven accurate and this session's rewrite was not an
+        improvement on it. If turn_then_drive_leg()'s no-brake fusion is
+        ever revisited, note it was built against the LATER brake law and
+        will need matching rework against this taper.
+
+        No hard brake anywhere: speed decreases continuously as the robot
+        approaches the target, so momentum is shed gradually instead of
+        needing to be caught by a STOP. --turn-settle-count consecutive
+        in-tolerance samples (not just one) are required before declaring
+        the turn done and re-arming, because a single sample can land
+        in-tolerance while the robot is still slowly rotating."""
         pose = self.fresh_pose()
         if pose is None:
             self.get_logger().error(f"{leg_label}: lost vision -- aborting route")
@@ -1000,7 +1974,7 @@ class CameraGridNavigator(Node):
         settled_count = 0
         while rclpy.ok():
             loop_t0 = time.monotonic()
-            rclpy.spin_once(self, timeout_sec=0.0)
+            self._spin_once(0.0)
 
             if self.errored:
                 self.get_logger().error(
@@ -1019,19 +1993,13 @@ class CameraGridNavigator(Node):
 
             error = yaw_error_deg(target_heading_deg, pose.yaw)
             if abs(error) <= self.args.turn_tol_deg:
-                # Confirmed 2026-07-28: a hard stop_and_rearm() (alvik.brake())
-                # fired the instant the robot first sampled inside tolerance
-                # was itself the disturbance -- braking hard mid-rotation has
-                # its own recoil/settle, kicking the robot back OUT of
-                # tolerance before a 2nd/3rd consecutive sample could land,
-                # producing a sustained in-tol-then-kicked-out cycle for over
-                # 15s in one run. Root cause traced further back to the decel
-                # law below: turn-min-speed (10) was a floor the robot never
-                # dropped beneath even at <1deg error, so it always had real
-                # momentum to carry it through/past the target in one 33ms
-                # tick regardless of how the stop was done. Fixed at the
-                # source (see the creep-speed taper below, active once
-                # |error| is inside --turn-decel-zone-deg) -- the robot is
+                # A hard stop_and_rearm() (alvik.brake()) fired the instant
+                # the robot first sampled inside tolerance was itself the
+                # disturbance -- braking hard mid-rotation has its own
+                # recoil/settle, kicking the robot back OUT of tolerance
+                # before a 2nd/3rd consecutive sample could land. Fixed at
+                # the source by the creep-speed taper below (active once
+                # |error| is inside --turn-decel-zone-deg): the robot is
                 # already moving at near-crawl speed by the time it enters
                 # tolerance, so a plain zero-speed hold here is enough; no
                 # separate brake event, no recoil, no re-trigger.
@@ -1061,36 +2029,16 @@ class CameraGridNavigator(Node):
             # yaw) turns left (right wheel +, left wheel -), same convention
             # confirmed for LEFT_UNTIL_COLOR earlier this session.
             #
-            # Two-zone speed law, confirmed 2026-07-28: the OLD single linear
-            # ramp (turn-min-speed .. turn-max-speed over turn-scale-deg) had
-            # a floor (turn-min-speed=10) the robot never dropped beneath no
-            # matter how small the error got -- even at <1deg it was still
-            # moving at a real, sustained speed, enough to carry it several
-            # degrees past the target in a single 33ms control tick (this IS
-            # the reason a hard stop-on-first-sample was ever needed, and
-            # that hard stop turned out to be its own disturbance -- see
-            # above). Outside the decel zone the ramp is unchanged (ramps
-            # toward turn-max-speed as error grows, same shape as before).
+            # Two-zone speed law: outside the decel zone the ramp targets
+            # turn-max-speed as error grows (saturating at turn-scale-deg).
             # INSIDE the decel zone (|error| < turn-decel-zone-deg), speed
-            # tapers linearly toward turn-creep-speed as error approaches
-            # turn-tol-deg, so the robot arrives already near-stalled instead
-            # of decelerating only after crossing into tolerance.
+            # tapers (quadratically) toward turn-creep-speed as error
+            # approaches turn-tol-deg, so the robot arrives already
+            # near-stalled instead of decelerating only after crossing into
+            # tolerance -- this is what lets the settle check above use a
+            # plain zero-speed hold instead of a hard brake.
             abs_error = abs(error)
             if abs_error <= self.args.turn_decel_zone_deg:
-                # Confirmed 2026-07-28 (node65->node114 turn): a LINEAR taper
-                # over an 8deg zone wasn't enough physical distance for the
-                # robot to shed real momentum -- measured ~134deg/s during
-                # the spd=70 phase (~4.4deg per 33ms control tick), so by the
-                # time the commanded speed had dropped to single digits the
-                # robot was still coasting hard and sailed through the whole
-                # zone, overshot past the target, then had to reverse and
-                # re-approach (looked like "two or three rotations"). Fixed
-                # by widening the zone (more angular distance = more time to
-                # actually decelerate) AND squaring the taper (frac**2, not
-                # frac) so speed drops off much faster in the OUTER part of
-                # the zone -- most of the deceleration happens early, while
-                # there's still plenty of room left, and only the last few
-                # degrees are spent at true creep speed.
                 span = max(self.args.turn_decel_zone_deg - self.args.turn_tol_deg, 0.01)
                 frac = max(abs_error - self.args.turn_tol_deg, 0.0) / span
                 spd = self.args.turn_creep_speed + (
@@ -1116,6 +2064,297 @@ class CameraGridNavigator(Node):
             time.sleep(max(0.0, period - elapsed))
         return False
 
+    def turn_heading_test_route(self, headings: list[float]) -> None:
+        """Bench-measurement mode added 2026-07-31: chain the REAL
+        turn_to_heading() (the reverted tapered-decel-zone law, see its
+        docstring) across a list of absolute target headings, with no
+        drive_leg() involved at all -- unlike --turn-test (constant-RPM/
+        hard-brake law, a DIFFERENT method entirely) and --rotate-test
+        (firmware ROTATE_REL, also a different method), this is the only
+        mode that actually exercises turn_to_heading() in isolation. Needs
+        the caller to have already called enter_wheel_follow_mode() once;
+        turn_to_heading() re-arms itself via stop_and_rearm() after each
+        successful turn, so no extra re-arm step is needed between turns
+        here (unlike turn_test_route())."""
+        results: list[tuple[str, float, float]] = []
+        for i, target_heading in enumerate(headings):
+            leg_label = f"turn-heading-test #{i + 1}->{target_heading:.0f}deg"
+            pose_before = self.fresh_pose()
+            start_yaw = pose_before.yaw if pose_before is not None else float("nan")
+            ok = self.turn_to_heading(target_heading, leg_label)
+            if not ok:
+                self.get_logger().error(
+                    f"{leg_label}: aborting remainder of turn-heading-test route")
+                break
+            pose_after = self.fresh_pose()
+            final_yaw = pose_after.yaw if pose_after is not None else float("nan")
+            final_error = yaw_error_deg(target_heading, final_yaw)
+            self.get_logger().info(
+                f"{leg_label}: RESULT start={start_yaw:+.1f} "
+                f"final_yaw={final_yaw:+.1f} target={target_heading:.1f} "
+                f"final_error={final_error:+.2f}deg")
+            results.append((leg_label, target_heading, final_error))
+
+        if not results:
+            return
+        self.get_logger().info(
+            f"turn-heading-test route summary ({len(results)}/{len(headings)} turns):")
+        for leg_label, target_heading, final_error in results:
+            self.get_logger().info(
+                f"  {leg_label:<28s} target={target_heading:6.1f}deg  "
+                f"final_err={final_error:+6.2f}deg")
+        final_errs = [abs(e) for _, _, e in results]
+        n = len(final_errs)
+        self.get_logger().info(
+            f"  |final_error|: mean={sum(final_errs)/n:.2f}deg "
+            f"min={min(final_errs):.2f}deg max={max(final_errs):.2f}deg")
+
+    def turn_then_drive_leg(self, target_heading_deg: float, drive_x: float,
+                            drive_y: float, leg_label: str) -> bool:
+        """Turn toward target_heading_deg, then -- once confirmed stable
+        within --turn-tol-deg -- hand off DIRECTLY into drive_leg()'s
+        wheel-speed law toward (drive_x, drive_y), with no STOP, settle
+        wait, or re-arm round trip between the turn and the drive: wheels
+        go straight from (held-at-zero, confirmed-stopped) turning to
+        driving speeds. The no-gap optimization is specifically the
+        turn-to-drive transition; drive_leg() is still followed by a real,
+        settled turn_to_heading() square-up at arrival (see below) before
+        returning, same as every other leg -- this method has no way to
+        know whether whatever comes after IT will itself fuse into that
+        square-up, so it can't skip settling there.
+
+        REAL BUG confirmed on hardware 2026-07-31 (second one, after the
+        collision fix below): the very first working version of this method
+        drove straight to drive_x/drive_y and returned WITHOUT ever squaring
+        up at arrival. Fine for a route driven by run() (which always calls
+        turn_to_heading() unconditionally right after drive_leg() -- see
+        skip_drive there), but fleetSupervisor.py's per-plan-item dispatch
+        never separately processes a move that was consumed as a fusion
+        target (record_done_fused() advances next_index PAST it), so
+        nothing else was ever going to square up at wherever this drive
+        actually landed. Real result: Alvik1 arrived at node 0 still facing
+        the previous leg's approach heading and drove toward node 1 ~90deg
+        off. Fixed by squaring up here, using target_heading_deg itself --
+        the leg just driven is a straight line toward that same heading, so
+        the arrival square-up angle IS target_heading_deg, no need to
+        recompute from origin/destination coordinates.
+
+        Added 2026-07-31 per explicit user direction: turn_to_heading()
+        always sends STOP the instant --turn-tol-deg is reached (to safely
+        settle and re-check the REST position -- see that function's own
+        history of bugs from skipping this for a STANDALONE turn), which is
+        correct when a turn is the end of the story (a workstation/depot
+        square-up with nothing following), but wastes real time -- a stop,
+        ~1s settle poll, and a full re-arm round trip -- when the very next
+        thing to do is drive_leg() anyway. Since wheel speed is streamed
+        directly (WHEEL_FOLLOW_MODE), there's no reason the turn's last
+        tick and the leg's first tick can't be the same tick.
+
+        ONLY use this for a turn immediately followed by a drive on the SAME
+        node (e.g. "turn at node9 toward node9->114" in run()/VisionLegWorker
+        -- the turn toward the NEXT leg's heading). Never use this for a
+        standalone rotate_at/workstation square-up with no following drive --
+        those must still brake and settle via turn_to_heading(), or the
+        robot would keep coasting with nothing to steer it back onto the
+        taped line.
+
+        FIXED 2026-07-31 (real hardware collision): the first version of
+        this method drove at full --turn-rpm right up to the tick tolerance
+        was crossed, then handed off to drive_leg() immediately -- with
+        real, uncorrected angular momentum from the still-fast turn on
+        handoff. drive_leg()'s own heading correction (kp_yaw, clamped to
+        max_turn_adjust) is a WEAK proportional trim for small drift, not a
+        real turn -- it assumes the robot arrives already pointed roughly
+        right AND STATIONARY in yaw. On a real Alvik1 route this handed off
+        5.2deg short of target while still actively rotating; drive_leg()
+        could not correct the combined error and the robot drove off the
+        taped line, colliding with a reference tag (node 20). Fixed by
+        adding a real deceleration phase (mirrors turn_to_heading()'s own
+        brake_lead/creep transition, just without ever fully stopping):
+        --turn-rpm until within --turn-brake-lead-deg of target, THEN drop
+        to slow --turn-creep-rpm, and only hand off to drive_leg() once (a)
+        within --turn-tol-deg AND (b) yaw has been STABLE (not still
+        actively rotating) for STABLE_TICKS_REQUIRED consecutive control
+        ticks at creep speed -- crossing the tolerance threshold once is no
+        longer sufficient by itself. If tolerance is never reached within
+        --turn-tol-deg after max_attempts, falls back to a real
+        stop_and_rearm() + drive_leg() (same as calling turn_to_heading()
+        then drive_leg() separately).
+
+        Returns False on error/abort (caller should stop the route), same
+        as turn_to_heading()/drive_leg()."""
+        pose = self.fresh_pose()
+        if pose is None:
+            self.get_logger().error(f"{leg_label}: lost vision -- aborting route")
+            return False
+        error = yaw_error_deg(target_heading_deg, pose.yaw)
+        if abs(error) <= self.args.turn_tol_deg:
+            # Already within tolerance at entry -- still goes through the
+            # SAME stability-confirmation loop below (just starting with
+            # zero turning to do) rather than handing off immediately. Real
+            # bug fixed 2026-07-31: an earlier version handed off here with
+            # NO check at all, which is unsafe if the robot arrives with any
+            # residual rotation left over from whatever action preceded this
+            # call (e.g. the tail of a drive_leg() brake).
+            self.get_logger().info(
+                f"{leg_label}: already within {self.args.turn_tol_deg:.1f} "
+                f"deg of target heading {target_heading_deg:.0f}, confirming "
+                "stable before driving through")
+        else:
+            self.get_logger().info(
+                f"{leg_label}: turning in place from {pose.yaw:+.1f} to "
+                f"{target_heading_deg:.0f} deg (then driving, no brake), "
+                f"turn_rpm={self.args.turn_rpm:.0f}, "
+                f"brake_lead={self.args.turn_brake_lead_deg:.2f}deg")
+
+        no_progress_timeout_sec = 5.0
+        max_attempts = 5
+        # Consecutive control ticks BOTH within turn_tol_deg AND with yaw
+        # essentially unchanged tick-to-tick, required before handing off to
+        # drive_leg() -- crossing the tolerance threshold once is not
+        # sufficient (see the FIXED note above: that was the actual
+        # collision cause). At CONTROL_HZ=50, 4 ticks is ~80ms -- long
+        # enough to distinguish "still rotating" from "settled" without
+        # meaningfully reintroducing the stop-and-settle delay this method
+        # exists to avoid.
+        STABLE_TICKS_REQUIRED = 4
+        STABLE_YAW_EPS_DEG = 0.5
+        for attempt in range(1, max_attempts + 1):
+            best_abs_error = math.inf
+            t_progress0 = time.monotonic()
+            self.send_wheel(0.0, 0.0)  # re-stamp wheel_cmd_last_ms -- see turn_to_heading()
+            stable_ticks = 0
+            last_yaw_for_stability: float | None = None
+
+            period = 1.0 / CONTROL_HZ
+            while rclpy.ok():
+                loop_t0 = time.monotonic()
+                self._spin_once(0.0)
+
+                if self.errored:
+                    self.get_logger().error(
+                        f"{leg_label}: robot reported {self.error_text} -- aborting route")
+                    return False
+
+                pose = self.fresh_pose()
+                if pose is None:
+                    self.send_cmd("STOP")
+                    self.get_logger().error(
+                        f"{leg_label}: vision lost -- STOP sent, aborting route")
+                    return False
+
+                error = yaw_error_deg(target_heading_deg, pose.yaw)
+                abs_error = abs(error)
+
+                if abs_error < best_abs_error - 0.1:
+                    best_abs_error = abs_error
+                    t_progress0 = loop_t0
+                elif loop_t0 - t_progress0 > no_progress_timeout_sec:
+                    self.get_logger().error(
+                        f"{leg_label}: no progress for {no_progress_timeout_sec:.0f}s "
+                        f"(stuck at {abs_error:.1f}deg error, last status "
+                        f"'{self.last_status}') -- aborting route")
+                    rearmed = self.stop_and_rearm()
+                    if not rearmed:
+                        self.get_logger().error(
+                            f"{leg_label}: did not re-ack WHEEL_FOLLOW_MODE after "
+                            "stopping -- aborting route")
+                    return False
+
+                if abs_error <= self.args.turn_tol_deg:
+                    # Within tolerance: HOLD (zero speed), not creep --
+                    # continuing to command creep-speed rotation here would
+                    # let the robot drift back out of tolerance instead of
+                    # actually coming to rest, defeating the whole point of
+                    # the stability check below. Confirmed on hardware
+                    # 2026-07-31: crossing this threshold once is NOT enough
+                    # (see the FIXED note above).
+                    self.send_wheel(0.0, 0.0)
+                    yaw_delta = (0.0 if last_yaw_for_stability is None
+                                 else abs(pose.yaw - last_yaw_for_stability))
+                    if yaw_delta <= STABLE_YAW_EPS_DEG:
+                        stable_ticks += 1
+                    else:
+                        stable_ticks = 0  # still actively rotating -- reset
+                    last_yaw_for_stability = pose.yaw
+                    if stable_ticks >= STABLE_TICKS_REQUIRED:
+                        self.get_logger().info(
+                            f"{leg_label}: stable within tolerance "
+                            f"(yaw={pose.yaw:+.1f}, {abs_error:.2f}deg from "
+                            "target) -- driving through, no brake")
+                        # Square up at ARRIVAL too, same as the non-fused
+                        # drive_leg()+turn_to_heading() pair every other leg
+                        # uses. REAL BUG confirmed on hardware 2026-07-31: a
+                        # move that fuses its OWN departure turn into the
+                        # PRECEDING call (see run()/_execute() in
+                        # fleetSupervisor.py) is never separately dispatched
+                        # afterward, so nothing else ever squares up at
+                        # WHERE this drive_leg() below actually lands --
+                        # Alvik1 arrived at node 0 still facing whatever
+                        # direction this leg happened to end pointing and
+                        # immediately started driving toward node 1 ~90deg
+                        # off. drive_leg() only targets position (see its
+                        # own docstring) -- it can arrive facing an
+                        # arbitrary angle just like any other leg.
+                        # target_heading_deg IS this leg's own heading (the
+                        # turn above pointed at drive_x/drive_y in a
+                        # straight line), so re-use it directly -- no need
+                        # to recompute from origin/destination coordinates.
+                        if not self.drive_leg(drive_x, drive_y, leg_label):
+                            return False
+                        return self.turn_to_heading(
+                            target_heading_deg,
+                            f"square up at {leg_label} to "
+                            f"{target_heading_deg:.0f}deg (post-fusion)")
+                    if self.args.verbose:
+                        self.get_logger().info(
+                            f"  yaw={pose.yaw:+6.1f} err={error:+6.1f}deg "
+                            f"HOLD stable_ticks={stable_ticks}")
+                    elapsed = time.monotonic() - loop_t0
+                    time.sleep(max(0.0, period - elapsed))
+                    continue
+
+                stable_ticks = 0
+                last_yaw_for_stability = None
+
+                # Decelerate to creep speed BEFORE reaching tolerance (once
+                # within turn_brake_lead_deg), same trigger turn_to_heading()
+                # uses for its brake -- here it's a speed drop, not a stop.
+                in_creep_zone = abs_error <= self.args.turn_brake_lead_deg
+                spd = (self.args.turn_creep_rpm
+                       if attempt > 1 or in_creep_zone else self.args.turn_rpm)
+                if error > 0.0:
+                    self.send_wheel(-spd, spd)
+                else:
+                    self.send_wheel(spd, -spd)
+
+                if self.args.verbose:
+                    self.get_logger().info(
+                        f"  yaw={pose.yaw:+6.1f} err={error:+6.1f}deg spd={spd:.0f}")
+
+                elapsed = time.monotonic() - loop_t0
+                time.sleep(max(0.0, period - elapsed))
+            else:
+                return False  # rclpy.ok() went false mid-turn
+
+        # Never reached tolerance within max_attempts (each attempt above
+        # runs until abs_error <= turn_tol_deg or the no-progress timeout --
+        # this is the fallback if turn_rpm/turn_creep_rpm genuinely can't
+        # close the gap, mirroring turn_to_heading()'s own max_attempts
+        # exhaustion). Fall back to a real brake + settle + drive, same as
+        # calling turn_to_heading() then drive_leg() separately.
+        self.get_logger().error(
+            f"{leg_label}: did not reach {self.args.turn_tol_deg:.1f}deg tol "
+            f"after {max_attempts} attempts -- braking and re-approaching "
+            "via turn_to_heading() before driving")
+        if not self.turn_to_heading(target_heading_deg, leg_label):
+            return False
+        if not self.drive_leg(drive_x, drive_y, leg_label):
+            return False
+        return self.turn_to_heading(
+            target_heading_deg,
+            f"square up at {leg_label} to {target_heading_deg:.0f}deg (post-fusion)")
+
     def run(self, route: list[tuple[int, float, float]],
             rotate_at: dict[int, float] | None = None,
             dwell_at: dict[int, int | None] | None = None) -> None:
@@ -1125,6 +2364,21 @@ class CameraGridNavigator(Node):
                 "apriltag_localize.py --rosbridge running on the camera "
                 "laptop and can it see this robot's tag?")
             return
+
+        # Attempt an initial yaw resync (see resync_yaw_offset()) while the
+        # robot is presumed stationary at mission start, so the FIRST turn
+        # of the route can already use turn_to_heading_rotate_rel()'s fast
+        # path instead of always paying for one wheel-streaming fallback
+        # turn per mission. Short retry loop, not a hard requirement:
+        # <robot>_pose (odom) may not have arrived yet even though vision
+        # has -- turn_to_heading_rotate_rel() already handles yaw_offset
+        # still being None by falling back safely, so failing here is not
+        # fatal to the route.
+        resync_t0 = time.monotonic()
+        while rclpy.ok() and time.monotonic() - resync_t0 < 2.0:
+            self._spin_once(0.1)
+            if self.resync_yaw_offset():
+                break
 
         self.get_logger().info(
             f"route: {' -> '.join(f'node{n}' for n, _, _ in route)}")
@@ -1140,13 +2394,19 @@ class CameraGridNavigator(Node):
         try:
             # First node is assumed to be the robot's actual starting point
             # (route[0]'s coordinates are only used for logging/sanity --
-            # driving starts toward route[1]).
+            # driving starts toward route[1]). skip_drive: set when the
+            # PREVIOUS iteration's turn_then_drive_leg() already drove this
+            # leg as part of a fused turn+drive handoff (see below) -- the
+            # next iteration must not drive_leg() the same leg again.
+            skip_drive = False
             for i in range(1, len(route)):
                 prev_n, px, py = route[i - 1]
                 n, tx, ty = route[i]
                 leg_label = f"leg {prev_n}->{n}"
-                if not self.drive_leg(tx, ty, leg_label):
-                    return
+                if not skip_drive:
+                    if not self.drive_leg(tx, ty, leg_label):
+                        return
+                skip_drive = False
                 # Square up to THIS leg's own intended heading before
                 # anything else. Confirmed 2026-07-27: drive_leg() only
                 # targets position -- it steers toward wherever currently
@@ -1158,7 +2418,7 @@ class CameraGridNavigator(Node):
                 # steering) -- reuses the already bench-verified
                 # turn_to_heading() rather than changing drive_leg() itself.
                 leg_heading = heading_between(px, py, tx, ty)
-                if not self.turn_to_heading(
+                if not self.turn_to_heading_rotate_rel(
                         leg_heading, f"square up at node{n} to {leg_heading:.0f} deg"):
                     return
                 # Explicit standalone rotation (--rotate-at), applied BEFORE
@@ -1166,7 +2426,7 @@ class CameraGridNavigator(Node):
                 # like "face 180 at the workstation" happens exactly once,
                 # at arrival, regardless of whether more legs follow.
                 if n in rotate_at:
-                    if not self.turn_to_heading(
+                    if not self.turn_to_heading_rotate_rel(
                             rotate_at[n], f"rotate at node{n} (requested)"):
                         return
                 # DWELL (service pause) AFTER any requested rotation, matching
@@ -1179,7 +2439,21 @@ class CameraGridNavigator(Node):
                 if i < len(route) - 1:
                     next_n, nx, ny = route[i + 1]
                     next_heading = heading_between(tx, ty, nx, ny)
-                    if not self.turn_to_heading(
+                    # No rotate_at/dwell just happened at this node: the turn
+                    # toward the next leg can hand off DIRECTLY into that
+                    # leg's drive_leg() (turn_then_drive_leg(), added
+                    # 2026-07-31) -- no brake/settle/re-arm between them.
+                    # After a rotate_at or dwell, the robot must actually be
+                    # stationary at the requested heading/for the requested
+                    # wait, so those cases keep the separate brake-and-settle
+                    # turn_to_heading() + the next iteration's own drive_leg().
+                    if n not in rotate_at and n not in dwell_at:
+                        if not self.turn_then_drive_leg(
+                                next_heading, nx, ny,
+                                f"turn at node{n} toward node{next_n}"):
+                            return
+                        skip_drive = True
+                    elif not self.turn_to_heading_rotate_rel(
                             next_heading, f"turn at node{n} toward node{next_n}"):
                         return
             self.get_logger().info("route complete.")
@@ -1188,7 +2462,7 @@ class CameraGridNavigator(Node):
         finally:
             self.send_cmd("STOP")
             for _ in range(5):
-                rclpy.spin_once(self, timeout_sec=0.05)
+                self._spin_once(0.05)
             self.get_logger().info("STOP sent, exiting.")
 
 
@@ -1222,6 +2496,14 @@ def main() -> None:
                           "Repeatable. Example: --dwell-at 65 --dwell-at 91:3000")
     ap.add_argument("--rows", type=int, default=8)
     ap.add_argument("--cols", type=int, default=8)
+    # turn_to_heading() tapered proportional-speed law -- RESTORED
+    # 2026-07-31 to the version actually committed to GitHub (commit
+    # 0634800), replacing a same-day-later (2026-07-28) constant-turn-RPM +
+    # hard-brake rewrite that was never re-validated against the
+    # perimeter-run baseline and showed real coast-distance inconsistency
+    # on 2-robot hardware testing (some turns clean, others 60+deg
+    # overshoot needing a slow re-approach). See turn_to_heading()'s own
+    # docstring for the full history.
     ap.add_argument("--turn-tol-deg", type=float, default=1.0,
                      help="consider a turn complete within this many degrees "
                           "of the target heading (default 1.0 -- bench-"
@@ -1296,6 +2578,25 @@ def main() -> None:
                           "clean 90deg turn completes in well under 1s even "
                           "at reduced speeds -- this is not the bottleneck "
                           "for overall route time.")
+    # turn_then_drive_leg()-ONLY params (the constant-RPM + hard-brake law
+    # turn_to_heading() used before the 2026-07-31 revert above). This
+    # method is currently DISABLED in fleetSupervisor.py (see
+    # run_advised_vision()'s docstring -- caused two real hardware
+    # collisions) but is still reachable from the standalone CLI/run(), so
+    # these params still need to exist and validate even though nothing
+    # exercises them in normal use right now.
+    ap.add_argument("--turn-rpm", type=float, default=35.0,
+                     help="[turn_then_drive_leg() only] constant turn-in-place "
+                          "wheel speed, RPM, for the whole turn before handoff "
+                          "(default 35).")
+    ap.add_argument("--turn-brake-lead-deg", type=float, default=30.0,
+                     help="[turn_then_drive_leg() only] drop to --turn-creep-rpm "
+                          "once within this many degrees of the target heading "
+                          "(default 30).")
+    ap.add_argument("--turn-creep-rpm", type=float, default=10.0,
+                     help="[turn_then_drive_leg() only] much slower turn speed, "
+                          "RPM, used once within --turn-brake-lead-deg or on "
+                          "re-approach attempts (default 10).")
     # drive_leg() constant-cruise + hard-brake law (REPLACED 2026-07-28 --
     # see drive_leg()'s docstring for the full history. The prior
     # distance-proportional kp_dist/drive-min-speed/drive-max-speed law is
@@ -1311,19 +2612,24 @@ def main() -> None:
                           "color-sensor firmware's demonstrated hard-stop-"
                           "capable cruise speed and the --stop-test-rpm "
                           "default used to measure --brake-lead-in below.")
-    ap.add_argument("--brake-lead-in", type=float, default=3.7,
+    ap.add_argument("--brake-lead-in", type=float, default=1.9,
                      help="fire a hard STOP once within this many inches of "
-                          "the target (default 3.7). Measured 2026-07-28 via "
-                          "a 7-leg --stop-test run at --cruise-rpm=60 with "
-                          "this same heading-correction law: mean "
-                          "slide-after-brake 3.21in (range 3.04-3.42in), "
-                          "every leg landing short of target (mean 0.39in "
-                          "short, max overshoot 0in -- never overshot). "
-                          "3.7 covers the observed max slide (3.42in) with "
-                          "margin. If --cruise-rpm is changed from 60, "
-                          "RE-MEASURE with --stop-test before trusting this "
-                          "default -- stopping distance is not necessarily "
-                          "linear in RPM.")
+                          "the target (default 1.9). RE-MEASURED 2026-07-28 "
+                          "(same day, later) after a TcpFrameSource.read() "
+                          "fix (apriltag_localize.py) eliminated a vision-"
+                          "pipeline stale-frame backlog -- the earlier 3.7in "
+                          "value (mean slide 3.21in) had been calibrated "
+                          "against that backlog's extra lag and was braking "
+                          "too early once fixed (a --stop-test re-run at "
+                          "brake_lead_in=3.7 post-fix showed slide drop to "
+                          "1.64in mean, landing ~2in SHORT every time). "
+                          "1.9 is confirmed via a follow-up 7-leg --stop-test "
+                          "at brake_lead_in=1.9: mean slide 1.61in (range "
+                          "1.55-1.67in), mean along-path error only 0.23in "
+                          "short (range 0.11-0.30in), never overshot. If "
+                          "--cruise-rpm is changed from 60, or the vision "
+                          "pipeline changes again, RE-MEASURE with "
+                          "--stop-test before trusting this default.")
     ap.add_argument("--kp-yaw", type=float, default=0.6,
                      help="proportional gain: wheel-speed turn adjustment per "
                           "degree of heading error toward the live target")
@@ -1381,20 +2687,20 @@ def main() -> None:
                           "brake per turn once within --turn-test-lead-deg of "
                           "that turn's target, re-arming between turns, then "
                           "report target vs. actual final heading per turn "
-                          "plus a summary. Use this BEFORE retuning "
-                          "turn_to_heading()'s decel-zone constants by hand: "
-                          "it measures real angular stopping distance at a "
-                          "steady turn RPM directly, the same fix applied to "
-                          "straight-line driving via --stop-test after "
-                          "turn_to_heading()'s hand-tuned decel zone still "
+                          "plus a summary. Use this BEFORE trusting a "
+                          "--turn-rpm/--turn-brake-lead-deg value: it "
+                          "measures real angular stopping distance at a "
+                          "steady turn RPM directly (this is exactly how "
+                          "turn_to_heading()'s own --turn-rpm/"
+                          "--turn-brake-lead-deg defaults were derived, "
+                          "after its earlier hand-tuned tapered decel zone "
                           "produced multi-rotation overshoot-correct cycles "
-                          "on hardware. --route is REQUIRED by argparse "
+                          "on hardware). --route is REQUIRED by argparse "
                           "(parse_route() needs >=2 nodes) but unused in "
                           "this mode -- pass any 2 valid nodes, e.g. "
-                          "--route 1,2. All --turn-min-speed/--turn-decel-"
-                          "zone-deg/--turn-creep-speed/--turn-scale-deg/"
-                          "--turn-max-speed args are ignored (use "
-                          "--turn-test-rpm/--turn-test-lead-deg instead).")
+                          "--route 1,2. --turn-rpm/--turn-brake-lead-deg are "
+                          "ignored in this mode (use --turn-test-rpm/"
+                          "--turn-test-lead-deg instead).")
     ap.add_argument("--turn-test-rpm", type=float, default=35.0,
                      help="constant turn-in-place wheel speed, RPM, for "
                           "--turn-test (default 35, matching "
@@ -1406,6 +2712,90 @@ def main() -> None:
                           "-- start wide and generous, then narrow based on "
                           "the measured overshoot/undershoot from the first "
                           "run, same approach as --stop-test-lead-in)")
+    ap.add_argument("--turn-heading-test", metavar="HEADINGS",
+                     help="measurement mode (2026-07-31): rotate in place "
+                          "through a comma-separated list of absolute target "
+                          "headings (same yaw convention as --turn-test: "
+                          "0=-y, 90=+x, 180=+y, 270=-x), e.g. "
+                          "--turn-heading-test 0,180,90,270,0 -- via the "
+                          "REAL turn_to_heading() (the reverted tapered-"
+                          "decel-zone law), with no drive_leg() involved. "
+                          "Unlike --turn-test (constant-RPM/hard-brake, a "
+                          "different method) and --rotate-test (firmware "
+                          "ROTATE_REL, also different), this is the mode "
+                          "that actually benches turn_to_heading() in "
+                          "isolation -- uses the --turn-tol-deg/--turn-"
+                          "settle-count/--turn-min-speed/--turn-decel-zone-"
+                          "deg/--turn-creep-speed/--turn-scale-deg/--turn-"
+                          "max-speed flags already defined above, same as a "
+                          "real route's turns would. --route is REQUIRED by "
+                          "argparse (parse_route() needs >=2 nodes) but "
+                          "unused in this mode -- pass any 2 valid nodes, "
+                          "e.g. --route 1,2.")
+    ap.add_argument("--rotate-test", metavar="HEADINGS",
+                     help="measurement mode (2026-07-30): rotate in place "
+                          "through a comma-separated list of absolute target "
+                          "headings (same yaw convention as --turn-test: "
+                          "0=-y, 90=+x, 180=+y, 270=-x), e.g. "
+                          "--rotate-test 90,180,270,0 -- but via the "
+                          "firmware's ROTATE_REL command (alvik.rotate(), "
+                          "closed-loop on Alvik's own motor-control MCU) "
+                          "instead of streaming WHEEL_FOLLOW_MODE wheel-speed "
+                          "setpoints. Use this to validate ROTATE_REL's real "
+                          "accuracy before trusting turn_to_heading() (which "
+                          "now uses ROTATE_REL by default, see its "
+                          "docstring) inside a full route. No RPM/brake-lead "
+                          "flags needed -- alvik.rotate() has no equivalent "
+                          "tunable, it either lands accurately or it "
+                          "doesn't. --route is REQUIRED by argparse "
+                          "(parse_route() needs >=2 nodes) but unused in "
+                          "this mode -- pass any 2 valid nodes, e.g. "
+                          "--route 1,2. Requires firmware with the "
+                          "ROTATE_REL command (AGV_Factory_camera_correction.ino, "
+                          "added 2026-07-30) -- older firmware will report "
+                          "ERROR UNKNOWN_COMMAND and abort the first leg.")
+    ap.add_argument("--yaw-stress-test",
+                     choices=["encoder", "camera_assist", "camera_only",
+                              "encoder_drift", "all"],
+                     help="measurement mode (2026-08-13): ROS2/rosbridge "
+                          "equivalent of TurnSpeedBenchAlvik6.ino's standalone "
+                          "Arduino stress test -- 128 there-then-back ROTATE_REL "
+                          "rotations (same angle set/cable-safety pairing as the "
+                          "Arduino sketch) run through the REAL production code "
+                          "path (turn_to_heading_rotate_rel()'s send + this "
+                          "file's own odom/vision callbacks over the actual "
+                          "wireless link), in one of four yaw-source modes: "
+                          "'encoder' sizes every ROTATE_REL from corrected "
+                          "onboard yaw only, RESYNCED to vision after every "
+                          "rotation (no raw drift visible); 'camera_assist' "
+                          "does the same odom sizing but samples vision after "
+                          "and sends one corrective ROTATE_REL if still outside "
+                          "--turn-tol-deg; 'camera_only' sizes every ROTATE_REL "
+                          "from vision yaw directly, ignoring odom; "
+                          "'encoder_drift' (added 2026-08-20, per explicit user "
+                          "direction) is the ONE mode that shows real "
+                          "accumulated onboard-encoder drift: same odom sizing "
+                          "as 'encoder', but with NO tier-start reset and NO "
+                          "per-rotation resync, so error compounds freely "
+                          "across all 128 rotations -- only meaningful run LAST "
+                          "via 'all' (inherits whatever onboard yaw state "
+                          "'camera_only' left), not standalone from a fresh "
+                          "reset. 'all' (added 2026-08-13, extended 2026-08-20 "
+                          "to include 'encoder_drift' last) chains all four "
+                          "back to back with a --yaw-stress-settle-sec pause "
+                          "between, one process/one flash. Run 'encoder' (or "
+                          "'all', which starts with it) first and confirm zero "
+                          "aborts/hangs before trusting turn_to_heading_rotate_"
+                          "rel() (which uses 'camera_assist' behavior by "
+                          "default) inside a full route -- see that method's "
+                          "docstring for the ROTATE_REL hang history. --route "
+                          "is REQUIRED by argparse but unused, same as "
+                          "--rotate-test -- pass any 2 valid nodes.")
+    ap.add_argument("--yaw-stress-settle-sec", type=float, default=5.0,
+                     help="pause between tiers when --yaw-stress-test all is "
+                          "used, seconds (default 5.0) -- lets the robot fully "
+                          "settle/come to rest and gives you a moment to watch "
+                          "before the next tier's reset_onboard_pose() fires.")
     args = ap.parse_args()
     worst_case = args.cruise_rpm + args.max_turn_adjust
     if worst_case > 70.0:  # WHEEL_FOLLOW_MAX_RPM in AGV_Factory_camera_correction.ino
@@ -1426,14 +2816,14 @@ def main() -> None:
         ap.error(
             f"--turn-test-rpm ({args.turn_test_rpm:.1f}) exceeds the "
             "firmware's WHEEL_FOLLOW_MAX_RPM (70.0).")
-    if args.turn_scale_deg <= args.turn_decel_zone_deg:
+    if args.turn_rpm > 70.0:
         ap.error(
-            f"--turn-scale-deg ({args.turn_scale_deg:.1f}) must be greater "
-            f"than --turn-decel-zone-deg ({args.turn_decel_zone_deg:.1f})")
-    if args.turn_decel_zone_deg <= args.turn_tol_deg:
+            f"--turn-rpm ({args.turn_rpm:.1f}) exceeds the firmware's "
+            "WHEEL_FOLLOW_MAX_RPM (70.0).")
+    if args.turn_creep_rpm > 70.0:
         ap.error(
-            f"--turn-decel-zone-deg ({args.turn_decel_zone_deg:.1f}) must be "
-            f"greater than --turn-tol-deg ({args.turn_tol_deg:.1f})")
+            f"--turn-creep-rpm ({args.turn_creep_rpm:.1f}) exceeds the "
+            "firmware's WHEEL_FOLLOW_MAX_RPM (70.0).")
 
     try:
         route = parse_route(args.route, args.rows, args.cols)
@@ -1500,6 +2890,157 @@ def main() -> None:
                     f"(last status: '{node.last_status}') -- aborting")
                 return
             node.turn_test_route(headings, args.turn_test_rpm, args.turn_test_lead_deg)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            node.send_cmd("STOP")
+            for _ in range(5):
+                rclpy.spin_once(node, timeout_sec=0.05)
+            node.get_logger().info("STOP sent, exiting.")
+            try:
+                node.destroy_node()
+                rclpy.shutdown()
+            except Exception:
+                pass
+        return
+
+    if args.turn_heading_test is not None:
+        try:
+            headings = [float(tok) for tok in args.turn_heading_test.split(",")]
+        except ValueError:
+            ap.error(f"--turn-heading-test expects comma-separated numbers, "
+                      f"got {args.turn_heading_test!r}")
+            return
+        if not headings:
+            ap.error("--turn-heading-test requires at least one heading")
+            return
+        rclpy.init()
+        node = CameraGridNavigator(args.robot, args)
+        try:
+            if not node.wait_for_fresh_vision(timeout_sec=5.0):
+                node.get_logger().error(
+                    f"no fresh {args.robot}_vision_pose received -- is "
+                    "apriltag_localize.py --rosbridge running on the camera "
+                    "laptop and can it see this robot's tag?")
+                return
+            if not node.enter_wheel_follow_mode():
+                node.get_logger().error(
+                    f"robot did not ack WHEEL_FOLLOW_MODE "
+                    f"(last status: '{node.last_status}') -- aborting")
+                return
+            node.turn_heading_test_route(headings)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            node.send_cmd("STOP")
+            for _ in range(5):
+                rclpy.spin_once(node, timeout_sec=0.05)
+            node.get_logger().info("STOP sent, exiting.")
+            try:
+                node.destroy_node()
+                rclpy.shutdown()
+            except Exception:
+                pass
+        return
+
+    if args.rotate_test is not None:
+        try:
+            headings = [float(tok) for tok in args.rotate_test.split(",")]
+        except ValueError:
+            ap.error(f"--rotate-test expects comma-separated numbers, got "
+                      f"{args.rotate_test!r}")
+            return
+        if not headings:
+            ap.error("--rotate-test requires at least one heading")
+            return
+        rclpy.init()
+        node = CameraGridNavigator(args.robot, args)
+        try:
+            if not node.wait_for_fresh_vision(timeout_sec=5.0):
+                node.get_logger().error(
+                    f"no fresh {args.robot}_vision_pose received -- is "
+                    "apriltag_localize.py --rosbridge running on the camera "
+                    "laptop and can it see this robot's tag?")
+                return
+            # No enter_wheel_follow_mode() here -- ROTATE_REL is a
+            # standalone firmware command (like ROTATE_180/DWELL), not
+            # something that only works inside WHEEL_FOLLOW_MODE.
+            node.rotate_test_route(headings)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            node.send_cmd("STOP")
+            for _ in range(5):
+                rclpy.spin_once(node, timeout_sec=0.05)
+            node.get_logger().info("STOP sent, exiting.")
+            try:
+                node.destroy_node()
+                rclpy.shutdown()
+            except Exception:
+                pass
+        return
+
+    if args.yaw_stress_test is not None:
+        rclpy.init()
+        node = CameraGridNavigator(args.robot, args)
+        try:
+            if not node.wait_for_fresh_vision(timeout_sec=5.0):
+                node.get_logger().error(
+                    f"no fresh {args.robot}_vision_pose received -- is "
+                    "apriltag_localize.py --rosbridge running on the camera "
+                    "laptop and can it see this robot's tag?")
+                return
+            # Initial resync so an "encoder"/"camera_assist" FIRST tier has
+            # a corrected_odom_yaw() to start from -- same pattern as run()'s
+            # own mission-start resync attempt. Each tier's own
+            # yaw_stress_test_route() call resets/resyncs again itself at
+            # its own start regardless, so this is only a fast-fail check
+            # (odom simply never arriving at all) before committing to a
+            # 128-rotation run, not load-bearing for correctness.
+            resync_t0 = time.monotonic()
+            while rclpy.ok() and time.monotonic() - resync_t0 < 2.0:
+                node._spin_once(0.1)
+                if node.resync_yaw_offset():
+                    break
+            first_mode = "encoder" if args.yaw_stress_test == "all" else args.yaw_stress_test
+            if node.yaw_offset is None and first_mode != "camera_only":
+                node.get_logger().error(
+                    "no odom (<robot>_pose) received within 2s -- is the "
+                    "firmware's publish_pose() running? aborting "
+                    f"(mode={first_mode!r} requires odom; camera_only does not)")
+                return
+            # No enter_wheel_follow_mode() here -- same reasoning as
+            # --rotate-test: ROTATE_REL is a standalone firmware command.
+            if args.yaw_stress_test == "all":
+                modes = ["encoder", "camera_assist", "camera_only", "encoder_drift"]
+                for i, mode in enumerate(modes):
+                    if mode == "encoder_drift":
+                        # Deliberately NOT reset/resynced -- see
+                        # yaw_stress_test_route()'s reset_first/
+                        # resync_after_each docstrings. Only meaningful
+                        # run here, right after camera_only, inheriting
+                        # whatever onboard yaw state that tier left.
+                        node.yaw_stress_test_route(
+                            mode, reset_first=False, resync_after_each=False)
+                    else:
+                        node.yaw_stress_test_route(mode)
+                    if i < len(modes) - 1:
+                        node.get_logger().info(
+                            f"### settling {args.yaw_stress_settle_sec:.1f}s "
+                            f"before next tier ({modes[i + 1]}) ###")
+                        node.spin_for(args.yaw_stress_settle_sec)
+            elif args.yaw_stress_test == "encoder_drift":
+                node.get_logger().info(
+                    "encoder_drift run standalone -- this only shows real "
+                    "drift if this robot has already accumulated some "
+                    "(e.g. right after a fresh reset there will be little "
+                    "to see; run --yaw-stress-test all for the intended "
+                    "encoder -> camera_assist -> camera_only -> "
+                    "encoder_drift sequence)")
+                node.yaw_stress_test_route(
+                    "encoder_drift", reset_first=False, resync_after_each=False)
+            else:
+                node.yaw_stress_test_route(args.yaw_stress_test)
         except KeyboardInterrupt:
             pass
         finally:

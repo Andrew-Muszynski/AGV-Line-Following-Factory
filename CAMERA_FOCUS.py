@@ -33,8 +33,13 @@ Usage:
     python apriltag_localize.py --tag-size 4.0        # ref tag black square, inches
     python apriltag_localize.py --tag-size 4.0 --camera 1 --log run1.csv
     python apriltag_localize.py --tag-size 4.0 --no-preview
+    python apriltag_localize.py --focus-assist --focus-tags 20 21 22 23 1 3 5
 
-Keys in the preview window: q = quit, r = reset calibration (e.g. camera bumped).
+Keys in the preview window:
+    q = quit
+    r = reset calibration (e.g. camera bumped)
+    f = toggle focus assistant
+    b = reset the recorded best-focus score
 """
 
 from __future__ import annotations
@@ -46,22 +51,17 @@ import math
 import select
 import socket
 import statistics
-import struct
 import threading
 import time
-from collections import Counter
+from collections import Counter, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
+import os
+os.environ["OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS"] = "0"
 import cv2
 import numpy as np
 from pupil_apriltags import Detector
 
 from apriltag_detect import open_camera
-
-# Must match camera_bridge_windows.py's CROP_MAGIC exactly -- this is the
-# wire-format contract for the crop back-channel (see that file's module
-# docstring, and TcpFrameSource.send_crop() below).
-CROP_MAGIC = b"CROP"
 
 
 class TcpFrameSource:
@@ -97,40 +97,14 @@ class TcpFrameSource:
     Wire format: 4-byte big-endian length prefix, then that many bytes of
     JPEG data. One direction, no ack -- matches camera_bridge_windows.py."""
 
-    def __init__(self, port: int, host: str = "127.0.0.1", connect_timeout: float = 10.0,
-                 diag: bool = False):
+    def __init__(self, port: int, host: str = "127.0.0.1", connect_timeout: float = 10.0):
         print(f"TcpFrameSource: connecting to camera_bridge_windows.py at "
               f"{host}:{port}...")
         self._conn = socket.create_connection((host, port), timeout=connect_timeout)
         self._conn.settimeout(None)
         print("TcpFrameSource: connected.")
         self._conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        # NOTE 2026-08-05: a larger SO_RCVBUF was tried here during the
-        # isaac_ros_apriltag_gpu throughput investigation (recv() was
-        # measured taking ~56 small calls per frame, theorized as
-        # buffer-starvation) -- TESTED AND DISPROVEN with a genuine 8MB
-        # buffer (confirmed actually granted, not kernel-capped): call count
-        # barely changed (56->36) and total time didn't improve (stayed
-        # ~34-35ms). Real bottleneck is still unexplained -- see memory:
-        # isaac_ros_apriltag_gpu for the full investigation (rate-limiter
-        # bug found+fixed elsewhere, decode/network/sender/AprilTagNode all
-        # independently ruled out, buffer size also ruled out). Don't
-        # re-try this fix without new evidence.
         self._last_frame: np.ndarray | None = None
-        # Opt-in fine-grained internal timing (2026-08-05, isaac_ros_apriltag_gpu
-        # throughput investigation continued): read()'s own --diag bucket in
-        # isaac_ros_image_publisher.py wraps recv AND imdecode AND the
-        # backlog-drain loop together as one number, which can't distinguish
-        # "network/OS is slow to deliver bytes" from "this process is slow to
-        # decode JPEGs" from "backlog piled up because this process fell
-        # behind the sender's 60fps for some OTHER reason (e.g. Python
-        # scheduling)". These are separated out here so the real cause can be
-        # read off directly instead of guessed at.
-        self._diag = diag
-        if self._diag:
-            self._diag_recv_ms: list[float] = []
-            self._diag_decode_ms: list[float] = []
-            self._diag_drained: list[int] = []
 
     def _recv_exact(self, n: int) -> bytes | None:
         buf = bytearray()
@@ -169,11 +143,9 @@ class TcpFrameSource:
         (newest) one -- select() with a 0 timeout is non-blocking, so this
         never waits once the backlog is empty, only skips over frames that
         already fully arrived."""
-        t0 = time.perf_counter() if self._diag else 0.0
         data = self._recv_one_frame()
         if data is None:
             return False, None
-        drained = 0
         while True:
             ready, _, _ = select.select([self._conn], [], [], 0.0)
             if not ready:
@@ -182,43 +154,11 @@ class TcpFrameSource:
             if newer is None:
                 break
             data = newer
-            drained += 1
-        t1 = time.perf_counter() if self._diag else 0.0
         frame = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
             return False, None
-        if self._diag:
-            t2 = time.perf_counter()
-            self._diag_recv_ms.append((t1 - t0) * 1000.0)
-            self._diag_decode_ms.append((t2 - t1) * 1000.0)
-            self._diag_drained.append(drained)
         self._last_frame = frame
         return True, frame
-
-    def diag_summary(self) -> str | None:
-        """Opt-in (diag=True) breakdown of read()'s internal cost since the
-        last call to this method -- see the NOTE in read() for why recv/
-        decode/drain-count are tracked separately. Returns None (and resets
-        nothing) if diag=False or no reads have happened yet."""
-        if not self._diag or not self._diag_recv_ms:
-            return None
-
-        def _fmt(xs: list[float]) -> str:
-            s = sorted(xs)
-            n = len(s)
-            return (f"median={s[n//2]:.1f}ms p95={s[min(int(0.95*n), n-1)]:.1f}ms "
-                    f"max={s[-1]:.1f}ms")
-
-        n = len(self._diag_recv_ms)
-        drained_total = sum(self._diag_drained)
-        summary = (f"n={n}  recv={_fmt(self._diag_recv_ms)}  "
-                   f"decode={_fmt(self._diag_decode_ms)}  "
-                   f"drained_total={drained_total} "
-                   f"({drained_total/n:.1f}/read)")
-        self._diag_recv_ms.clear()
-        self._diag_decode_ms.clear()
-        self._diag_drained.clear()
-        return summary
 
     def isOpened(self) -> bool:  # noqa: N802 - matches cv2.VideoCapture's API
         return self._conn is not None
@@ -241,19 +181,6 @@ class TcpFrameSource:
         # side (camera_bridge_windows.py), not here -- silently accept so
         # existing cap.set(...) calls in main() don't need special-casing.
         return True
-
-    def send_crop(self, x0: int, y0: int, x1: int, y1: int) -> None:
-        """Tell camera_bridge_windows.py to crop every subsequent frame to
-        this pixel rect (in the FULL uncropped frame's coordinates) before
-        encoding -- see that file's module docstring for the wire format
-        and why (2026-08-05 throughput investigation). Call with all-zero
-        args to reset back to full-frame uncropped mode. This is the only
-        thing ever sent FROM this side TO the sender on this socket."""
-        cmd = CROP_MAGIC + struct.pack(">HHHH", x0, y0, x1, y1)
-        self._conn.sendall(cmd)
-
-    def reset_crop(self) -> None:
-        self.send_crop(0, 0, 0, 0)
 
     def release(self) -> None:
         try:
@@ -315,12 +242,8 @@ TABLE_SIZE_IN = SPAN_IN + 2 * TAG20_INSET_IN  # 97.0
 DEFAULT_REF_TAG_SIZE_IN = 3.835
 
 # Tag IDs 1-4 observed on the robots 2026-07-07; verify each tag is on the
-# matching Alvik (i.e. tag 1 on the robot publishing Alvik1_pose). Tags 5/6
-# added 2026-08-03 (unverified against the physical stickers -- confirm tag 5
-# is really on Alvik5 and tag 6 on Alvik6 before trusting this mapping).
-ROBOT_NAMES: dict[int, str] = {
-    1: "Alvik1", 2: "Alvik2", 3: "Alvik3", 4: "Alvik4", 5: "Alvik5", 6: "Alvik6",
-}
+# matching Alvik (i.e. tag 1 on the robot publishing Alvik1_pose).
+ROBOT_NAMES: dict[int, str] = {1: "Alvik1", 2: "Alvik2", 3: "Alvik3", 4: "Alvik4"}
 
 # ---- grid anchor (tape-measured 2026-07-09) ----
 # Node 1 (first node of the 8x8 lattice) center in table inches: 13.5 in x,
@@ -332,45 +255,6 @@ ROBOT_NAMES: dict[int, str] = {
 # or rotation error.
 GRID_NODE1_WORLD_IN = (13.5, 16.75)
 GRID_PITCH_IN = 10.0
-
-# ---- depot slots / entries / node 0 (measured 2026-07-30) ----
-# Each robot's AprilTag read directly off apriltag_localize.py's own preview
-# overlay while physically parked -- NOT extrapolated from a fixed pitch.
-# CONFIRMED this matters: the dashboard HTML (agv_grid_workstation_solver.html)
-# assumes a uniform DEPOT_SLOT_PITCH=0.6 grid cells (6.0in) between slots,
-# but real measured spacing is ~5.0-5.4in for slots 1-4, widening to
-# 6.3-7.3in for slots 5-6 -- extrapolating from the nominal pitch would have
-# put D5/D6 measurably wrong. D1/DE1 here are close to (not identical to)
-# camera_grid_navigate.py's own DEPOT_WORLD_IN[-1]/[-2] (19.7,10.3)/(19.6,3.0)
-# -- small difference is expected parking precision, not a contradiction.
-# Two separate passes: all 6 robots parked at D1-D6 for one frame, then all
-# 6 moved to DE1-DE6 for a second frame (robots can't occupy both at once).
-# node 0 measured the same way (Alvik1 driven onto it, facing west/-x).
-DEPOT_SLOT_WORLD_IN: dict[str, tuple[float, float]] = {
-    "D1": (20.0, 10.5), "D2": (25.3, 10.7), "D3": (30.3, 10.8),
-    "D4": (35.7, 10.7), "D5": (42.0, 10.6), "D6": (49.3, 10.6),
-}
-DEPOT_ENTRY_WORLD_IN: dict[str, tuple[float, float]] = {
-    "DE1": (19.6, 3.0), "DE2": (24.9, 3.0), "DE3": (30.2, 3.3),
-    "DE4": (35.4, 3.2), "DE5": (41.9, 3.2), "DE6": (49.1, 3.2),
-}
-NODE0_WORLD_IN: tuple[float, float] = (13.3, 2.9)
-
-
-def build_depot_overlay_points() -> list[tuple[str, float, float]]:
-    """Depot slots, depot entries, and node 0 for the --show-nodes ('o')
-    overlay -- added 2026-07-30 alongside the lattice/workstation/entry
-    points from build_node_overlay_points(). Kept as a SEPARATE list with
-    STRING ids (D1, DE1, 0) rather than folded into that function's
-    integer-id list, since depot labels aren't plain grid-node numbers and
-    nothing downstream (sticker detection, click diagnostics) needs to
-    treat them the same way lattice/bay nodes are treated."""
-    out: list[tuple[str, float, float]] = [("0", NODE0_WORLD_IN[0], NODE0_WORLD_IN[1])]
-    for label, (x, y) in DEPOT_SLOT_WORLD_IN.items():
-        out.append((label, x, y))
-    for label, (x, y) in DEPOT_ENTRY_WORLD_IN.items():
-        out.append((label, x, y))
-    return out
 
 
 def world_to_grid(x_in: float, y_in: float) -> tuple[float, float]:
@@ -527,139 +411,6 @@ def detect_stickers(frame, table_mask=None) -> list[tuple[str, int, int, int]]:
     return found
 
 
-STICKER_WINDOW_RADIUS_PX_DEFAULT = 32  # half-width of the per-node search box
-# RAISED from 22 to 32 (2026-07-30, same day) after a real hardware miss: a
-# clicked sticker's HSV (h=3-6,s=111-117,v=143-144) was confirmed well
-# inside the RED range, yet its node's 22px window still found nothing --
-# not a color-threshold problem, a window-too-tight/alignment problem. 32px
-# gives more tolerance for small offsets between the projected node
-# position and the real sticker's physical center without reopening the
-# whole-table false-positive problem the windowed approach was built to fix.
-
-# Separate, LOWER area threshold for windowed search than the whole-table
-# STICKER_MIN_AREA_PX (40) -- CONFIRMED 2026-07-30 via --debug-sticker-nodes
-# on real hardware that 40 was rejecting genuine stickers: node 155's real
-# yellow sticker measured only 27px (mask had 78 matching pixels before
-# MORPH_OPEN eroded it to 40, single contour then 27 -- MORPH_OPEN also
-# removed, see the loop below, so this only needs to reject genuine noise,
-# not compensate for erosion loss too). The small search window itself
-# (64x64px = 4096px^2 total) already does most of the noise-rejection work
-# a large area threshold exists for in a whole-frame scan -- it doesn't
-# need to ALSO be large here. 15 gives real margin below the smallest
-# confirmed-real blob (27) without going so low that single-pixel sensor
-# noise could pass; re-derive from more --debug-sticker-nodes samples if
-# real misses persist below this.
-STICKER_WINDOW_MIN_AREA_PX = 15
-
-# Which sticker color(s) to search for, per node type -- searching every
-# color at every node (the first version of this function) wastes cycles
-# and adds needless cross-color false-match risk. Matches the SAME
-# red-lattice/yellow-bay convention build_node_overlay_points() already
-# uses for the 'o' overlay's own circle coloring.
-STICKER_COLORS_FOR_LATTICE = ["RED"]
-STICKER_COLORS_FOR_BAY = ["YELLOW"]
-
-
-def detect_stickers_at_nodes(
-        frame, node_overlay_pixels, window_radius_px: int = STICKER_WINDOW_RADIUS_PX_DEFAULT,
-        debug_node_ids: set[int] | None = None,
-) -> list[tuple[int, str | None, int, int, int]]:
-    """Added 2026-07-30, replaces whole-table detect_stickers() for the 'u'
-    overlay: instead of scanning the ENTIRE table for color blobs and hoping
-    the HSV thresholds alone separate real stickers from tape/glare/shadow
-    noise, search only a small window around each node's already-known
-    pixel position (node_overlay_pixels -- the exact same homography
-    projection that makes the 'o' overlay accurate, see
-    build_node_overlay_points()/main()'s Hinv_nodes block). This is a much
-    easier detection problem: "which color, if any, is centered near this
-    known point" instead of "find every color blob anywhere and guess which
-    ones are real."
-
-    WHY: on real hardware (2026-07-30, controlled/even lighting after a room
-    change) the whole-table version was still producing false positives
-    (color blobs matching in areas with no real sticker) AND false negatives
-    (missing several real top-row stickers, e.g. nodes 57/59/61/63/64) at
-    the same time -- both symptoms of the same root cause, a detector with
-    no positional prior trying to do everything through color thresholds
-    alone.
-
-    SEARCHES EVERY NODE (lattice AND workstation/entry, CHANGED same day
-    from an earlier lattice-only version) -- the first version excluded
-    is_bay nodes assuming they had no floor stickers, but real hardware
-    screenshots showed yellow stickers inside several workstation bay
-    cutouts. Plain lattice nodes are searched for RED only, workstation/
-    entry (is_bay) nodes for YELLOW only (STICKER_COLORS_FOR_LATTICE /
-    STICKER_COLORS_FOR_BAY) -- matches the existing red-lattice/
-    yellow-bay convention, and searching only the relevant color per node
-    is both faster and less prone to a stray cross-color match than
-    checking all three colors everywhere.
-
-    Returns one entry per node: (node_id, color_or_None, cx, cy, area_px).
-    color is None (cx/cy/area_px then 0) when NO sticker-colored blob was
-    found inside that node's window at all -- every node is expected to
-    have a real sticker, so a None here is a genuine missing/occluded/worn
-    sticker worth flagging, not filtered out."""
-    hsv_full = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    h, w = frame.shape[:2]
-    results: list[tuple[int, str | None, int, int, int]] = []
-    for n, px, py, is_bay in node_overlay_pixels:
-        colors_to_check = STICKER_COLORS_FOR_BAY if is_bay else STICKER_COLORS_FOR_LATTICE
-        cx0, cy0 = int(round(px)), int(round(py))
-        x0 = max(0, cx0 - window_radius_px)
-        x1 = min(w, cx0 + window_radius_px)
-        y0 = max(0, cy0 - window_radius_px)
-        y1 = min(h, cy0 + window_radius_px)
-        if x1 <= x0 or y1 <= y0:
-            results.append((n, None, 0, 0, 0))
-            continue
-        window_hsv = hsv_full[y0:y1, x0:x1]
-
-        debug = debug_node_ids is not None and n in debug_node_ids
-        best_color, best_area, best_cx, best_cy = None, 0, 0, 0
-        for color in colors_to_check:
-            ranges = STICKER_HSV_RANGES[color]
-            mask = None
-            for lo, hi in ranges:
-                part = cv2.inRange(window_hsv, np.array(lo, dtype=np.uint8),
-                                    np.array(hi, dtype=np.uint8))
-                mask = part if mask is None else cv2.bitwise_or(mask, part)
-            mask_pixels = int(cv2.countNonZero(mask))
-            # NO MORPH_OPEN here (removed 2026-07-30) -- CONFIRMED via
-            # --debug-sticker-nodes on real hardware to erode real sticker
-            # blobs below STICKER_MIN_AREA_PX: node 155's real yellow
-            # sticker had 78 matching pixels before opening, 40 after, and
-            # its single surviving contour measured only 27px -- rejected
-            # by the (old, whole-table-tuned) 40px threshold. Opening exists
-            # to remove SCATTERED single-pixel noise across an entire frame
-            # scan; inside an already-small, already-color-matched search
-            # window that noise-rejection role is redundant (the window
-            # itself is the noise filter) and the erosion cost is real.
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
-                                            cv2.CHAIN_APPROX_SIMPLE)
-            if debug:
-                areas = sorted((cv2.contourArea(c) for c in contours), reverse=True)
-                print(f"    [debug node {n}] color={color} window=({x0},{y0})-({x1},{y1}) "
-                      f"raw_mask_px={mask_pixels} contour_areas={areas} "
-                      f"(threshold={STICKER_WINDOW_MIN_AREA_PX})")
-            for c in contours:
-                area = cv2.contourArea(c)
-                if area < STICKER_WINDOW_MIN_AREA_PX or area <= best_area:
-                    continue
-                M = cv2.moments(c)
-                if M["m00"] <= 0:
-                    continue
-                best_color = color
-                best_area = int(area)
-                best_cx = x0 + int(M["m10"] / M["m00"])
-                best_cy = y0 + int(M["m01"] / M["m00"])
-
-        if best_color is None:
-            results.append((n, None, 0, 0, 0))
-        else:
-            results.append((n, best_color, best_cx, best_cy, best_area))
-    return results
-
-
 def build_table_mask(frame_shape, H: np.ndarray) -> np.ndarray:
     """Single-channel uint8 mask (255 inside the table, 0 outside), built by
     projecting the table's 4 world corners through Hinv -- same corners
@@ -674,39 +425,6 @@ def build_table_mask(frame_shape, H: np.ndarray) -> np.ndarray:
     mask = np.zeros(frame_shape[:2], dtype=np.uint8)
     cv2.fillPoly(mask, [pixel_border], 255)
     return mask
-
-
-def compute_crop_rect(frame_shape, H: np.ndarray,
-                       margin_in: float = 6.0) -> tuple[int, int, int, int]:
-    """Axis-aligned pixel bounding box around the table's 4 world corners
-    (same corners build_table_mask() projects), padded by margin_in inches
-    of real table-space margin on every side, clamped to the frame.
-
-    Added 2026-08-05 (isaac_ros_apriltag_gpu throughput investigation): the
-    crop back-channel sends this rect to camera_bridge_windows.py so it can
-    encode/send only the table region instead of the full frame -- see that
-    file's module docstring for why (WSL2 mirrored-loopback's real per-
-    packet cost, not decode/buffer/scheduling, was the actual bottleneck).
-
-    margin_in defaults to 6in, not 0 -- the fisheye lens means a tag exactly
-    at the table's edge can still project outside a zero-margin bounding
-    box if the homography's corner estimate is even slightly off, or if a
-    robot's tag center is measured right at the boundary; 6in of real
-    padding is cheap (small fraction of the ~97in table) and avoids
-    silently clipping a valid detection."""
-    h, w = frame_shape[:2]
-    Hinv = np.linalg.inv(H)
-    m = margin_in
-    border = np.array([
-        [-m, -m], [TABLE_SIZE_IN + m, -m],
-        [TABLE_SIZE_IN + m, TABLE_SIZE_IN + m], [-m, TABLE_SIZE_IN + m],
-    ], dtype=float)
-    pixel_border = map_points(Hinv, border)
-    x0 = int(np.clip(np.floor(pixel_border[:, 0].min()), 0, w))
-    y0 = int(np.clip(np.floor(pixel_border[:, 1].min()), 0, h))
-    x1 = int(np.clip(np.ceil(pixel_border[:, 0].max()), 0, w))
-    y1 = int(np.clip(np.ceil(pixel_border[:, 1].max()), 0, h))
-    return x0, y0, x1, y1
 
 
 # ---------------- geometry helpers ----------------
@@ -1124,6 +842,141 @@ def build_detector(family: str, decimate: float, nthreads: int = 16) -> Detector
     )
 
 
+class FocusAssistant:
+    """Measure focus on required AprilTags inside the proven capture loop.
+
+    Missing tags score zero, and the least-sharp visible target determines
+    the frame score. This prevents a large nearby reference tag from hiding
+    poor focus on a smaller/farther robot tag.
+    """
+
+    def __init__(self, target_ids: list[int], history_frames: int = 20):
+        if not target_ids:
+            raise ValueError("Focus assistant requires at least one tag ID.")
+        if history_frames < 3:
+            raise ValueError("--focus-history must be at least 3.")
+        self.target_ids = tuple(dict.fromkeys(int(tid) for tid in target_ids))
+        self.history: deque[float] = deque(maxlen=history_frames)
+        self.best_score = 0.0
+        self.passed_best = False
+
+    def reset(self) -> None:
+        self.history.clear()
+        self.best_score = 0.0
+        self.passed_best = False
+
+    @staticmethod
+    def _tag_sharpness(gray: np.ndarray, det) -> tuple[float, float, tuple[int, int, int, int]]:
+        """Returns (sharpness_score, glare_pct, bounds). Two independent
+        signals, added 2026-08-05 after confirming Laplacian variance alone
+        does NOT catch glare: a saturated/blown-out region still has hard
+        edges against the tag's dark border, so it can score as "sharp"
+        while being functionally undetectable (real, hardware-confirmed
+        case -- --focus-assist's sharpness score gave no warning on a frame
+        that visibly had a glare hotspot when inspected directly). glare_pct
+        is the fraction of the tag's own patch pixels that are
+        near-saturated (>=250/255) -- a clean, evenly-lit tag should be
+        close to 0%; a real glare hotspot produces a genuine cluster of
+        blown-out pixels this catches directly, independent of edge
+        sharpness."""
+        corners = np.asarray(det.corners, dtype=np.float32)
+        tag_w = float(np.linalg.norm(corners[1] - corners[0]))
+        tag_h = float(np.linalg.norm(corners[2] - corners[1]))
+        pad = max(8, int(round(0.15 * max(tag_w, tag_h))))
+
+        x0 = max(0, int(math.floor(float(corners[:, 0].min()))) - pad)
+        y0 = max(0, int(math.floor(float(corners[:, 1].min()))) - pad)
+        x1 = min(gray.shape[1], int(math.ceil(float(corners[:, 0].max()))) + pad)
+        y1 = min(gray.shape[0], int(math.ceil(float(corners[:, 1].max()))) + pad)
+        patch = gray[y0:y1, x0:x1]
+
+        if patch.size == 0 or min(patch.shape[:2]) < 5:
+            return 0.0, 0.0, (x0, y0, x1, y1)
+
+        # Light denoising prevents MJPEG/sensor noise from being rewarded as
+        # genuine high-frequency tag-edge detail.
+        denoised = cv2.GaussianBlur(patch, (3, 3), 0)
+        score = float(cv2.Laplacian(
+            denoised, cv2.CV_64F, ksize=3).var())
+        glare_pct = 100.0 * float(np.count_nonzero(patch >= 250)) / patch.size
+        return score, glare_pct, (x0, y0, x1, y1)
+
+    def update(self, gray: np.ndarray, detections) -> dict:
+        by_id = {int(det.tag_id): det for det in detections}
+        detected = tuple(tid for tid in self.target_ids if tid in by_id)
+        missing = tuple(tid for tid in self.target_ids if tid not in by_id)
+
+        sharpness: dict[int, float] = {}
+        glare: dict[int, float] = {}
+        margins: dict[int, float] = {}
+        bounds: dict[int, tuple[int, int, int, int]] = {}
+        for tid in detected:
+            score, glare_pct, tag_bounds = self._tag_sharpness(gray, by_id[tid])
+            sharpness[tid] = score
+            glare[tid] = glare_pct
+            bounds[tid] = tag_bounds
+            margin = getattr(by_id[tid], "decision_margin", None)
+            if margin is not None:
+                margins[tid] = float(margin)
+
+        # GLARE_WARN_PCT chosen conservatively -- a clean tag under normal
+        # lighting measured well under 1% in testing; 5%+ of the patch
+        # being blown-out pixels is a real, visible hotspot, not noise.
+        GLARE_WARN_PCT = 5.0
+        glare_tags = tuple(tid for tid in detected if glare.get(tid, 0.0) >= GLARE_WARN_PCT)
+
+        if missing or not sharpness:
+            raw_score = 0.0
+            worst_id = None
+        else:
+            worst_id = min(sharpness, key=sharpness.get)
+            raw_score = sharpness[worst_id]
+
+        self.history.append(raw_score)
+        stable = len(self.history) == self.history.maxlen
+        stable_score = float(statistics.median(self.history))
+
+        if stable and not missing and stable_score > self.best_score:
+            self.best_score = stable_score
+
+        relative = (100.0 * stable_score / self.best_score
+                    if self.best_score > 0.0 else 0.0)
+
+        if stable and self.best_score > 0.0 and stable_score < 0.88 * self.best_score:
+            self.passed_best = True
+
+        if missing:
+            status = "MISSING TAGS: " + ", ".join(str(tid) for tid in missing)
+        elif glare_tags:
+            # Checked BEFORE the sharpness-based sweep guidance -- a glared
+            # tag can score as "sharp" (see _tag_sharpness docstring), so
+            # this must not be silently overridden by "BEST FOUND".
+            status = "GLARE ON TAG(S): " + ", ".join(str(tid) for tid in glare_tags)
+        elif not stable:
+            status = f"HOLD STILL - STABILIZING {len(self.history)}/{self.history.maxlen}"
+        elif self.passed_best and relative >= 98.0:
+            status = "BEST FOUND - STOP HERE"
+        elif self.passed_best:
+            status = "PASSED BEST - TURN BACK SLOWLY"
+        else:
+            status = "SWEEP SLOWLY IN ONE DIRECTION"
+
+        return {
+            "detected": detected,
+            "missing": missing,
+            "sharpness": sharpness,
+            "glare": glare,
+            "glare_tags": glare_tags,
+            "margins": margins,
+            "bounds": bounds,
+            "worst_id": worst_id,
+            "stable_score": stable_score,
+            "best_score": self.best_score,
+            "relative": relative,
+            "status": status,
+        }
+
+
 # distinct outline colors per robot (BGR): yellow, orange, magenta, cyan
 ROBOT_PALETTE = [(0, 255, 255), (0, 140, 255), (255, 0, 255), (255, 255, 0)]
 
@@ -1154,10 +1007,72 @@ def _text(frame, s: str, org: tuple[int, int], color, scale: float = 0.55) -> No
     cv2.putText(frame, s, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, 2)
 
 
+def draw_focus_assistant(frame: np.ndarray, reading: dict,
+                         target_ids: tuple[int, ...]) -> None:
+    """Overlay focus measurements without changing localization results."""
+    glare_tags = reading.get("glare_tags", ())
+    for tid, (x0, y0, x1, y1) in reading["bounds"].items():
+        is_worst = tid == reading["worst_id"]
+        is_glared = tid in glare_tags
+        # Glare takes priority over the worst/OK coloring -- magenta is
+        # visually distinct from the sharpness sweep's orange/green so a
+        # glared tag can never be mistaken for merely "not the worst one."
+        if is_glared:
+            color = (255, 0, 255)
+        elif is_worst:
+            color = (0, 165, 255)
+        else:
+            color = (0, 255, 0)
+        cv2.rectangle(frame, (x0, y0), (x1, y1), color, 2)
+        label = f"ID {tid} F={reading['sharpness'][tid]:.0f}"
+        if tid in reading["margins"]:
+            label += f" M={reading['margins'][tid]:.0f}"
+        glare_pct = reading.get("glare", {}).get(tid, 0.0)
+        if glare_pct >= 1.0:
+            label += f" GLARE={glare_pct:.0f}%"
+        _text(frame, label, (x0, max(24, y0 - 8)), color, scale=0.50)
+
+    status = reading["status"]
+    if reading["missing"]:
+        status_color = (0, 0, 255)
+    elif glare_tags:
+        status_color = (255, 0, 255)
+    elif status == "BEST FOUND - STOP HERE":
+        status_color = (0, 255, 0)
+    elif "TURN BACK" in status:
+        status_color = (0, 165, 255)
+    else:
+        status_color = (0, 255, 255)
+
+    h, w = frame.shape[:2]
+    x0, y0 = 10, max(10, h - 164)
+    x1, y1 = min(w - 10, 810), h - 10
+    _panel_bg(frame, x0, y0, x1, y1, alpha=0.68)
+
+    detected_count = len(reading["detected"])
+    score_line = (
+        f"Focus={reading['stable_score']:.1f}  "
+        f"best={reading['best_score']:.1f}  "
+        f"relative={reading['relative']:.1f}%"
+    )
+    tags_line = (
+        f"targets={list(target_ids)}  "
+        f"detected={detected_count}/{len(target_ids)}"
+    )
+    if reading["margins"]:
+        margin_line = f"minimum decision margin={min(reading['margins'].values()):.1f}"
+    else:
+        margin_line = "minimum decision margin=unavailable"
+
+    _text(frame, status, (x0 + 12, y0 + 30), status_color, scale=0.68)
+    _text(frame, tags_line, (x0 + 12, y0 + 62), (255, 255, 255), scale=0.52)
+    _text(frame, score_line, (x0 + 12, y0 + 94), (255, 255, 255), scale=0.52)
+    _text(frame, margin_line, (x0 + 12, y0 + 126), (255, 255, 255), scale=0.52)
+
+
 def draw_overlay(frame, calib: TableCalibration, detections, poses,
                   node_overlay_pixels=None, show_nodes: bool = False,
-                  sticker_detections=None, show_stickers: bool = False,
-                  depot_overlay_pixels=None) -> None:
+                  sticker_detections=None, show_stickers: bool = False) -> None:
     """node_overlay_pixels: optional list of (node_id, px, py, is_bay) in
     IMAGE pixel space, precomputed once (see build_node_overlay_points() +
     Hinv projection in main()) rather than every frame -- see --show-nodes'
@@ -1168,24 +1083,20 @@ def draw_overlay(frame, calib: TableCalibration, detections, poses,
     for workstation + workstation-entry nodes. Only actually drawn when
     show_nodes is True -- toggled by the 'o' key in main()'s loop.
 
-    sticker_detections: optional list of (node_id, color_or_None, cx, cy,
-    area_px) from detect_stickers_at_nodes() (CHANGED 2026-07-30 from a
-    free-floating color-blob list to a per-LATTICE-NODE result, searched in
-    a small window around each node's already-known position -- see that
-    function's docstring for why). ALSO a one-time freeze (first real frame
-    after calibration locks, same as before), toggled by the 'u' key.
-    color_or_None is None when that node's window found no matching sticker
-    at all. For LATTICE nodes this is drawn as a thin gray dashed-look ring
-    (every lattice node is expected to have a real sticker, so a miss is a
-    genuine physical maintenance flag: missing, worn, or occluded). For BAY
-    (workstation/entry) nodes a miss is NOT drawn at all and NOT a flag --
-    confirmed 2026-07-30: only some workstations are "active" (have a real
-    yellow sticker) at any given time, the rest are legitimately bare, so
-    the gray-miss marker would otherwise flag ~74 correct non-detections on
-    a 98-bay-node grid as if they were errors. A real match (active
-    workstation) is drawn as a bright solid ring directly ON the detected
-    position (not alpha-blended -- these mark real detections, not a
-    coordinate projection), same for both node types."""
+    sticker_detections: optional list of (color, cx, cy, area_px) from
+    detect_stickers(), ALSO a one-time freeze (first real frame after
+    startup, per the user's explicit request 2026-07-28 -- independent of
+    show_nodes/node_overlay_pixels, toggled separately by the 'u' key).
+    Drawn as a bright ring directly ON the real detected sticker position
+    (not alpha-blended -- these mark real detections, not a coordinate
+    projection, so a solid bright outline reads as "found here" rather than
+    a soft coordinate hint)."""
+    if show_stickers and sticker_detections:
+        for color, cx, cy, _area in sticker_detections:
+            ring_bgr = STICKER_DRAW_BGR.get(color, (255, 255, 255))
+            cv2.circle(frame, (cx, cy), 12, ring_bgr, 2)
+            cv2.circle(frame, (cx, cy), 2, ring_bgr, -1)
+
     if show_nodes and node_overlay_pixels:
         h, w = frame.shape[:2]
         node_layer = frame.copy()
@@ -1195,19 +1106,6 @@ def draw_overlay(frame, calib: TableCalibration, detections, poses,
             if -radius <= ipx <= w + radius and -radius <= ipy <= h + radius:
                 color = (0, 220, 220) if is_bay else (0, 0, 255)  # BGR: yellow / red
                 cv2.circle(node_layer, (ipx, ipy), radius, color, -1)
-        # Depot slots/entries/node 0 (added 2026-07-30, real measured
-        # positions -- see DEPOT_SLOT_WORLD_IN/DEPOT_ENTRY_WORLD_IN/
-        # NODE0_WORLD_IN) -- same alpha-blended-circle-then-opaque-label
-        # treatment as the lattice/bay nodes above, drawn in the SAME pass
-        # (same node_layer/blend) so they don't need their own toggle --
-        # showing/hiding with show_nodes ('o') exactly like every other
-        # node type. Blue, matching this project's established "depot ==
-        # blue" convention (blue floor stickers mark the depot lane).
-        if depot_overlay_pixels:
-            for _label, px, py in depot_overlay_pixels:
-                ipx, ipy = int(round(px)), int(round(py))
-                if -radius <= ipx <= w + radius and -radius <= ipy <= h + radius:
-                    cv2.circle(node_layer, (ipx, ipy), radius, (255, 140, 60), -1)  # BGR blue
         cv2.addWeighted(node_layer, 0.35, frame, 0.65, 0, dst=frame)
         # Labels drawn AFTER the blend (full opacity, not alpha-blended like
         # the circles) and offset below the circle rather than centered on
@@ -1220,53 +1118,6 @@ def draw_overlay(frame, calib: TableCalibration, detections, poses,
                 tw = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)[0][0]
                 _text(frame, label, (ipx - tw // 2, ipy + radius + 14),
                       (255, 255, 255), scale=0.42)
-        if depot_overlay_pixels:
-            for label, px, py in depot_overlay_pixels:
-                ipx, ipy = int(round(px)), int(round(py))
-                if -radius <= ipx <= w + radius and -radius <= ipy <= h + radius:
-                    tw = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)[0][0]
-                    _text(frame, label, (ipx - tw // 2, ipy + radius + 14),
-                          (255, 220, 150), scale=0.42)  # light blue-ish, matches the ring
-
-    # MOVED 2026-07-30 to draw AFTER the 'o' node overlay above (was
-    # before it) -- CONFIRMED on real hardware this was hiding real,
-    # correctly-detected stickers: node 88's detection was genuine (same
-    # frozen sticker_detections data the click-to-inspect diagnostic reads,
-    # confirmed matching YELLOW every time) but its bright ring was being
-    # visually buried under the 'o' overlay's own semi-transparent dot +
-    # full-opacity "88" text label at the exact same pixel position, when
-    # both overlays were toggled on together. A real sticker detection
-    # should always be visible regardless of whether the node-position
-    # overlay is also on, so it now draws last (on top).
-    if show_stickers and sticker_detections:
-        # MISSING markers (color is None) carry no real detected position
-        # (detect_stickers_at_nodes() returns cx=cy=0 for those, since
-        # nothing was found) -- look the node's own KNOWN position AND
-        # is_bay back up from node_overlay_pixels instead, so the gray ring
-        # lands on the node (not the frame's top-left corner) and bay
-        # misses can be skipped entirely (see docstring above).
-        node_info_by_id = {n: (px, py, is_bay)
-                            for n, px, py, is_bay in (node_overlay_pixels or [])}
-        for n, color, cx, cy, _area in sticker_detections:
-            if color is None:
-                info = node_info_by_id.get(n)
-                if info is None:
-                    continue
-                pos_x, pos_y, is_bay = info
-                if is_bay:
-                    continue  # inactive workstation -- expected, not a flag
-                gx, gy = int(round(pos_x)), int(round(pos_y))
-                # Dashed-look ring: short arcs instead of a full circle,
-                # thin and gray so it reads as "nothing found here" rather
-                # than competing visually with a real solid detection ring.
-                gray = (140, 140, 140)
-                for start_deg in range(0, 360, 45):
-                    cv2.ellipse(frame, (gx, gy), (10, 10), 0,
-                                start_deg, start_deg + 25, gray, 1)
-            else:
-                ring_bgr = STICKER_DRAW_BGR.get(color, (255, 255, 255))
-                cv2.circle(frame, (cx, cy), 12, ring_bgr, 2)
-                cv2.circle(frame, (cx, cy), 2, ring_bgr, -1)
 
     if calib.H is not None:
         Hinv = np.linalg.inv(calib.H)
@@ -1487,25 +1338,26 @@ def main() -> None:
                              "silently clamp/ignore this -- the printed 'Capture "
                              "FPS' line after startup shows what was actually "
                              "granted, not just what was requested.")
-    # Default raised 1.0 -> 2.0 (2026-08-18) after a real 6-robot hardware
-    # A/B: 1.0 gave total_loop rate ~20-26Hz (apriltag median ~20ms), 1.5 gave
-    # ~29-34Hz (~9-10ms), 2.0 gave ~30-38Hz (~6-7ms) -- all three held
-    # calibration rms at 0.06in and showed no pose jitter/dropout increase.
-    # 2.0 does trigger pupil_apriltags' internal "WRN: Matrix is singular."
-    # far more often (dozens/run vs 1-2 at 1.5) -- traced to refine_edges=1's
-    # per-tag corner-refinement solve failing to converge more often from a
-    # coarser initial estimate; confirmed cosmetic (falls back to the
-    # unrefined corner for that one tag/frame, doesn't touch calib.H, never
-    # crashed the loop, no corresponding pose degradation observed). If a
-    # future accuracy regression shows up, try 1.5 (same speed tier, far
-    # fewer refinement fallbacks) before going back to 1.0.
-    parser.add_argument("--decimate", type=float, default=2.0,
-                        help="detector quad_decimate; lower toward 1.0 if accuracy "
-                             "matters more than fps (default 2.0)")
+    parser.add_argument("--decimate", type=float, default=1.0,
+                        help="detector quad_decimate; raise to 1.5-2 if fps is low (default 1.0)")
     parser.add_argument("--print-interval", type=float, default=0.5,
                         help="seconds between console pose lines (default 0.5)")
     parser.add_argument("--log", default=None, help="append poses to this CSV file")
     parser.add_argument("--no-preview", action="store_true", help="headless: console output only")
+    parser.add_argument(
+        "--focus-assist", action="store_true",
+        help="show the manual-focus meter in the existing localization "
+             "window; press 'f' to toggle and 'b' to reset its recorded best",
+    )
+    parser.add_argument(
+        "--focus-tags", type=int, nargs="+", default=[20, 21, 22, 23],
+        help="tag IDs that must all remain visible and sharp while focus "
+             "assistance is active (default: 20 21 22 23)",
+    )
+    parser.add_argument(
+        "--focus-history", type=int, default=20,
+        help="frames used by the focus-score median filter (default 20)",
+    )
     parser.add_argument("--rows", type=int, default=8,
                         help="grid rows, for the --show-nodes overlay -- "
                              "must match fleet/camera_grid_navigate.py's "
@@ -1541,17 +1393,6 @@ def main() -> None:
                              "click-to-inspect HSV sampling of real "
                              "stickers/tape -- see STICKER_HSV_RANGES if "
                              "detections look wrong on different lighting.")
-    parser.add_argument("--debug-sticker-nodes", type=int, nargs="*", default=None,
-                        metavar="NODE_ID",
-                        help="added 2026-07-30: for these specific node IDs "
-                             "(space-separated), print every candidate "
-                             "sticker-color contour found inside that "
-                             "node's search window -- including ones "
-                             "REJECTED by STICKER_MIN_AREA_PX -- so a real "
-                             "miss (color detected but rejected/too small) "
-                             "can be told apart from a genuine absence "
-                             "(no matching pixels at all), instead of "
-                             "guessing. e.g. --debug-sticker-nodes 63 155")
     parser.add_argument("--rosbridge", default=None, metavar="HOST[:PORT]",
                         nargs="?", const="192.168.0.212:9090",
                         help="publish poses to a rosbridge websocket on the ROS2 "
@@ -1595,42 +1436,6 @@ def main() -> None:
                              "Recalibration still needs 'r' (or camera "
                              "move detection, not implemented) since this "
                              "is a hard freeze, not a slowdown.")
-    parser.add_argument("--test-local-crop", action="store_true",
-                        help="Added 2026-08-05 (isaac_ros_apriltag_gpu "
-                             "throughput investigation): once the table "
-                             "homography first locks, crop every subsequent "
-                             "frame to the table's pixel bounding box "
-                             "(compute_crop_rect(), same margin/math as the "
-                             "Isaac pipeline's auto-crop) PURELY LOCALLY --"
-                             "no network protocol, no camera_bridge_windows.py "
-                             "changes, just an in-process numpy slice after "
-                             "cap.read(). Safe to test here since "
-                             "pupil_apriltags has no persistent GPU buffer to "
-                             "mismatch (unlike AprilTagNode's CUDA decoder, "
-                             "which crashed on this exact kind of runtime "
-                             "resize -- see memory). Validates the crop-rect "
-                             "math and coordinate-offset correction in "
-                             "isolation before reintroducing the sender-side "
-                             "network crop.")
-    # --remote-crop (a real sender-side crop via TcpFrameSource.send_crop())
-    # was added 2026-08-21 and REVERTED the same day, per explicit user
-    # direction, after two problems on real hardware: (1) a real bug --
-    # the local frame[cy0:cy1,cx0:cx1] slice below ran a SECOND time on an
-    # already-server-cropped (smaller) frame, double-shifting the origin
-    # and leaving every detection under-corrected by one crop_offset --
-    # every robot's reported yaw was off by ~20deg, and the on-screen
-    # bounding boxes visibly did not line up with the actual robots; (2)
-    # even before fully fixing that, live camera_bridge_windows.py --diag
-    # output showed cropped frames coming out LARGER (179-180KB) than
-    # uncropped ones (171-175KB) -- cropping ~5.5% of pixels (background
-    # border only, low-entropy/cheap-to-compress) wasn't buying the
-    # promised bandwidth win here, so the added complexity/risk wasn't
-    # worth it. TcpFrameSource.send_crop()/reset_crop() themselves are
-    # left in place (pre-existing, harmless, unused) in case this is
-    # revisited later with a real controlled A/B benchmark -- if so, fix
-    # the double-crop bug FIRST (skip the local slice entirely once the
-    # sender is cropping, don't just note that it's "harmless") before
-    # trusting any bandwidth measurement again.
     parser.add_argument("--publish-batch", action="store_true",
                         help="T7 in the 2026-07-28 benchmark matrix: ALSO "
                              "publish one batched /vision_poses_batch "
@@ -1706,6 +1511,14 @@ def main() -> None:
 
     detector = build_detector(args.family, args.decimate, args.threads)
     calib = TableCalibration(tag_size, freeze_after_n=args.freeze_calib)
+    focus_meter = FocusAssistant(args.focus_tags, args.focus_history)
+    show_focus = args.focus_assist and not args.no_preview
+    if args.focus_assist and args.no_preview:
+        print("Focus assistant disabled because --no-preview was also supplied.")
+    elif show_focus:
+        print(f"Focus assistant ON for tags {focus_meter.target_ids}. "
+              "Keep every listed tag stationary and visible; press 'b' to "
+              "reset the sweep, 'f' to hide/show it.")
     if args.freeze_calib > 0:
         print(f"Calibration will FREEZE after averaging {args.freeze_calib} "
               "observations (T2 benchmark mode) -- press 'r' to reset and "
@@ -1743,34 +1556,6 @@ def main() -> None:
         print(f"click (x={x},y={y}): BGR=({b},{g},{r})  "
               f"HSV=(h={h},s={s},v={v})  [OpenCV H range 0-179]")
 
-        # Nearest-node + window diagnostic (added 2026-07-30): answers "was
-        # this a real miss (nothing detected AND nothing in range near the
-        # node), or a window-alignment miss (a real matching color exists
-        # near here, but outside/at the edge of the node's search window)"
-        # directly, instead of the user having to manually compare click
-        # coordinates against node_overlay_pixels by hand.
-        if node_overlay_pixels:
-            nearest = min(
-                node_overlay_pixels,
-                key=lambda t: (t[1] - x) ** 2 + (t[2] - y) ** 2)
-            n_id, npx, npy, is_bay = nearest
-            dist_px = math.hypot(npx - x, npy - y)
-            radius = STICKER_WINDOW_RADIUS_PX_DEFAULT
-            inside = dist_px <= radius * math.sqrt(2)  # window is a square, not a circle
-            expected_colors = STICKER_COLORS_FOR_BAY if is_bay else STICKER_COLORS_FOR_LATTICE
-            det_result = None
-            if sticker_detections:
-                det_result = next((d for d in sticker_detections if d[0] == n_id), None)
-            print(f"  nearest node: {n_id} ({'bay' if is_bay else 'lattice'}, "
-                  f"expects {'/'.join(expected_colors)}) at ({npx:.0f},{npy:.0f}), "
-                  f"click is {dist_px:.1f}px away "
-                  f"({'INSIDE' if inside else 'OUTSIDE'} its "
-                  f"{radius}px search window)")
-            if det_result is not None:
-                found_color = det_result[1]
-                print(f"  detector result for node {n_id}: "
-                      f"{found_color if found_color else 'NOTHING FOUND'}")
-
     if not args.no_preview:
         # full-resolution 1:1 preview (user's screen is 1920x1200), but
         # WINDOW_NORMAL keeps it draggable/resizable if that ever changes
@@ -1781,43 +1566,13 @@ def main() -> None:
     last_print = 0.0
     last_publish = 0.0
     last_stream = 0.0
-    last_render = 0.0
-    RENDER_INTERVAL_SEC = 1.0 / 15.0  # ~15fps preview refresh
     publish_interval = 1.0 / max(args.publish_rate, 0.1)
     calib_announced = False
     frame_seq = 0
-    # --test-local-crop state: crop_rect stays None (no-op) until the
-    # homography first locks, at which point it's computed once and never
-    # changed again (camera is physically fixed -- see compute_crop_rect()'s
-    # own docstring). crop_offset is added back onto every detection's
-    # pixel coords AFTER cropping starts, so calib.H (fit in FULL-frame
-    # coordinates, before cropping began) stays valid the whole time.
-    crop_rect: tuple[int, int, int, int] | None = None
-    crop_offset = np.array([0.0, 0.0])
     show_nodes = args.show_nodes
     node_overlay_pixels: list[tuple[int, float, float, bool]] | None = None
-    depot_overlay_pixels: list[tuple[str, float, float]] | None = None
     show_stickers = args.show_stickers
-    sticker_detections: list[tuple[int, str | None, int, int, int]] | None = None
-    # Node-overlay pixel-position AVERAGING (added 2026-07-30): the overlay
-    # used to project world node positions through calib.H from the SINGLE
-    # frame where calibration first locked -- confirmed on real hardware
-    # (node 88, via a paper AprilTag placed directly on the physical
-    # sticker to get an exact ground-truth position) that this single-frame
-    # snapshot has enough frame-to-frame jitter (from the underlying ref-tag
-    # corner detections, which calib.H is itself derived from) that a
-    # sticker sitting near a search window's edge sometimes falls inside it
-    # and sometimes doesn't -- same physical sticker, same real position,
-    # intermittent detection depending on which exact frame calibration
-    # happened to lock on. Averaging the PROJECTED PIXEL positions over
-    # NODE_OVERLAY_AVG_FRAMES frames after lock (not just using calib.H
-    # once) smooths this out at the source instead of just widening the
-    # search window further to tolerate more jitter.
-    NODE_OVERLAY_AVG_FRAMES = 8
-    _node_overlay_accum: list[np.ndarray] = []
-    _node_overlay_world_nodes = None
-    _depot_overlay_accum: list[np.ndarray] = []
-    _depot_overlay_world_points = None
+    sticker_detections: list[tuple[str, int, int, int]] | None = None
 
     # Instrumentation (2026-07-28 benchmark matrix, T0): split what used to
     # be one bundled "avg detect" number (detector.detect() + calib.update()
@@ -1832,7 +1587,7 @@ def main() -> None:
         "read": RollingStats(), "cvt": RollingStats(),
         "apriltag": RollingStats(), "calibration": RollingStats(),
         "pose_math": RollingStats(), "publish_enqueue": RollingStats(),
-        "render": RollingStats(), "total_loop": RollingStats(),
+        "total_loop": RollingStats(),
     }
     bench_since = time.perf_counter()
     try:
@@ -1846,10 +1601,6 @@ def main() -> None:
                 continue
             stats["read"].add(_t_read - _loop_t0)
 
-            if crop_rect is not None:
-                cx0, cy0, cx1, cy1 = crop_rect
-                frame = frame[cy0:cy1, cx0:cx1]
-
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             _t_cvt = time.perf_counter()
             stats["cvt"].add(_t_cvt - _t_read)
@@ -1857,19 +1608,6 @@ def main() -> None:
             detections = detector.detect(gray)
             _t_apriltag = time.perf_counter()
             stats["apriltag"].add(_t_apriltag - _t_cvt)
-
-            if crop_rect is not None:
-                # Detections just came back relative to the CROPPED frame's
-                # origin -- translate back to full-frame coordinates before
-                # calib.update()/anything else touches them, so calib.H
-                # (fit in full-frame coordinates, before cropping began)
-                # stays valid. Confirmed by reading pupil_apriltags'
-                # Detection class source directly: plain instance
-                # attributes (self.center/self.corners set in __init__),
-                # no __slots__/read-only properties -- safe to reassign.
-                for det in detections:
-                    det.center = det.center + crop_offset
-                    det.corners = det.corners + crop_offset
 
             calib.update(detections)
             _t_calib = time.perf_counter()
@@ -1885,105 +1623,41 @@ def main() -> None:
                           + ("  <-- HIGH, check tag size / measurements!"
                              if calib.rms_in > 1.0 else ""))
                     calib_announced = True
-                    if args.test_local_crop and crop_rect is None:
-                        # frame.shape here is still the FULL frame -- cropping
-                        # doesn't start until crop_rect is set below, this is
-                        # the last frame processed at full size.
-                        cx0, cy0, cx1, cy1 = compute_crop_rect(frame.shape, calib.H)
-                        crop_w, crop_h = cx1 - cx0, cy1 - cy0
-                        if crop_w > 0 and crop_h > 0:
-                            print(f"--test-local-crop: table bounding box "
-                                  f"found at ({cx0},{cy0})-({cx1},{cy1}) "
-                                  f"({crop_w}x{crop_h}, "
-                                  f"{100*crop_w*crop_h/(frame.shape[1]*frame.shape[0]):.0f}% "
-                                  "of full frame) -- cropping starts next frame")
-                            crop_rect = (cx0, cy0, cx1, cy1)
-                            crop_offset = np.array([float(cx0), float(cy0)])
-                        else:
-                            print("--test-local-crop: degenerate crop rect, "
-                                  "not cropping (will retry next calibration)")
-                    _node_overlay_world_nodes = build_node_overlay_points(args.rows, args.cols)
-                    _node_overlay_accum = []
-                    _depot_overlay_world_points = build_depot_overlay_points()
-                    _depot_overlay_accum = []
-                    print(f"Averaging node overlay position over "
-                          f"{NODE_OVERLAY_AVG_FRAMES} frames...")
-
-                if node_overlay_pixels is None and _node_overlay_world_nodes is not None:
-                    # --show-nodes / --show-stickers: project every grid/
-                    # workstation/entry node's world position through THIS
-                    # frame's Hinv and accumulate over several frames before
-                    # finalizing (CHANGED 2026-07-30 from a single-frame
-                    # snapshot -- see NODE_OVERLAY_AVG_FRAMES's comment
-                    # above for the real-hardware jitter this fixes).
+                    # --show-nodes: project every grid/workstation/entry
+                    # node's world position through THIS frame's Hinv ONCE
+                    # (see build_node_overlay_points()/draw_overlay()'s
+                    # docstrings for why this is a one-time snapshot, not
+                    # recomputed on later frames even if calib.H drifts).
                     Hinv_nodes = np.linalg.inv(calib.H)
+                    world_nodes = build_node_overlay_points(args.rows, args.cols)
                     pixel_xy = map_points(
                         Hinv_nodes,
-                        np.array([[x, y] for _n, x, y, _is_bay
-                                   in _node_overlay_world_nodes]))
-                    _node_overlay_accum.append(pixel_xy)
-                    # Depot slots/entries/node 0 (added 2026-07-30): same
-                    # Hinv, same accumulate-then-average treatment, just a
-                    # separate world-point list (string ids, see
-                    # build_depot_overlay_points()) and a separate output
-                    # variable so lattice/bay code paths are untouched.
-                    depot_pixel_xy = map_points(
-                        Hinv_nodes,
-                        np.array([[x, y] for _label, x, y
-                                   in _depot_overlay_world_points]))
-                    _depot_overlay_accum.append(depot_pixel_xy)
-
-                    if len(_node_overlay_accum) >= NODE_OVERLAY_AVG_FRAMES:
-                        avg_pixel_xy = np.mean(np.stack(_node_overlay_accum), axis=0)
-                        node_overlay_pixels = [
-                            (n, float(px), float(py), is_bay)
-                            for (n, _x, _y, is_bay), (px, py)
-                            in zip(_node_overlay_world_nodes, avg_pixel_xy)]
-                        avg_depot_pixel_xy = np.mean(np.stack(_depot_overlay_accum), axis=0)
-                        depot_overlay_pixels = [
-                            (label, float(px), float(py))
-                            for (label, _x, _y), (px, py)
-                            in zip(_depot_overlay_world_points, avg_depot_pixel_xy)]
-                        print(f"Node overlay ready: {len(node_overlay_pixels)} "
-                              f"nodes ({args.rows}x{args.cols} grid) + "
-                              f"{len(depot_overlay_pixels)} depot points, "
-                              f"averaged over {NODE_OVERLAY_AVG_FRAMES} frames "
-                              "-- press 'o' to toggle"
-                              + (" (already ON)" if show_nodes else ""))
-                        # --show-stickers: CHANGED 2026-07-30 from whole-table
-                        # color-blob scanning to a small search window around
-                        # each LATTICE node's already-known position (reuses
-                        # node_overlay_pixels, just computed above) -- see
-                        # detect_stickers_at_nodes()'s docstring for why (the
-                        # whole-table version still had both false positives
-                        # AND missed real stickers even with good lighting).
-                        # Still a one-time freeze once the node overlay
-                        # itself finalizes (now averaged, see above) --
-                        # independent of the node overlay's own toggle,
-                        # still bound to the 'u' key.
-                        sticker_detections = detect_stickers_at_nodes(
-                            frame, node_overlay_pixels,
-                            debug_node_ids=args.debug_sticker_nodes)
-                        counts = Counter(c for _n, c, *_ in sticker_detections)
-                        is_bay_by_id = {n: is_bay for n, _px, _py, is_bay in node_overlay_pixels}
-                        # Only LATTICE misses are a real flag -- every lattice
-                        # node is expected to have a sticker. A bay-node miss
-                        # just means that workstation isn't currently active
-                        # (confirmed 2026-07-30: only some of the 98 bay nodes
-                        # have a real sticker at any time), not an error, so
-                        # it's excluded here the same way draw_overlay() skips
-                        # drawing a gray marker for it.
-                        lattice_missing = sum(
-                            1 for n, c, *_ in sticker_detections
-                            if c is None and not is_bay_by_id.get(n, False))
-                        print(f"Sticker overlay ready: "
-                              f"{counts.get('RED', 0)} red, "
-                              f"{counts.get('YELLOW', 0)} yellow, "
-                              f"{counts.get('BLUE', 0)} blue detected, "
-                              f"{lattice_missing} lattice sticker(s) MISSING "
-                              "(bay misses = inactive workstations, not shown) "
-                              "-- press 'u' to toggle"
-                              + (" (already ON)" if show_stickers else ""))
+                        np.array([[x, y] for _n, x, y, _is_bay in world_nodes]))
+                    node_overlay_pixels = [
+                        (n, float(px), float(py), is_bay)
+                        for (n, _x, _y, is_bay), (px, py)
+                        in zip(world_nodes, pixel_xy)]
+                    print(f"Node overlay ready: {len(node_overlay_pixels)} "
+                          f"nodes ({args.rows}x{args.cols} grid) -- press "
+                          "'o' to toggle" + (" (already ON)" if show_nodes else ""))
+                    # --show-stickers: real color-blob detection on THIS
+                    # frame only, frozen -- independent of the node overlay
+                    # above (only the table-boundary MASK reuses homography
+                    # math; detection itself doesn't), per the user's
+                    # explicit request 2026-07-28: mark the ACTUAL stickers
+                    # physically on the table, not a coordinate projection.
+                    # Masked to the table interior (confirmed 2026-07-28 on
+                    # hardware: unmasked detection also matched chairs,
+                    # ceiling beams, a whiteboard, and clothing in the
+                    # background -- see build_table_mask()'s docstring).
+                    table_mask = build_table_mask(frame.shape, calib.H)
+                    sticker_detections = detect_stickers(frame, table_mask)
+                    counts = Counter(c for c, *_ in sticker_detections)
+                    print(f"Sticker overlay ready: "
+                          f"{counts.get('RED', 0)} red, "
+                          f"{counts.get('YELLOW', 0)} yellow, "
+                          f"{counts.get('BLUE', 0)} blue detected -- press "
+                          "'u' to toggle" + (" (already ON)" if show_stickers else ""))
                 for det in detections:
                     if det.tag_id not in REF_TAG_WORLD:
                         poses[det.tag_id] = tag_world_pose(calib.H, det)
@@ -2014,34 +1688,22 @@ def main() -> None:
                           "waiting for >=2 corner tags (20-23) to calibrate")
                     last_print = now
 
-            # Render throttle (2026-08-18): draw_overlay()+imshow() used to
-            # run every loop iteration, i.e. at the full ~30-38Hz detection
-            # rate post-decimate -- pure display cost nothing downstream
-            # (rosbridge publish, CSV log) needs, since no human perceives a
-            # preview window redrawing faster than ~15fps. Gated on the SAME
-            # wall-clock condition as the streamer's existing 10fps cap
-            # (now - last_render, not a frame-count skip) so it stays
-            # anchored to real time regardless of the current loop rate.
-            # cv2.waitKey(1) still runs every iteration unthrottled below --
-            # it pumps the OpenCV window's event loop and reads keyboard
-            # input (q/r/o/u); throttling it too would make the window
-            # appear frozen and hotkeys sluggish between render frames.
-            do_render = now - last_render >= RENDER_INTERVAL_SEC
-            if do_render and (not args.no_preview or streamer is not None):
-                _t_render0 = time.perf_counter()
+            focus_reading = (
+                focus_meter.update(gray, detections) if show_focus else None
+            )
+            if not args.no_preview or streamer is not None:
                 draw_overlay(frame, calib, detections, poses,
                              node_overlay_pixels, show_nodes,
-                             sticker_detections, show_stickers,
-                             depot_overlay_pixels)
-                if streamer is not None and now - last_stream >= 0.1:  # ~10 fps
-                    streamer.push(frame)
-                    last_stream = now
-                if not args.no_preview:
-                    _latest_frame_holder[0] = frame
-                    cv2.imshow("AprilTag localization", frame)
-                stats["render"].add(time.perf_counter() - _t_render0)
-                last_render = now
+                             sticker_detections, show_stickers)
+                if focus_reading is not None:
+                    draw_focus_assistant(
+                        frame, focus_reading, focus_meter.target_ids)
+            if streamer is not None and now - last_stream >= 0.1:  # ~10 fps
+                streamer.push(frame)
+                last_stream = now
             if not args.no_preview:
+                _latest_frame_holder[0] = frame
+                cv2.imshow("AprilTag localization", frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
                     break
@@ -2051,16 +1713,8 @@ def main() -> None:
                     # Stale relative to whatever the NEXT calibration lock
                     # fits -- clear and let it rebuild on that lock rather
                     # than keep drawing circles from the old homography.
-                    # (calib_announced=False also re-inits these on the next
-                    # lock regardless -- cleared explicitly here too so no
-                    # stale accumulator state lingers between resets.)
                     node_overlay_pixels = None
-                    depot_overlay_pixels = None
                     sticker_detections = None
-                    _node_overlay_world_nodes = None
-                    _node_overlay_accum = []
-                    _depot_overlay_world_points = None
-                    _depot_overlay_accum = []
                     print("Calibration reset.")
                 if key == ord("o"):
                     show_nodes = not show_nodes
@@ -2072,6 +1726,15 @@ def main() -> None:
                     print(f"Sticker overlay {'ON' if show_stickers else 'OFF'}"
                           + ("" if sticker_detections is not None else
                              " (waiting for calibration to lock first)"))
+                if key == ord("f"):
+                    show_focus = not show_focus
+                    focus_meter.reset()
+                    print(f"Focus assistant {'ON' if show_focus else 'OFF'}"
+                          + (f" for tags {focus_meter.target_ids}"
+                             if show_focus else ""))
+                if key == ord("b"):
+                    focus_meter.reset()
+                    print("Focus sweep reset.")
 
             stats["total_loop"].add(time.perf_counter() - _loop_t0)
             elapsed = time.perf_counter() - bench_since
@@ -2083,7 +1746,6 @@ def main() -> None:
                       f"calibration[{stats['calibration'].summary(elapsed)}]  "
                       f"pose_math[{stats['pose_math'].summary(elapsed)}]  "
                       f"publish_enqueue[{stats['publish_enqueue'].summary(elapsed)}]  "
-                      f"render[{stats['render'].summary(elapsed)}]  "
                       f"total_loop[{stats['total_loop'].summary(elapsed)}]")
                 for s in stats.values():
                     s.reset()

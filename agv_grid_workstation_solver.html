@@ -19,6 +19,111 @@
     min-height: 100vh;
     padding: 16px;
   }
+  #metrics-banner {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    margin: 16px 16px 0;
+  }
+  #metrics-banner .stat {
+    border: 1px solid #e0e6f0;
+    border-radius: 6px;
+    padding: 10px 14px;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  #metrics-banner .stat b {
+    font-size: 20px;
+  }
+  #metrics-banner .stat span {
+    color: #64748b;
+    font-size: 12px;
+  }
+  #robot-topic-panel {
+    margin: 10px 16px 0;
+  }
+  #robot-topic-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .robot-topic-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid #d8deea;
+    border-radius: 999px;
+    background: #fff;
+    padding: 5px 12px 5px 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #172033;
+    cursor: pointer;
+  }
+  .robot-topic-btn:hover {
+    border-color: #94a3b8;
+  }
+  .robot-topic-btn.active {
+    border-color: #2563eb;
+    background: #eff4ff;
+  }
+  .robot-topic-btn .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: none;
+  }
+  .robot-topic-btn .dot.stale {
+    background: #cbd5e1 !important;
+  }
+  .robot-topic-btn .batt {
+    color: #64748b;
+    font-weight: 400;
+  }
+  #robot-topic-details {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 8px;
+  }
+  .robot-topic-card {
+    border: 1px solid #d8deea;
+    border-radius: 8px;
+    background: #fff;
+    padding: 12px 14px;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+  }
+  .robot-topic-card h3 {
+    margin: 0 0 8px;
+    font-size: 13px;
+  }
+  .robot-topic-card table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 12px;
+  }
+  .robot-topic-card td {
+    padding: 3px 8px 3px 0;
+    vertical-align: top;
+    border-bottom: 1px solid #f0f2f7;
+  }
+  .robot-topic-card td.rt-topic {
+    color: #64748b;
+    white-space: nowrap;
+    font-family: "Consolas", monospace;
+  }
+  .robot-topic-card td.rt-value {
+    font-family: "Consolas", monospace;
+    word-break: break-word;
+  }
+  .robot-topic-card td.rt-age {
+    color: #94a3b8;
+    white-space: nowrap;
+    text-align: right;
+  }
   h1 {
     margin: 0 0 6px;
     font-size: 24px;
@@ -49,6 +154,45 @@
     display: flex;
     flex-direction: column;
     min-width: 0;
+    position: relative;
+  }
+  #map-key {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    z-index: 5;
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid #d8deea;
+    border-radius: 8px;
+    padding: 8px 10px;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+    font-size: 11px;
+    color: #475569;
+    display: grid;
+    grid-template-columns: auto auto;
+    gap: 4px 12px;
+    pointer-events: none;
+    max-width: 260px;
+  }
+  #map-key .mk-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+  }
+  #map-key .mk-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex: none;
+    display: inline-block;
+  }
+  #map-key .mk-line {
+    width: 16px;
+    height: 3px;
+    border-radius: 2px;
+    flex: none;
+    display: inline-block;
   }
   .field {
     display: grid;
@@ -139,7 +283,7 @@
   }
   #grid-svg {
     width: 100%;
-    max-height: calc(100vh - 152px);
+    max-height: calc(100vh - 96px);
     min-height: 560px;
     border: 1px solid #cfd8e6;
     border-radius: 8px;
@@ -182,6 +326,56 @@
   }
   .sim-controls input[type=range] {
     padding: 0;
+  }
+  #timeline-toggles {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    margin-top: 10px;
+    font-size: 12px;
+    color: #475569;
+  }
+  #timeline-toggles label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    user-select: none;
+  }
+  #timeline-toggles input[type=checkbox] {
+    width: auto;
+    margin: 0;
+  }
+  #timeline-toggles .tl-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    display: inline-block;
+    flex: none;
+  }
+  #event-timeline {
+    width: 100%;
+    height: 150px;
+    margin-top: 6px;
+    border: 1px solid #d8deea;
+    border-radius: 6px;
+    background: #fbfdff;
+    display: block;
+    cursor: pointer;
+  }
+  #timeline-tooltip {
+    position: absolute;
+    display: none;
+    pointer-events: none;
+    background: #0f172a;
+    color: #fff;
+    font-size: 11px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+    transform: translate(-50%, -100%);
+    z-index: 8;
+    margin-top: -6px;
   }
   .route-legend {
     display: flex;
@@ -457,7 +651,7 @@
   body[data-view="run"] .v-setup, body[data-view="run"] .v-plan { display: none !important; }
   body[data-view="setup"] main { grid-template-columns: 336px minmax(620px, 1fr); }
   body[data-view="plan"] main, body[data-view="run"] main {
-    grid-template-columns: minmax(620px, 1fr) 360px;
+    grid-template-columns: minmax(760px, 1fr) 300px;
   }
   .side-tabs {
     display: flex;
@@ -507,6 +701,15 @@
     <button class="secondary" id="edit-setup">Edit Setup</button>
   </span>
 </nav>
+<div id="metrics-banner" class="v-plan-run">
+  <div class="stat"><b id="metric-bays">0</b><span>workstations</span></div>
+  <div class="stat"><b id="metric-agents">4</b><span>depot slots</span></div>
+  <div class="stat"><b id="metric-distance">0</b><span>overall makespan</span></div>
+  <div class="stat"><b id="metric-hotspot">None</b><span>collision risk / hotspot</span></div>
+</div>
+<div id="robot-topic-panel" class="v-plan-run">
+  <div id="robot-topic-buttons"></div>
+</div>
 <main>
   <section class="left v-setup">
     <div>
@@ -534,7 +737,7 @@
 
     <div class="panel">
       <h2>3. Agents & Resources</h2>
-      <label class="field">Number of agents <input id="agents" type="number" min="1" max="12" value="4"></label>
+      <label class="field">Number of agents <input id="agents" type="number" min="1" max="6" value="4"></label>
       <label class="field">Resources per agent <input id="capacity" type="number" min="1" max="20" value="3"></label>
       <label class="field">Random seed <input id="seed" type="number" value="42"></label>
       <label class="field">Route mode
@@ -566,14 +769,44 @@
   </section>
 
   <section class="panel grid-panel">
-    <h2>Grid, Depot, Workstations, and Routes</h2>
+    <h2 style="position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap;">Grid, Depot, Workstations, and Routes</h2>
+    <div id="map-key" aria-hidden="true">
+      <span class="mk-item"><i class="mk-dot" style="background:#dc2626;"></i>Intersection</span>
+      <span class="mk-item"><i class="mk-dot" style="background:#facc15;"></i>Workstation / entry</span>
+      <span class="mk-item"><i class="mk-dot" style="background:#2563eb;"></i>Depot slot</span>
+      <span class="mk-item"><i class="mk-dot" style="background:#111827;"></i>Node 0</span>
+      <span class="mk-item"><i class="mk-line" style="background:#8a98aa;"></i>Grid edge</span>
+      <span class="mk-item"><i class="mk-line" style="background:#16a34a;"></i>Entry &rarr; work</span>
+      <span class="mk-item"><i class="mk-line" style="background:#2563eb;"></i>Route: A1</span>
+      <span class="mk-item"><i class="mk-line" style="background:#dc2626;"></i>Route: A2</span>
+      <span class="mk-item"><i class="mk-line" style="background:#16a34a;"></i>Route: A3</span>
+      <span class="mk-item"><i class="mk-line" style="background:#9333ea;"></i>Route: A4</span>
+      <span class="mk-item"><i class="mk-dot" style="background:#f97316;"></i>Congestion</span>
+      <span class="mk-item"><i class="mk-dot" style="background:#ef4444;"></i>Collision</span>
+    </div>
     <img id="live-feed" alt="annotated camera view (run apriltag_localize.py --stream)">
     <svg id="grid-svg" viewBox="0 0 820 760" role="img" aria-label="AGV grid visualization"></svg>
     <div class="sim-controls v-plan">
       <button class="secondary" id="play-route">Play</button>
       <button class="secondary" id="step-route">Step</button>
-      <input id="timestep-slider" type="range" min="0" max="0" value="0">
+      <select id="play-speed" title="Playback speed">
+        <option value="0.5">0.5x</option>
+        <option value="1" selected>1x</option>
+        <option value="1.25">1.25x</option>
+        <option value="1.5">1.5x</option>
+        <option value="1.75">1.75x</option>
+        <option value="2">2x</option>
+        <option value="3">3x</option>
+        <option value="5">5x</option>
+        <option value="10">10x</option>
+      </select>
+      <input id="timestep-slider" type="range" min="0" max="0" value="0" style="display:none;">
       <span id="sim-time" class="muted">t=0 / 0</span>
+    </div>
+    <div id="timeline-toggles" class="v-plan"></div>
+    <div class="v-plan" style="position:relative;">
+      <svg id="event-timeline" viewBox="0 0 1000 70" preserveAspectRatio="none" role="img" aria-label="Simulation event timeline"></svg>
+      <div id="timeline-tooltip"></div>
     </div>
     <div class="actions v-plan" style="margin-top:8px;">
       <button class="secondary" id="open-report" disabled>Route report</button>
@@ -613,6 +846,17 @@
         per-robot lists (especially the depot exit), then Start. Every command passes the deterministic
         conflict gate + vision checks; Hold pauses issuing, Abort sends STOP to all robots.</p>
       <div class="tool-row">
+        <span class="tool-label">Drive mode</span>
+        <button class="secondary" id="drive-mode-color">Color sensor + camera safety</button>
+        <button class="secondary" id="drive-mode-vision">Camera only</button>
+        <span id="drive-mode-status" class="mode-status muted"></span>
+      </div>
+      <div class="tool-row">
+        <span class="tool-label">Turn+drive fusion</span>
+        <button class="secondary" id="fuse-turns-toggle" disabled>Fuse turns (disabled)</button>
+        <span id="fuse-turns-status" class="mode-status muted">disabled — caused 2 collisions 2026-07-31</span>
+      </div>
+      <div class="tool-row">
         <span class="tool-label">Supervisor</span>
         <button class="secondary" id="sup-send">Send mission</button>
         <button class="secondary" id="sup-start">Start</button>
@@ -621,7 +865,18 @@
       </div>
       <p class="muted" style="margin:0;">Preferred path: hand the mission to the fleet supervisor on the
         Linux laptop (run it with <b>--listen</b>) — it dispatches natively with lower latency, the
-        BUSY-ack protocol, and the same conflict + vision gates. The browser Start above is the fallback.</p>
+        BUSY-ack protocol, and the same conflict + vision gates. The browser Start above is the fallback.
+        <b>Drive mode</b> picks how the supervisor moves each robot once a mission starts: <b>Color sensor +
+        camera safety</b> dispatches the original FORWARD_UNTIL_&lt;color&gt;/turn command vocabulary, with
+        vision only monitoring/veto (the long-proven path). <b>Camera only</b> dispatches pure AprilTag
+        position/heading control (drive_leg/turn_to_heading) and never uses the color sensor at all. Chosen
+        per mission, sent with it — no supervisor restart needed to switch.
+        <b>Turn+drive fusion</b> is DISABLED — built 2026-07-31 to skip the brake/settle between a turn
+        and the following drive, but caused two real hardware collisions the same day (the arrival
+        square-up after a fused turn+drive pointed the wrong way, since it only knew the heading it had
+        just driven, not the heading of the leg after that). The supervisor forces it off unconditionally
+        regardless of what's sent here. See turn_then_drive_leg()'s docstring in camera_grid_navigate.py
+        for the full history before ever re-enabling it.</p>
       <div id="sup-robot-status" class="muted" style="font-family:monospace; white-space:pre; font-size:11px;"></div>
       <div id="dispatch-editors"></div>
       <div id="dispatch-robot-status" class="muted" style="font-family:monospace; white-space:pre; font-size:11px;"></div>
@@ -641,31 +896,20 @@
       </div>
     </div>
     <div class="legend">
-      <span><i class="swatch" style="background:#4b5563;"></i>Intersection</span>
-      <span><i class="swatch" style="background:#22c55e;"></i>Workstation bay</span>
-      <span><i class="swatch" style="background:#2563eb;"></i>Depot slot</span>
-      <span><i class="swatch" style="background:#111827;"></i>Node 0 entry</span>
-      <span><i class="swatch" style="background:#f97316;"></i>Congestion heat</span>
-      <span><i class="swatch" style="background:#ef4444;"></i>Active edge collision</span>
+      <span><i class="swatch" style="background:#ffedd5;border:1px solid #f97316;"></i>Bay: awaiting delivery</span>
+      <span><i class="swatch" style="background:#dbeafe;border:1px solid #3b82f6;"></i>Bay: processing</span>
+      <span><i class="swatch" style="background:#dcfce7;border:1px solid #4ade80;"></i>Bay: ready for pickup</span>
+      <span><i class="swatch" style="background:#bbf7d0;border:1px solid #15803d;"></i>Bay: complete</span>
     </div>
   </section>
 
   <section class="right v-plan-run">
     <div class="panel">
-      <h2>Run Metrics</h2>
-      <div class="stat-grid">
-        <div class="stat"><b id="metric-bays">0</b><span>workstations</span></div>
-        <div class="stat"><b id="metric-agents">4</b><span>depot slots</span></div>
-        <div class="stat"><b id="metric-distance">0</b><span>overall makespan</span></div>
-        <div class="stat"><b id="metric-hotspot">None</b><span>collision risk / hotspot</span></div>
-      </div>
-    </div>
-
-    <div class="panel">
       <div class="side-tabs" id="side-tabs">
         <button class="secondary active" data-tab="routes">Agent Routes</button>
         <button class="secondary" data-tab="bays">Selected Bays</button>
         <button class="secondary" data-tab="conflicts">Events / Conflicts</button>
+        <button class="secondary" data-tab="topics">Robot Topics</button>
       </div>
       <div id="tab-routes" class="side-tab-pane active">
         <div id="route-list" class="route-list"><p class="muted">Solve to draw complete paths.</p></div>
@@ -675,6 +919,9 @@
       </div>
       <div id="tab-conflicts" class="side-tab-pane">
         <div id="conflict-pane"><p class="muted">Solve to evaluate conflicts.</p></div>
+      </div>
+      <div id="tab-topics" class="side-tab-pane">
+        <div id="robot-topic-details"><p class="muted">Click a robot above (or connect Real mode) to see its live rostopic values.</p></div>
       </div>
     </div>
   </section>
@@ -716,6 +963,11 @@ const state = {
   realSocket: null,
   realPositions: new Map(),
   visionPositions: new Map(),
+  // Per-robot rostopic inspector (Run & Monitor button row): agent index ->
+  // Map<topicSuffix, {value: string, receivedAt: number}>. Populated for
+  // ANY currently-connected robot, independent of active dispatch state.
+  robotTopics: new Map(),
+  robotTopicsExpanded: new Set(),  // agent indices with the inspector panel open
   realStatus: "Simulated playback",
   timestep: 0,
   timer: null,
@@ -724,15 +976,42 @@ const state = {
   view: "setup",      // workflow view: "setup" | "plan" | "run" (CSS-only)
   decisionLog: [],    // Run & Monitor event feed from /fleet_events
   decisionLogSeen: new Set(),  // event seqs already logged (dedupe re-delivery)
+  timelineToggles: { dropoff: true, pickup: true, depotLeave: true, depotReturn: true },
+  // "color": FORWARD_UNTIL_<color>/turn command vocabulary, vision is a
+  // monitor/veto only (the original, long-proven path). "vision": pure
+  // AprilTag position/heading control (drive_leg/turn_to_heading), color
+  // sensor never used. Sent with each /fleet_mission so it can be flipped
+  // per test run without restarting fleetSupervisor.py.
+  driveMode: "color",
+  // Turn-then-drive fusion (Camera only mode) -- skip the brake/settle
+  // between a turn and the following drive when heading is already within
+  // tolerance. Supervisor forces this off for missions with 2+ robots
+  // regardless of this flag (see run_advised_vision()'s docstring).
+  fuseTurns: false,
 };
 
 const palette = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c", "#0f766e", "#be185d", "#475569", "#ca8a04", "#0891b2", "#7c3aed", "#db2777"];
 const NS = "http://www.w3.org/2000/svg";
 const DEPOT_ENTRY_CLEARANCE_SEC = {
+  // Alvik1-4: real hardware-measured depot-corridor clearance times (feeds
+  // computeLaunchOffsets()'s collision-avoidance stagger -- see
+  // depotClearanceSec()/depotSegmentSec() below).
   Alvik1: 14.7,
   Alvik2: 16.0,
   Alvik3: 18.1,
   Alvik4: 19.0,
+  // Alvik5/6: NOT hardware-measured -- found 2026-08-06 that these were
+  // missing entirely, silently falling back to Alvik4's value via
+  // depotClearanceSec()'s `|| DEPOT_ENTRY_CLEARANCE_SEC.Alvik4`, which is
+  // wrong (Alvik5/6 are farther from the depot corridor's clearance point
+  // than Alvik4, so they need MORE time, not the same). Extrapolated here
+  // from the Alvik1-4 trend (average step ~1.43s/robot: (16.0-14.7 +
+  // 18.1-16.0 + 19.0-18.1)/3) as a placeholder ONLY -- re-measure on real
+  // hardware the same way Alvik1-4 were (see the comment above
+  // DEPOT_SLOT_WORLD_IN in camera_grid_navigate.py for that method) before
+  // trusting these for anything safety-relevant with 5+ robots.
+  Alvik5: 20.4,
+  Alvik6: 21.9,
 };
 // Physical red-marker spacing on the table (get_pose() reports cm from
 // reset_pose(0,0,0), taken at node0 right after the depot-exit maneuver).
@@ -776,13 +1055,20 @@ const AUTO_DECONFLICT_MAX_ITERATIONS = 260;
 const SOLVE_POLISH_BUDGET_MS = 1800;
 const REROUTE_BUDGET_MS = 1200;
 const PATH_MODES = ["vh", "hv", "via-bottom", "via-top", "via-left", "via-right"];
-// Default is the lab's ROS2 laptop (the page itself lives on the Windows
-// laptop and only needs network access to the rosbridge websocket). Override
-// with a query param if the IP changes or rosbridge runs elsewhere, e.g.
-//   agv_grid_workstation_solver.html?rosbridge=192.0.2.15
+// Reverted 2026-08-03: back to the Linux laptop (192.168.0.212) as the
+// rosbridge host, per the decision in memory: wsl2_microros_migration --
+// WSL2-hosted rosbridge showed a real, unresolved ~25s+ discovery-matching
+// delay after every robot power-cycle (vs. near-instant on the Linux
+// laptop previously), so the WSL2 migration is on hold pending further
+// investigation (see [[testbed_network_migration]]). 127.0.0.1 was the
+// WSL2-era default (this page opened as a native Windows browser file://
+// page, and Windows can't reliably reach its own WSL2-mirrored IP -- see
+// the old comment in git history if that's ever revisited). Override with
+// a query param if rosbridge ever runs elsewhere, e.g.
+//   agv_grid_workstation_solver.html?rosbridge=192.168.0.162
 const ROSBRIDGE_URL = (() => {
   let v = new URLSearchParams(window.location.search).get("rosbridge");
-  if (!v) return "ws://192.0.2.14:9090";
+  if (!v) return "ws://192.168.0.212:9090";
   if (!v.startsWith("ws://") && !v.startsWith("wss://")) v = `ws://${v}`;
   if (!/:\d+$/.test(v)) v = `${v}:9090`;
   return v;
@@ -819,22 +1105,39 @@ const PLAN_SERVER_URL = (() => {
   return v.replace(/\/$/, "");
 })();
 
+// Hard physical ceiling: the depot only has 6 real slots (D1..D6,
+// hardware-measured -- see DEPOT_SLOT_WORLD_IN in camera_grid_navigate.py).
+// A 7th agent would have nowhere to launch from or return to, so this is
+// also the real bound for "Number of agents" (its own input element's
+// max="12" is stale/wrong, not adjusted here -- fixing that is a UI-only
+// follow-up, not blocking this fix).
+const MAX_ROBOTS = 6;
+
 // kind "odom": <ROBOT_NAME>_pose from AGV_Factory_color_pose.ino, std_msgs/String JSON
 //   {"x":cm,"y":cm,"yaw":deg,"battery":pct,"ms":millis} (odometry frame).
 // kind "vision": <ROBOT_NAME>_vision_pose from apriltag_localize.py
 //   (VRP repo, camera laptop), std_msgs/String JSON {"x_in","y_in","yaw_deg",
 //   "grid_x","grid_y","tag_id","ms"} — grid cells relative to node 1.
 // When fresh vision is available it takes priority over odometry.
+// GENERATED from MAX_ROBOTS (2026-08-06, was previously hardcoded to only
+// Alvik1-4 -- found the hard way: Alvik5/6 silently got NO real battery
+// data at all, and their "position" on the grid was actually the
+// SIMULATED/predicted position from the solved plan silently substituting
+// for missing real data via realPointForAgent()'s `|| pointAtSeconds(...)`
+// fallback -- looked identical to real tracking in Real/Live mode but
+// wasn't. Generating this from MAX_ROBOTS instead of hand-listing means a
+// 7th robot (if the depot is ever expanded) can't silently repeat this).
 const ALVIK_REAL_TOPICS = [
-  { agent: 0, topic: "Alvik1_pose", type: "std_msgs/String", kind: "odom" },
-  { agent: 1, topic: "Alvik2_pose", type: "std_msgs/String", kind: "odom" },
-  { agent: 2, topic: "Alvik3_pose", type: "std_msgs/String", kind: "odom" },
-  { agent: 3, topic: "Alvik4_pose", type: "std_msgs/String", kind: "odom" },
-  { agent: 0, topic: "Alvik1_vision_pose", type: "std_msgs/String", kind: "vision" },
-  { agent: 1, topic: "Alvik2_vision_pose", type: "std_msgs/String", kind: "vision" },
-  { agent: 2, topic: "Alvik3_vision_pose", type: "std_msgs/String", kind: "vision" },
-  { agent: 3, topic: "Alvik4_vision_pose", type: "std_msgs/String", kind: "vision" },
+  ...Array.from({ length: MAX_ROBOTS }, (_, agent) => ({
+    agent, topic: `${agvName(agent)}_pose`, type: "std_msgs/String", kind: "odom",
+  })),
+  ...Array.from({ length: MAX_ROBOTS }, (_, agent) => ({
+    agent, topic: `${agvName(agent)}_vision_pose`, type: "std_msgs/String", kind: "vision",
+  })),
 ];
+const ALVIK_NAME_TO_AGENT = new Map(
+  Array.from({ length: MAX_ROBOTS }, (_, agent) => [agvName(agent), agent])
+);
 // Vision poses older than this fall back to odometry.
 const VISION_FRESH_MS = 2000;
 // Where vision's grid origin (node 1, the first lattice node — NOT node 0 on
@@ -928,14 +1231,24 @@ function corridorKey(a, b) {
 
 function layout() {
   const pad = 80;
-  const w = 820;
-  const h = 820;
+  // Cell size stays roughly constant (doesn't shrink as the grid grows) --
+  // the canvas grows with rows/cols/agents instead, so a bigger grid or
+  // fleet renders bigger on the page rather than cramming into a fixed box.
+  // Depot geometry (DEPOT_* constants) is defined in grid-cell units, so it
+  // scales correctly for free here; none of those constants change.
+  const TARGET_CELL = 90;
+  const gridColsSpan = Math.max(1, state.cols - 1);
+  const gridRowsSpan = Math.max(1, state.rows - 1);
+  const depotSlotsSpan = DEPOT_SLOT_GRID_X0 + DEPOT_SLOT_PITCH * Math.max(0, state.agents - 1) + 0.5;
+  const wSpanCells = Math.max(gridColsSpan, depotSlotsSpan);
+  const w = Math.round(wSpanCells * TARGET_CELL + pad * 2);
+  const h = Math.round(gridRowsSpan * TARGET_CELL + 230);
   const gridW = w - pad * 2;
   const gridH = h - 230;
-  const cell = Math.min(gridW / (state.cols - 1), gridH / (state.rows - 1));
-  const left = (w - cell * (state.cols - 1)) / 2;
+  const cell = Math.min(gridW / gridColsSpan, gridH / gridRowsSpan);
+  const left = (w - cell * gridColsSpan) / 2;
   const top = 58;
-  const bottom = top + cell * (state.rows - 1);
+  const bottom = top + cell * gridRowsSpan;
   // The depot (slots, DE entries, node 0, lane) is drawn in the vision-grid
   // frame via visionGridToPoint (see DEPOT_* constants + depotSlot/specialPt),
   // so it shares the live robot dots' coordinate system and lines up. No
@@ -1149,10 +1462,12 @@ function entryNodeNumber(bay) {
 }
 
 function bayEntryPoint(bay) {
-  const g = layout();
   const a = pt(bay.r, bay.c);
   const b = pt(bay.r, bay.c + 1);
-  return { x: (a.x + b.x) / 2, y: a.y + 8 };
+  // The entry sticker lies mid-edge on the grid lattice, directly on the
+  // line between its two flanking intersections (see entryEdgeNodes /
+  // corridorKey) -- not offset below it.
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 }
 
 function bayWorkPoint(bay) {
@@ -2014,14 +2329,52 @@ function conflictScore(conflicts) {
   }, 0);
 }
 
+// A mid-grid ROTATE_180 (the robot about-facing somewhere on the open
+// lattice, NOT at a workstation/depot) means the route drove past its own
+// path and doubled back -- the exact defect buildAgentRoute's bay-side
+// scoring (see its own comment, "Alvik3 drove past its workstation,
+// ROTATE_180'd... and came back — hardware run 2026-07-14") exists to
+// prevent. ROOT-CAUSED 2026-08-06: buildAgentRoute's OWN output was
+// confirmed clean via direct inspection (dumped real fullPath arrays) --
+// the defect is introduced by polishCollisionPlan (below) trying
+// alternate PATH_MODES ("hv"/"via-left"/"via-right"/etc, see PATH_MODES
+// above) to resolve a scheduling conflict. Those alternate modes can
+// produce a route that resolves the conflict but backtracks through a
+// node it already visited -- and until now, NOTHING checked for that:
+// evaluateRoutes()'s `fatal` count (which isBetterPlanEval() prioritizes
+// above all other scoring) only ever counted scheduling conflicts, so a
+// flip-introducing candidate could still "win" over a flip-free one as
+// long as it looked better on collision/timing grounds alone. The ONLY
+// place a flip was ever detected was generateCommandLines() -- a UI-
+// render-time-only warning that never fed back into route SELECTION at
+// all. Fixed by counting flips here too, in the same `fatal` metric
+// polishCollisionPlan already treats as a hard must-avoid, so a flip-
+// introducing candidate can never be chosen over a flip-free one with
+// equal/better scheduling quality.
+function countMidGridFlips(route) {
+  const segs = route.segments || [];
+  let flips = 0;
+  let prevHeading = "N";
+  for (const seg of segs) {
+    if (seg.type === "RED_TO_BLUE_RETURN") break;
+    const leavingWork = seg.from && seg.from.kind === "workstation";
+    const turn = turnCommandBetween(prevHeading, seg.heading);
+    if (turn === "ROTATE_180" && !leavingWork) flips++;
+    prevHeading = seg.heading;
+  }
+  return flips;
+}
+
 function evaluateRoutes(routes) {
   const conflicts = detectConflicts(routes);
+  const midGridFlips = routes.reduce((sum, route) => sum + countMidGridFlips(route), 0);
   return {
     conflicts,
     score: conflictScore(conflicts),
     makespan: makespan(routes),
     dwell: totalPlanDwell(routes),
-    fatal: fatalSchedulingConflicts(conflicts).length,
+    midGridFlips,
+    fatal: fatalSchedulingConflicts(conflicts).length + midGridFlips,
   };
 }
 
@@ -2153,11 +2506,233 @@ function bayLifecycleTimes() {
   return times;
 }
 
+// Timeline event categories shown as flags on the big timeline strip.
+// Each toggle key maps to a checkbox id (tl-toggle-<key>) and a swatch color.
+const TIMELINE_EVENT_TYPES = {
+  dropoff:      { label: "Drop-off",     shape: "flag-down", color: "#f97316" },
+  pickup:       { label: "Pickup",       shape: "flag-up",   color: "#22c55e" },
+  depotLeave:   { label: "Leaves depot", shape: "triangle",  color: "#2563eb" },
+  depotReturn:  { label: "Returns to depot", shape: "square", color: "#0f172a" },
+};
+
+// Flat, sorted list of {sec, agent, type, label} events across all current
+// routes -- drop-off / pickup (from route.segments' workstation legs, same
+// source bayLifecycleTimes() uses) plus depot-leave / depot-return (from the
+// route's special node0 / depot-slot path points). Built fresh from
+// state.routes each time it's called; cheap enough to call on every render.
+function buildTimelineEvents() {
+  const events = [];
+  for (const route of state.routes) {
+    const segs = route.segments || [];
+    const agentLabel = `A${route.agent + 1}`;
+    for (let i = 0; i < segs.length; i++) {
+      const seg = segs[i];
+      const toPoint = seg.to;
+      if (toPoint && toPoint.kind === "workstation") {
+        const wsNum = workstationNodeNumber(toPoint.bay);
+        if (toPoint.mode !== "pick") {
+          events.push({
+            sec: seg.endSec, agent: route.agent, type: "dropoff",
+            label: `${agentLabel} drop-off at WS${wsNum}`,
+          });
+        }
+        if (toPoint.mode === "pick" || toPoint.mode === "service") {
+          const pickSec = i + 1 < segs.length ? segs[i + 1].startSec : seg.endSec;
+          events.push({
+            sec: pickSec, agent: route.agent, type: "pickup",
+            label: `${agentLabel} pickup at WS${wsNum}`,
+          });
+        }
+      }
+      const fromPoint = seg.from;
+      if (toPoint && toPoint.kind === "special" && toPoint.id === "node0" &&
+          fromPoint && fromPoint.kind === "special" &&
+          String(fromPoint.id || "").startsWith("depot-entry-")) {
+        // node0 reached FROM a depot entry -> just left the depot
+        events.push({
+          sec: seg.endSec, agent: route.agent, type: "depotLeave",
+          label: `${agentLabel} leaves depot`,
+        });
+      }
+      if (toPoint && toPoint.kind === "special" && String(toPoint.id).startsWith("depot-slot-")) {
+        events.push({
+          sec: seg.endSec, agent: route.agent, type: "depotReturn",
+          label: `${agentLabel} returns to depot`,
+        });
+      }
+    }
+  }
+  events.sort((a, b) => a.sec - b.sec);
+  return events;
+}
+
+let timelineTogglesBuilt = false;
+
+function renderTimelineToggles() {
+  const box = document.getElementById("timeline-toggles");
+  if (!box) return;
+  if (!timelineTogglesBuilt) {
+    box.innerHTML = Object.entries(TIMELINE_EVENT_TYPES).map(([key, def]) => `
+      <label>
+        <input type="checkbox" id="tl-toggle-${key}" ${state.timelineToggles[key] ? "checked" : ""}>
+        <i class="tl-swatch" style="background:${def.color};"></i>${escapeHtml(def.label)}
+      </label>
+    `).join("");
+    for (const key of Object.keys(TIMELINE_EVENT_TYPES)) {
+      document.getElementById(`tl-toggle-${key}`).addEventListener("change", (event) => {
+        state.timelineToggles[key] = event.target.checked;
+        renderEventTimeline();
+      });
+    }
+    timelineTogglesBuilt = true;
+  }
+}
+
+// Small marker glyphs per event category, drawn centered at (x, y) with the
+// given color. Kept intentionally simple (single closed path each) so they
+// stay legible at the ~10px size used on a dense timeline.
+function timelineMarkerPath(shape, x, y, s) {
+  if (shape === "flag-down") {
+    // pin pointing down (drop-off)
+    return `M ${x} ${y + s} L ${x - s} ${y - s} L ${x + s} ${y - s} Z`;
+  }
+  if (shape === "flag-up") {
+    // pin pointing up (pickup)
+    return `M ${x} ${y - s} L ${x - s} ${y + s} L ${x + s} ${y + s} Z`;
+  }
+  if (shape === "triangle") {
+    return `M ${x} ${y - s} L ${x + s} ${y + s} L ${x - s} ${y + s} Z`;
+  }
+  // square (depot return)
+  return `M ${x - s} ${y - s} L ${x + s} ${y - s} L ${x + s} ${y + s} L ${x - s} ${y + s} Z`;
+}
+
+function renderEventTimeline() {
+  const svg = document.getElementById("event-timeline");
+  if (!svg) return;
+  svg.innerHTML = "";
+  const maxT = makespan();
+  const VB_W = 1000, VB_H = 150;
+  const marginL = 12, marginR = 12;
+  const trackY = 110;
+  const laneTop = 14, laneBottom = 98;
+
+  svg.appendChild(el("line", {
+    x1: marginL, y1: trackY, x2: VB_W - marginR, y2: trackY,
+    stroke: "#cbd5e1", "stroke-width": 12, "stroke-linecap": "round",
+  }));
+
+  if (!state.routes.length || maxT <= 0) {
+    svg.appendChild(el("text", {
+      x: VB_W / 2, y: trackY - 6, "text-anchor": "middle", fill: "#94a3b8", "font-size": 11,
+    }, "Solve to see drop-off, pickup, and depot events here."));
+    return;
+  }
+
+  const xFor = (sec) => marginL + (Math.max(0, Math.min(maxT, sec)) / maxT) * (VB_W - marginL - marginR);
+
+  // tick labels at 0 / 25% / 50% / 75% / 100% of makespan
+  for (let f = 0; f <= 1.0001; f += 0.25) {
+    const sec = maxT * f;
+    const x = xFor(sec);
+    svg.appendChild(el("line", { x1: x, y1: trackY - 4, x2: x, y2: trackY + 4, stroke: "#94a3b8", "stroke-width": 1 }));
+    svg.appendChild(el("text", { x, y: trackY + 16, "text-anchor": "middle", fill: "#94a3b8", "font-size": 9 }, fmtSec(sec)));
+  }
+
+  const events = buildTimelineEvents().filter((e) => state.timelineToggles[e.type]);
+
+  // Stack same-ish-time markers into lanes above the track so nearby flags
+  // don't fully overlap: bucket by rounded pixel x, alternate up/down offset.
+  const bucketed = new Map();
+  for (const ev of events) {
+    const bx = Math.round(xFor(ev.sec) / 6);
+    const arr = bucketed.get(bx) || [];
+    arr.push(ev);
+    bucketed.set(bx, arr);
+  }
+
+  const tooltip = document.getElementById("timeline-tooltip");
+  const svgRect = { current: null };
+
+  for (const [, arr] of bucketed) {
+    arr.forEach((ev, idx) => {
+      const def = TIMELINE_EVENT_TYPES[ev.type];
+      const x = xFor(ev.sec);
+      const y = laneTop + (idx % 4) * ((laneBottom - laneTop) / 3.2);
+      const color = def.color;
+      const path = el("path", {
+        d: timelineMarkerPath(def.shape, x, y, 7),
+        fill: color,
+        stroke: "#ffffff",
+        "stroke-width": 1,
+        style: "cursor:pointer",
+      });
+      path.addEventListener("pointerdown", (event) => {
+        // Snap straight to this event's exact time rather than falling
+        // through to the track's drag-seek (which would use the pointer's
+        // raw x position instead of the marker's true timestamp).
+        event.stopPropagation();
+        setTimestep(ev.sec);
+      });
+      path.addEventListener("mouseenter", () => {
+        if (!tooltip) return;
+        tooltip.textContent = `${ev.label} — ${fmtSec(ev.sec)}`;
+        tooltip.style.display = "block";
+        const wrap = svg.parentElement.getBoundingClientRect();
+        const ratio = wrap.width / VB_W;
+        tooltip.style.left = `${x * ratio}px`;
+        tooltip.style.top = `${(y) * (wrap.height / VB_H)}px`;
+      });
+      path.addEventListener("mouseleave", () => {
+        if (tooltip) tooltip.style.display = "none";
+      });
+      svg.appendChild(path);
+    });
+  }
+
+  // current-time cursor, drawn last so it's on top
+  const cursorX = xFor(state.timestep);
+  svg.appendChild(el("line", {
+    x1: cursorX, y1: 4, x2: cursorX, y2: trackY + 20,
+    stroke: "#0f172a", "stroke-width": 2,
+  }));
+  svg.appendChild(el("circle", { cx: cursorX, cy: trackY, r: 5, fill: "#0f172a", stroke: "#fff", "stroke-width": 1.5 }));
+
+  // Click OR drag anywhere on the track to seek. pointerdown starts a drag
+  // (setPointerCapture so it keeps tracking even if the cursor leaves the
+  // strip mid-drag), pointermove while captured updates the time live,
+  // pointerup ends it. A plain click (no movement) still works the same way
+  // since pointerdown alone already seeks once.
+  const trackHit = el("rect", {
+    x: marginL, y: 0, width: VB_W - marginL - marginR, height: VB_H,
+    fill: "transparent", style: "cursor:pointer",
+  });
+  const seekFromClientX = (clientX) => {
+    const rect = svg.getBoundingClientRect();
+    const relX = ((clientX - rect.left) / rect.width) * VB_W;
+    const frac = Math.max(0, Math.min(1, (relX - marginL) / (VB_W - marginL - marginR)));
+    setTimestep(frac * maxT);
+  };
+  trackHit.addEventListener("pointerdown", (event) => {
+    trackHit.setPointerCapture(event.pointerId);
+    seekFromClientX(event.clientX);
+  });
+  trackHit.addEventListener("pointermove", (event) => {
+    if (event.buttons !== 1) return;
+    seekFromClientX(event.clientX);
+  });
+  svg.insertBefore(trackHit, svg.firstChild);
+}
+
+// Per-status colors for the bay BOX itself (fills the whole cell, not just
+// the small badge): awaiting delivery = orange, processing = blue,
+// awaiting pickup = light green, complete = dark green. Badge fill/stroke/
+// text stay higher-contrast for the small label text.
 const BAY_STATUS_STYLE = {
-  awaiting_delivery: { label: "AWAIT", fill: "#e2e8f0", stroke: "#94a3b8", text: "#475569" },
-  processing:        { label: "PROC",  fill: "#fde68a", stroke: "#d97706", text: "#92400e" },
-  awaiting_pickup:   { label: "READY", fill: "#bfdbfe", stroke: "#3b82f6", text: "#1d4ed8" },
-  complete:          { label: "DONE",  fill: "#86efac", stroke: "#16a34a", text: "#14532d" },
+  awaiting_delivery: { label: "AWAIT", fill: "#fed7aa", stroke: "#ea580c", text: "#9a3412", boxFill: "#ffedd5", boxStroke: "#f97316" },
+  processing:        { label: "PROC",  fill: "#bfdbfe", stroke: "#2563eb", text: "#1e3a8a", boxFill: "#dbeafe", boxStroke: "#3b82f6" },
+  awaiting_pickup:   { label: "READY", fill: "#bbf7d0", stroke: "#22c55e", text: "#166534", boxFill: "#dcfce7", boxStroke: "#4ade80" },
+  complete:          { label: "DONE",  fill: "#86efac", stroke: "#15803d", text: "#052e16", boxFill: "#bbf7d0", boxStroke: "#15803d" },
 };
 
 function bayStatusAt(info, tSec) {
@@ -2212,7 +2787,21 @@ function drawGrid() {
   // 2026-07-23). The two draws share no state, so compare actual pixel
   // position against the depot slot's position directly rather than trying
   // to track a separate "has launched" flag that could itself drift.
-  const DEPOT_MARKER_MATCH_PX = 15;
+  //
+  // RAISED 2026-07-30 from a fixed 15px to a fraction of the grid cell
+  // size: confirmed on real hardware that a robot sitting correctly
+  // parked in its depot slot (Alvik1, visually identical placement to
+  // Alvik2/Alvik3, which both rendered fine) still exceeded a flat 15px
+  // threshold and had its depot box incorrectly hidden -- normal
+  // vision-tracking noise/parking variance is a real physical distance,
+  // not a fixed pixel count, so a flat pixel threshold is either too
+  // tight or too loose depending on how large the grid happens to be
+  // rendered (window size, --rows/--cols) at the time. 35% of one cell
+  // scales with the actual rendered size and gives real margin (roughly
+  // 3-4in of real-world tolerance at typical grid sizes) while still
+  // catching a robot that's genuinely mid-route, which moves by whole
+  // cells, not inches.
+  const DEPOT_MARKER_MATCH_PX = g.cell * 0.35;
   for (let i = 0; i < state.agents; i++) {
     const route = state.routes.find((r) => r.agent === i);
     if (route) {
@@ -2236,15 +2825,28 @@ function drawGrid() {
     svg.appendChild(el("text", { x: slot.x, y: slot.y + 4, "text-anchor": "middle", fill: "#1d4ed8", "font-size": 12, "font-weight": 700 }, `D${i + 1}`));
   }
 
+  // Status-driven bay box coloring needs each bay's lifecycle status, so
+  // compute it here (before the box loop) rather than later in drawGrid.
+  const bayTimesForBoxes = state.routes.length ? bayLifecycleTimes() : null;
+  const statusClockForBoxes = statusClockSec();
+
   for (let r = 0; r < state.rows - 1; r++) {
     for (let c = 0; c < state.cols - 1; c++) {
       const p = pt(r, c);
       const id = bayId(r, c);
       const selected = state.selected.has(id);
+      let fill = selected ? "#dcfce7" : "#ffffff";
+      let stroke = selected ? "#22c55e" : "#d9e2ee";
+      let textFill = selected ? "#166534" : "#94a3b8";
+      if (selected && bayTimesForBoxes) {
+        const style = BAY_STATUS_STYLE[bayStatusAt(bayTimesForBoxes.get(id), statusClockForBoxes)];
+        fill = style.boxFill;
+        stroke = style.boxStroke;
+        textFill = style.text;
+      }
       const rect = el("rect", {
         x: p.x + 6, y: p.y + 6, width: g.cell - 12, height: g.cell - 12,
-        fill: selected ? "#dcfce7" : "#ffffff",
-        stroke: selected ? "#22c55e" : "#d9e2ee",
+        fill, stroke,
         "stroke-width": selected ? 2 : 1,
         rx: 4,
         "data-bay": id,
@@ -2254,7 +2856,7 @@ function drawGrid() {
         if (!state.editMode) toggleBay(id);
       });
       svg.appendChild(rect);
-      svg.appendChild(el("text", { x: p.x + g.cell / 2, y: p.y + g.cell / 2 + 4, "text-anchor": "middle", fill: selected ? "#166534" : "#94a3b8", "font-size": 11 }, `B${bayNumber(r, c)}`));
+      svg.appendChild(el("text", { x: p.x + g.cell / 2, y: p.y + g.cell / 2 + 4, "text-anchor": "middle", fill: textFill, "font-size": 11 }, `B${bayNumber(r, c)}`));
     }
   }
 
@@ -2272,8 +2874,8 @@ function drawGrid() {
   drawHeat();
   drawRoutes();
 
-  const bayTimes = state.routes.length ? bayLifecycleTimes() : null;
-  const statusClock = statusClockSec();
+  const bayTimes = bayTimesForBoxes;
+  const statusClock = statusClockForBoxes;
   for (const id of state.selected) {
     const bay = parseBayId(id);
     const entry = bayEntryPoint(bay);
@@ -2281,8 +2883,8 @@ function drawGrid() {
     svg.appendChild(el("line", { x1: entry.x, y1: entry.y, x2: work.x, y2: work.y, stroke: "#16a34a", "stroke-width": 3, "stroke-linecap": "round" }));
     svg.appendChild(el("circle", { cx: entry.x, cy: entry.y, r: 6, fill: "#facc15", stroke: "#a16207", "stroke-width": 1.5 }));
     svg.appendChild(el("text", { x: entry.x, y: entry.y - 9, "text-anchor": "middle", fill: "#854d0e", "font-size": 9, "font-weight": 700 }, entryNodeNumber(bay)));
-    svg.appendChild(el("circle", { cx: work.x, cy: work.y, r: 8, fill: "#22c55e", stroke: "#166534", "stroke-width": 1.5 }));
-    svg.appendChild(el("text", { x: work.x, y: work.y + 3, "text-anchor": "middle", fill: "#ffffff", "font-size": 9, "font-weight": 700 }, workstationNodeNumber(bay)));
+    svg.appendChild(el("circle", { cx: work.x, cy: work.y, r: 8, fill: "#facc15", stroke: "#a16207", "stroke-width": 1.5 }));
+    svg.appendChild(el("text", { x: work.x, y: work.y + 3, "text-anchor": "middle", fill: "#854d0e", "font-size": 9, "font-weight": 700 }, workstationNodeNumber(bay)));
     if (bayTimes) {
       // tiny part-status badge along the bay cell's bottom edge
       const style = BAY_STATUS_STYLE[bayStatusAt(bayTimes.get(id), statusClock)];
@@ -2308,7 +2910,7 @@ function drawGrid() {
       const node = nodeNumber(r, c);
       const circle = el("circle", {
         cx: p.x, cy: p.y, r: state.editMode ? 9 : 6,
-        fill: state.editMode ? "#1d4ed8" : "#4b5563",
+        fill: state.editMode ? "#1d4ed8" : "#dc2626",
         stroke: "#ffffff",
         "stroke-width": 1.5,
         style: state.editMode ? "cursor:crosshair" : "",
@@ -2548,15 +3150,6 @@ function drawSimulationAgents() {
     const color = palette[route.agent % palette.length];
     svg.appendChild(el("circle", { cx: p.x, cy: p.y, r: 13, fill: color, stroke: "#ffffff", "stroke-width": 2.5 }));
     svg.appendChild(el("text", { x: p.x, y: p.y + 4, "text-anchor": "middle", fill: "#fff", "font-size": 11, "font-weight": 700 }, `A${route.agent + 1}`));
-    if (isReal) {
-      const battery = realBatteryForAgent(route.agent);
-      if (battery !== null) {
-        svg.appendChild(el("text", {
-          x: p.x, y: p.y - 18, "text-anchor": "middle", fill: color,
-          "font-size": 11, "font-weight": 700, stroke: "#ffffff", "stroke-width": 3, "paint-order": "stroke",
-        }, `${battery}%`));
-      }
-    }
   }
 }
 
@@ -2574,13 +3167,16 @@ function stopPlayback() {
   document.getElementById("play-route").textContent = "Play";
 }
 
-function togglePlayback() {
-  if (!state.routes.length) return;
-  if (state.timer) {
-    stopPlayback();
-    return;
-  }
-  document.getElementById("play-route").textContent = "Pause";
+const PLAY_TICK_BASE_MS = 420;
+
+function currentPlaySpeed() {
+  const sel = document.getElementById("play-speed");
+  const v = sel ? Number(sel.value) : 1;
+  return v > 0 ? v : 1;
+}
+
+function startPlaybackTimer() {
+  if (state.timer) clearInterval(state.timer);
   state.timer = setInterval(() => {
     if (state.timestep >= makespan()) {
       stopPlayback();
@@ -2588,7 +3184,17 @@ function togglePlayback() {
     }
     state.timestep = Math.min(makespan(), state.timestep + 1);
     render();
-  }, 420);
+  }, PLAY_TICK_BASE_MS / currentPlaySpeed());
+}
+
+function togglePlayback() {
+  if (!state.routes.length) return;
+  if (state.timer) {
+    stopPlayback();
+    return;
+  }
+  document.getElementById("play-route").textContent = "Pause";
+  startPlaybackTimer();
 }
 
 function stepRoute() {
@@ -2784,7 +3390,7 @@ function solve(openModal = true) {
 function syncControls() {
   state.rows = clampInt(document.getElementById("rows").value, 2, 16);
   state.cols = clampInt(document.getElementById("cols").value, 2, 16);
-  state.agents = clampInt(document.getElementById("agents").value, 1, 12);
+  state.agents = clampInt(document.getElementById("agents").value, 1, MAX_ROBOTS);
   state.capacity = clampInt(document.getElementById("capacity").value, 1, 20);
   state.rpdMode = document.getElementById("rpd-mode").checked;
   state.processSec = clampInt(document.getElementById("process-sec").value, 0, 600);
@@ -2942,6 +3548,9 @@ function renderMetrics() {
     : "";
   document.getElementById("sim-time").textContent = `t=${fmtSec(state.timestep)} / ${fmtSec(maxT)}${activeText}`;
 
+  renderTimelineToggles();
+  renderEventTimeline();
+
   const warning = document.getElementById("capacity-warning");
   const capacity = state.agents * state.capacity;
   if (state.selected.size > capacity) {
@@ -2989,6 +3598,12 @@ function renderAgentControls() {
   document.getElementById("mode-real").className = state.mode === "real" ? "secondary active" : "secondary";
   document.getElementById("mode-live").className = state.mode === "live" ? "secondary active" : "secondary";
   document.getElementById("real-status").textContent = state.realStatus;
+  document.getElementById("drive-mode-color").className =
+    state.driveMode === "color" ? "secondary active" : "secondary";
+  document.getElementById("drive-mode-vision").className =
+    state.driveMode === "vision" ? "secondary active" : "secondary";
+  document.getElementById("drive-mode-status").textContent =
+    state.driveMode === "vision" ? "camera-only (no color sensor)" : "color sensor + camera safety";
   document.getElementById("edit-hint").textContent = state.editMode
     ? `Editing AGV ${state.editAgent + 1}: click intersections to add waypoints. Clear edits removes this AGV's manual path.`
     : "Select an AGV, turn on Edit path, then click intersections to add route waypoints.";
@@ -3004,6 +3619,7 @@ function render() {
   renderAgentControls();
   renderSetupSummary();
   renderConflictPane();
+  renderRobotTopicPanel();
 }
 
 // ---- workflow views --------------------------------------------------------
@@ -3297,6 +3913,18 @@ function subscribeRealTopics(socket) {
       throttle_rate: 100,
     }));
   }
+  // Subscribe _status for ALL MAX_ROBOTS robots unconditionally (not just
+  // ones in an active dispatch mission) so the rostopic inspector panel can
+  // show status for any currently-connected robot, not only ones dispatched
+  // from this browser tab.
+  for (let agent = 0; agent < MAX_ROBOTS; agent++) {
+    socket.send(JSON.stringify({
+      op: "subscribe",
+      topic: `${agvName(agent)}_status`,
+      type: "std_msgs/String",
+      throttle_rate: 100,
+    }));
+  }
   socket.send(JSON.stringify({
     op: "subscribe",
     topic: "fleet_status",
@@ -3330,8 +3958,10 @@ function handleRealMessage(event) {
   }
   if (payload.topic.endsWith("_status")) {
     const name = payload.topic.slice(0, -"_status".length);
+    const text = String((payload.msg || {}).data || "").trim();
+    recordRobotTopic(name, payload.topic, text);
     if (dispatch.robots[name]) {
-      dispatchOnStatus(name, String((payload.msg || {}).data || "").trim());
+      dispatchOnStatus(name, text);
     }
     return;
   }
@@ -3350,11 +3980,13 @@ function handleRealMessage(event) {
       topic: config.topic,
     });
     state.realStatus = `Real mode: ${agvName(config.agent)} update from ${config.topic} (vision)`;
+    recordRobotTopic(agvName(config.agent), config.topic, String(msg.data || ""));
     render();
     return;
   }
   const alvikPose = alvikPoseStringPayload(msg);
   const point = alvikPose ? alvikPose.point : realPayloadToPoint(msg);
+  recordRobotTopic(agvName(config.agent), config.topic, String(msg.data || ""));
   if (!point) return;
   state.realPositions.set(config.agent, {
     point,
@@ -3366,6 +3998,78 @@ function handleRealMessage(event) {
   state.realStatus = `Real mode: ${agvName(config.agent)} update from ${config.topic}`;
   render();
 }
+
+// Records the latest raw value for one robot/topic pair, keyed by robot name
+// (e.g. "Alvik3") so it works for topics not present in ALVIK_REAL_TOPICS
+// (e.g. _status). Backs the Run & Monitor per-robot rostopic inspector panel.
+function recordRobotTopic(robotName, topic, value) {
+  const agent = ALVIK_NAME_TO_AGENT.get(robotName);
+  if (agent === undefined) return;
+  if (!state.robotTopics.has(agent)) state.robotTopics.set(agent, new Map());
+  state.robotTopics.get(agent).set(topic, { value, receivedAt: Date.now() });
+  renderRobotTopicPanel();
+}
+
+// A robot counts as "currently connected" if we've heard from it on any
+// topic within this window (rather than just "ever, since page load").
+const ROBOT_TOPIC_STALE_MS = 5000;
+
+function toggleRobotTopicPanel(agent) {
+  if (state.robotTopicsExpanded.has(agent)) {
+    state.robotTopicsExpanded.delete(agent);
+  } else {
+    state.robotTopicsExpanded.add(agent);
+  }
+  renderRobotTopicPanel();
+}
+
+function renderRobotTopicPanel() {
+  const buttonsBox = document.getElementById("robot-topic-buttons");
+  const detailsBox = document.getElementById("robot-topic-details");
+  if (!buttonsBox || !detailsBox) return;
+  const now = Date.now();
+  const connected = [...state.robotTopics.keys()].sort((a, b) => a - b);
+  if (!connected.length) {
+    buttonsBox.innerHTML = `<span class="muted" style="font-size:12px;">No robots connected yet — Real mode subscribes on connect.</span>`;
+    detailsBox.innerHTML = `<p class="muted">Click a robot above to see its live rostopic values.</p>`;
+    return;
+  }
+  buttonsBox.innerHTML = connected.map((agent) => {
+    const topics = state.robotTopics.get(agent);
+    const newestAge = Math.min(...[...topics.values()].map((t) => now - t.receivedAt));
+    const stale = newestAge > ROBOT_TOPIC_STALE_MS;
+    const color = palette[agent % palette.length];
+    const battery = realBatteryForAgent(agent);
+    const active = state.robotTopicsExpanded.has(agent);
+    return `<button type="button" class="robot-topic-btn${active ? " active" : ""}" data-agent="${agent}">` +
+      `<span class="dot${stale ? " stale" : ""}" style="background:${color};"></span>` +
+      `${escapeHtml(agvName(agent))}` +
+      `${battery !== null ? `<span class="batt">${battery}%</span>` : ""}` +
+      `</button>`;
+  }).join("");
+  for (const btn of buttonsBox.querySelectorAll(".robot-topic-btn")) {
+    btn.addEventListener("click", () => toggleRobotTopicPanel(Number(btn.dataset.agent)));
+  }
+  const expanded = connected.filter((agent) => state.robotTopicsExpanded.has(agent));
+  detailsBox.innerHTML = expanded.length
+    ? expanded.map((agent) => {
+        const topics = [...state.robotTopics.get(agent).entries()].sort((a, b) => a[0].localeCompare(b[0]));
+        const rows = topics.map(([topic, entry]) => {
+          const ageSec = ((now - entry.receivedAt) / 1000).toFixed(1);
+          return `<tr><td class="rt-topic">${escapeHtml(topic)}</td>` +
+            `<td class="rt-value">${escapeHtml(entry.value)}</td>` +
+            `<td class="rt-age">${ageSec}s ago</td></tr>`;
+        }).join("");
+        return `<div class="robot-topic-card">` +
+          `<h3>${escapeHtml(agvName(agent))}</h3>` +
+          `<table>${rows}</table></div>`;
+      }).join("")
+    : `<p class="muted">Click a robot above to see its live rostopic values.</p>`;
+}
+
+// Refreshes the "Xs ago" ages / stale-dot state even when no new message has
+// arrived — cheap no-op while state.robotTopics is empty (before Real connect).
+setInterval(() => renderRobotTopicPanel(), 1000);
 
 function connectRealMode() {
   if (!("WebSocket" in window)) {
@@ -3423,6 +4127,16 @@ function setMode(mode) {
     panel.classList.remove("live-on");
     if (feed.src) feed.removeAttribute("src");
   }
+  render();
+}
+
+function setDriveMode(mode) {
+  state.driveMode = mode;
+  render();
+}
+
+function toggleFuseTurns() {
+  state.fuseTurns = !state.fuseTurns;
   render();
 }
 
@@ -4631,11 +5345,17 @@ function supervisorSendMission() {
   const mission = {
     schedule: buildExportPayload(),
     commands: supervisorMissionCommands(),
+    drive_mode: state.driveMode,  // "color" | "vision" — see setDriveMode()
+    // Turn+drive fusion request -- the supervisor forces this off for
+    // missions with 2+ robots regardless of what's sent here (see
+    // run_advised_vision()'s docstring in fleetSupervisor.py).
+    fuse_turns: state.fuseTurns,
     ms: Date.now(),
   };
   if (supPublish("fleet_mission", JSON.stringify(mission))) {
     document.getElementById("sup-status").textContent =
-      "mission sent — wait for 'loaded', then Start";
+      `mission sent (${state.driveMode === "vision" ? "camera-only" : "color+camera"}` +
+      `${state.fuseTurns ? ", fuse_turns" : ""}) — wait for 'loaded', then Start`;
   }
 }
 
@@ -4919,9 +5639,15 @@ document.getElementById("cols").addEventListener("change", buildGrid);
 document.getElementById("play-route").addEventListener("click", togglePlayback);
 document.getElementById("step-route").addEventListener("click", stepRoute);
 document.getElementById("timestep-slider").addEventListener("input", (event) => setTimestep(event.target.value));
+document.getElementById("play-speed").addEventListener("change", () => {
+  if (state.timer) startPlaybackTimer();
+});
 document.getElementById("mode-sim").addEventListener("click", () => setMode("sim"));
 document.getElementById("mode-real").addEventListener("click", () => setMode("real"));
 document.getElementById("mode-live").addEventListener("click", () => setMode("live"));
+document.getElementById("drive-mode-color").addEventListener("click", () => setDriveMode("color"));
+document.getElementById("drive-mode-vision").addEventListener("click", () => setDriveMode("vision"));
+document.getElementById("fuse-turns-toggle").addEventListener("click", toggleFuseTurns);
 document.getElementById("view-setup").addEventListener("click", () => setView("setup"));
 document.getElementById("view-plan").addEventListener("click", () => setView("plan"));
 document.getElementById("view-run").addEventListener("click", () => setView("run"));
@@ -4951,6 +5677,12 @@ document.getElementById("clear-route-edit").addEventListener("click", () => {
 document.getElementById("route-modal").addEventListener("click", (event) => {
   if (event.target.id === "route-modal") closeReport();
 });
+
+// MAX_ROBOTS is the single source of truth for the depot's real physical
+// slot count -- the #agents input's static `max` HTML attribute can't
+// reference a JS constant directly, so it's overwritten here at startup
+// instead of duplicating the number in the markup.
+document.getElementById("agents").max = String(MAX_ROBOTS);
 
 applyDefaultBays();
 solve(false);

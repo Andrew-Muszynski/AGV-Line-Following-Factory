@@ -71,9 +71,9 @@ Arduino_Alvik alvik;
 // =============================================================================
 // WiFi / agent config
 // =============================================================================
-char WIFI_SSID[] = "YOUR_WIFI_SSID";
-char WIFI_PASSWORD[] = "YOUR_WIFI_PASSWORD";
-char AGENT_IP[] = "192.0.2.14";
+char WIFI_SSID[] = "AGV_Testbed";
+char WIFI_PASSWORD[] = "62110204";
+char AGENT_IP[] = "192.168.0.212";  // reverted 2026-08-03: back to the Linux laptop (was 192.168.0.162 / WSL2) -- see memory: wsl2_microros_migration
 const uint32_t AGENT_PORT = 8888;
 
 // Per-robot identity / topic names, filled by getAlvikID() in setup()
@@ -117,6 +117,26 @@ bool ros_ready = false;
 unsigned long last_status_ms = 0;
 unsigned long last_pose_ms = 0;
 unsigned long last_color_ms = 0;
+
+// Stale-session recovery, added 2026-07-31: ros_ready was previously set
+// ONCE at boot from initGraph()'s result and never re-checked. If the
+// micro-ROS AGENT later loses and silently re-establishes the underlying
+// transport session (confirmed on hardware: agent log showed a fresh
+// "session established" after an agent restart, with no robot power-cycle),
+// this robot's own rcl entities (publishers/executor/node/support) stayed
+// bound to the OLD session -- rclc_executor_spin_some() kept running
+// without erroring, the LED stayed green (set once at boot, never revisited
+// either), but every publish silently went nowhere: confirmed on hardware
+// via `ros2 topic echo /Alvik1_status` showing zero messages for 15+
+// seconds while /Alvik1_cmd's own subscription still showed as matched.
+// rcl_publish()'s return value was discarded everywhere (publish_status/
+// publish_pose/publish_color) -- this is the direct, un-proxied signal that
+// something is wrong, tracked here instead of an indirect transport ping
+// (rmw_uros_ping_agent() would likely still report the transport reachable,
+// since the AGENT side reconnected fine -- it's specifically OUR entities
+// that are stale, not the network path).
+int consecutive_publish_failures = 0;
+const int PUBLISH_FAILURE_REINIT_THRESHOLD = 5;
 const unsigned long POSE_PERIOD_MS = 300;
 const unsigned long COLOR_PERIOD_MS = 150;
 
@@ -136,6 +156,54 @@ const float YAW_TOLERANCE = 1.0f; // was 2.0 -- tighter stop shrinks the residua
 const float TURN_MIN_SPEED = 18.0f;  //possibly lower this
 const float TURN_MAX_SPEED = 60.0f; // was 20.0
 const unsigned long TURN_CONTROL_MS = 5;
+// ROTATE_REL completion timing (added 2026-07-30): alvik.rotate()'s own
+// is_target_reached() ack was tried first and did NOT reliably fire on
+// real hardware -- two separate --rotate-test runs hung completely (LED
+// frozen, zero ROS traffic, robot unresponsive to GET_STATUS, required
+// power-cycle) even after removing a suspected alvik.brake() race. The
+// ONLY pattern found in this codebase that's actually bench-verified
+// working with alvik.rotate(..., false) is driveTo.ino's (Arduino Alvik
+// examples): fire the non-blocking rotate(), then just WAIT a fixed
+// duration without ever checking is_target_reached() at all (it pairs
+// every rotate() call with an immediate delay(200-500)). ROTATE_REL
+// reproduces that same proven approach, but with a non-blocking millis()
+// deadline (rotate_rel_done_ms) instead of delay(), per the no-delay()
+// rule -- see STATE_ROTATE_REL in loop(). ROTATE_DEG_PER_SEC matches the
+// library's own internal estimate (MOTOR_CONTROL_DEG_S in definitions.h,
+// used by rotate()'s own now-unused blocking-mode wait_for_target() call)
+// -- not independently measured on this hardware yet. If ROTATE_REL turns
+// consistently finish moving well before/after this deadline once tested,
+// re-derive this from real timing instead of trusting the library's own
+// assumed rate.
+// ROTATE_DEG_PER_SEC RE-MEASURED 2026-07-30 from real --rotate-test data
+// (Alvik1, 4 consecutive runs, 12/12 turns, no hangs): final_error scaled
+// with commanded angle -- small turns (7-95deg) landed within 2.4-4.6deg,
+// but the large ~177-179deg turn landed at 7.3-7.6deg EVERY run, always
+// the worst of the three. ack_after for those large turns (2.62-3.03s,
+// mean 2.77s) matched the OLD 100deg/s+500ms-margin estimate almost
+// exactly (177.5/100 + 0.5 = 2.275s predicted vs. ~2.27s actual elapsed
+// before margin) -- so the timer fired exactly when it was told to, the
+// robot just hadn't finished rotating yet. Back-solving from the
+// consistent ~7.5deg shortfall on ~177.5deg turns implies a real rate
+// closer to ~90-96deg/s, not the library's assumed 100. Lowered to 85 for
+// margin (errs toward MORE wait time, not less -- a slightly-late timer
+// costs nothing but a fraction of a second; a slightly-early one is the
+// failure mode that produced the original 7.5deg errors).
+//
+// REVERTED to 100 same day: after lowering to 85, 3 separate test
+// invocations ALL hung completely (LED frozen, zero ROS traffic,
+// unresponsive to GET_STATUS) on the very first ROTATE_REL of the run,
+// at SMALL commanded angles (+0.9, -90.3, -2.6deg) -- nothing like the
+// large-angle-specific shortfall this change was meant to fix, and this
+// constant only INCREASES wait time as it's lowered (1000*|deg|/rate
+// grows as rate shrinks), so it should never make a hang MORE likely on
+// its own. Reverted to isolate the variable: this was the ONLY code
+// change between a confirmed 12/12-success streak and these 3 failures.
+// If hangs stop at 100, the real cause is still unidentified but at
+// least decoupled from this constant -- do not re-lower it without
+// re-testing 100 first and confirming the hangs are unrelated.
+const float ROTATE_DEG_PER_SEC = 100.0f;
+const unsigned long ROTATE_REL_MARGIN_MS = 500; // generous fixed pad on top of the estimate
 const int MARKER_STABLE_SAMPLES = 3;
 // v2.2: 1500 -> 400 ms, tuned on the real table (2026-07-14): 400 stops the
 // robot (~4.3 cm blind travel) before the table edge at the one place a bad
@@ -148,7 +216,8 @@ const unsigned long LOST_LINE_FAILSAFE_MS = 400;
 // reports justify (or veto) lowering LOST_LINE_FAILSAFE_MS further.
 const unsigned long LINE_GAP_REPORT_MS = 175; // was 200  try to update this
 unsigned long max_line_gap_ms = 0;
-const unsigned long LOOP_DELAY_MS = 5;
+// LOOP_DELAY_MS removed 2026-07-30 along with the delay(LOOP_DELAY_MS) call
+// at the end of loop() it fed -- see loop()'s comment for why.
 
 // Extra forward travel after detecting a color/marker, before braking
 const unsigned long ADVANCE_AFTER_DETECT_MS = 150;
@@ -200,6 +269,24 @@ enum AGVState {
  STATE_ADVANCE_AFTER_BACKWARD_BLUE,
  STATE_DWELL,
  STATE_WHEEL_FOLLOW,  // accepting live left/right speeds from sub_wheel_cmd
+ // ROTATE_REL <deg> (added 2026-07-30): closed-loop in-place rotation using
+ // alvik.rotate(), NOT the wheel-speed-scaling law ROTATE_TO/updateTurn()
+ // uses. See the ROTATE_REL cmd handler below and its long comment for why
+ // this exists -- short version: camera_grid_navigate.py's Python-side
+ // turn_to_heading() (streaming wheel_cmd setpoints, WHEEL_FOLLOW_MODE)
+ // was measured on hardware (--turn-test, 2026-07-30) to overshoot by
+ // 4-54deg with NO consistent direction or magnitude at ANY tested RPM
+ // (10/15/20/60) -- not a tunable brake-lead problem, a fundamentally
+ // unreliable control loop over WiFi+DDS. alvik.rotate() runs closed-loop
+ // on Alvik's own motor-control MCU (separate UART protocol with its own
+ // ack/feedback, is_target_reached()) with zero network round-trip in the
+ // rotation itself, which is what ROTATE_TO/updateTurn() and
+ // WHEEL_FOLLOW_MODE's turn_to_heading() both lack. NOTE: completion is
+ // detected via a millis() TIMER (ROTATE_DEG_PER_SEC, rotate_rel_done_ms),
+ // NOT by polling is_target_reached() -- that was tried first and caused
+ // real hardware hangs; see ROTATE_DEG_PER_SEC's comment and
+ // STATE_ROTATE_REL in loop() for the full story.
+ STATE_ROTATE_REL,
  STATE_ERROR
 };
 
@@ -237,6 +324,7 @@ unsigned long last_turn_control_ms = 0;
 unsigned long marker_ignore_until_ms = 0; // ignore color right after a command starts
 unsigned long advance_until_ms = 0; // keep advancing until this time after detecting a color
 unsigned long dwell_until_ms = 0; // wait at the workstation until this time
+unsigned long rotate_rel_done_ms = 0; // ROTATE_REL considered complete at this time (see STATE_ROTATE_REL)
 
 const unsigned long CMD_MARKER_IGNORE_MS = 700; // ms to ignore color after receiving a command
 
@@ -271,6 +359,23 @@ void setLEDYellow() { alvik.left_led.set_color(1,1,0); alvik.right_led.set_color
 void setLEDOff() { alvik.left_led.set_color(0,0,0); alvik.right_led.set_color(0,0,0); }
 
 // =============================================================================
+// notePublishResult — shared stale-session detector for every rcl_publish()
+// call (see consecutive_publish_failures' own comment above for the full
+// story). A single non-OK result doesn't necessarily mean the session is
+// dead (a single dropped/best-effort write is normal and expected on this
+// transport) -- only PUBLISH_FAILURE_REINIT_THRESHOLD in a row, with no
+// successful publish in between, is treated as "the session is stale,
+// reconnect." Any success resets the counter to 0 immediately.
+// =============================================================================
+void notePublishResult(rcl_ret_t ret) {
+ if (ret == RCL_RET_OK) {
+ consecutive_publish_failures = 0;
+ return;
+ }
+ consecutive_publish_failures++;
+}
+
+// =============================================================================
 // publish_status
 // =============================================================================
 void publish_status(const char* txt) {
@@ -278,7 +383,7 @@ void publish_status(const char* txt) {
  msg_status.data.data = status_buf;
  msg_status.data.size = snprintf(status_buf, sizeof(status_buf), "%s", txt);
  msg_status.data.capacity = sizeof(status_buf);
- rcl_publish(&pub_status, &msg_status, NULL);
+ notePublishResult(rcl_publish(&pub_status, &msg_status, NULL));
 }
 
 // =============================================================================
@@ -298,7 +403,7 @@ void publish_pose() {
  "{\"x\":%.2f,\"y\":%.2f,\"yaw\":%.1f,\"battery\":%d,\"ms\":%lu}",
  x, y, yaw, battery, millis());
  msg_pose.data.capacity = sizeof(pose_buf);
- rcl_publish(&pub_pose, &msg_pose, NULL);
+ notePublishResult(rcl_publish(&pub_pose, &msg_pose, NULL));
 }
 
 // =============================================================================
@@ -386,7 +491,7 @@ void publish_color() {
  "{\"r\":%.3f,\"g\":%.3f,\"b\":%.3f,\"h\":%.1f,\"s\":%.3f,\"v\":%.3f,\"color_label\":\"%s\",\"ms\":%lu}",
  r, g, b, h, s, v, label, millis());
  msg_color.data.capacity = sizeof(color_buf);
- rcl_publish(&pub_color, &msg_color, NULL);
+ notePublishResult(rcl_publish(&pub_color, &msg_color, NULL));
 }
 
 void reset_marker_stability() { marker_stable_count = 0; }
@@ -695,6 +800,21 @@ void cmdCallback(const void* msgin) {
  // caller (e.g. the fleet supervisor correcting drift using vision yaw),
  // instead of snapping to the nearest 90/180. No marker/line handling --
  // this is a pure in-place reorientation, same as ROTATE_180.
+ //
+ // NOTE 2026-07-30: this command's underlying control law (updateTurn(),
+ // below -- alvik.set_wheels_speed() scaled proportionally to yaw error,
+ // using this robot's OWN onboard robot_heading_deg) is the SAME KIND of
+ // control loop as camera_grid_navigate.py's turn_to_heading() (which
+ // streams wheel_cmd setpoints computed from VISION yaw instead). Both
+ // are open-loop-per-tick wheel-speed laws with no hardware-level
+ // stopping-distance compensation. camera_grid_navigate.py's version was
+ // measured (--turn-test) to overshoot 4-54deg unpredictably at every
+ // tested RPM -- this command was NOT re-tested after that finding, but
+ // shares the same architecture, so treat it with the same suspicion
+ // until it's specifically verified. For camera-corrected turns, prefer
+ // ROTATE_REL (below), which uses alvik.rotate() -- a genuinely different,
+ // closed-loop-on-hardware primitive -- instead of either of these
+ // proportional wheel-speed laws.
  float target_deg = cmd.substring(10).toFloat();
  alvik.brake(); reset_marker_stability();
  marker_ignore_until_ms = millis() + getMarkerIgnoreMs();
@@ -703,6 +823,81 @@ void cmdCallback(const void* msgin) {
  publish_status(rt_buf);
  startTurnToAbsolute(target_deg);
  current_state = STATE_ROTATE_TO; is_busy = true;
+
+ } else if (cmd.startsWith("ROTATE_REL ")) {
+ // ROTATE_REL <deg> (added 2026-07-30): relative in-place rotation using
+ // alvik.rotate(deg, DEG, false) -- Alvik's own closed-loop primitive,
+ // executed on the separate motor-control MCU via its UART packet
+ // protocol (packetC1F('R', ...), see Arduino_Alvik::rotate() /
+ // is_target_reached() in the library source), NOT a wheel-speed law
+ // computed here on the ESP32 side. +deg = CCW, -deg = CW (matches
+ // alvik.rotate()'s own convention directly, no remapping).
+ //
+ // WHY THIS EXISTS: WHEEL_FOLLOW_MODE-based turning (the Python-side
+ // turn_to_heading() in camera_grid_navigate.py, streaming live
+ // left/right RPM setpoints computed from vision yaw every ~20ms) was
+ // measured on real hardware 2026-07-30 via --turn-test at turn_rpm =
+ // 10, 15, 20, and 60: EVERY run overshot the target after the brake
+ // fired, by anywhere from 4deg to 54deg, with NO consistent direction
+ // (sometimes past the target, sometimes short, alternating turn to
+ // turn) and no consistent relationship to RPM (10 RPM overshot 4-8deg;
+ // 60 RPM overshot 22-54deg; a "no progress for 5s" stall was also
+ // observed at 60 RPM mid-turn). This is NOT a brake-lead-distance
+ // tuning problem (the kind --stop-test/--turn-test's brake_lead_deg
+ // exists to fix) -- the actual real-world route run this was diagnosing
+ // (Alvik1, D1->DE1->0->1->2->10->9->1->0->DE1->D1) burned all 5
+ // re-approach attempts oscillating between roughly +2.6deg and -2.3deg
+ // of a single target heading and never converged inside the 2deg
+ // tolerance. Streaming wheel setpoints over WiFi -> micro-ROS agent ->
+ // rclpy, closing the loop against CAMERA vision at ~20-100ms cadence,
+ // has no hardware-level stopping-distance compensation and no tight
+ // real-time guarantee -- alvik.rotate() moves that entire loop onto
+ // the robot's own motor controller instead.
+ //
+ // NO alvik.brake() here (unlike ROTATE_180/ROTATE_TO/every other
+ // command) -- FOUND 2026-07-30 after two hardware hangs (LED frozen,
+ // ZERO ROS traffic -- status AND pose both dead, robot unresponsive to
+ // GET_STATUS -- required power-cycle to recover both times).
+ // Arduino_Alvik::parse_message() (library source) DISCARDS any ack
+ // byte that arrives while waiting_ack == NO_ACK (case 'x': sets
+ // last_ack then immediately zeroes it right back out). rotate() does
+ // not set waiting_ack = 'R' until AFTER its own internal delay(200) +
+ // UART write. brake()'s own UART write (via drive(0,0)) immediately
+ // before rotate() adds UART traffic in that same narrow window,
+ // increasing the odds a fast ack from the motor-control MCU lands
+ // before waiting_ack is armed and gets silently thrown away --
+ // is_target_reached() then polls forever for an ack that will never
+ // come again, and the caller's own poll loop (this sketch's loop(),
+ // and camera_grid_navigate.py's ROTATE_REL-COMPLETE wait) hangs with
+ // it. The robot is ALREADY STATIONARY between commands (every command
+ // handler ends by transitioning to a terminal/IDLE-reachable state
+ // with the wheels stopped), so this brake() was always redundant here
+ // -- it existed only by copy-paste consistency with ROTATE_180/
+ // ROTATE_TO, which use the wheel-speed law (updateTurn()) and
+ // genuinely need a fresh brake() to zero any residual wheel speed
+ // before starting their own control loop. rotate() has no such need.
+ // NEVER add alvik.brake() (or any other UART-writing alvik.* call)
+ // back in immediately before alvik.rotate() without re-verifying this
+ // race is actually closed.
+ // COMPLETION DETECTION UPDATE 2026-07-30 (same day, after two hardware
+ // hangs even with brake() removed above): is_target_reached() polling
+ // was abandoned entirely, not just the brake() race fixed. See
+ // ROTATE_DEG_PER_SEC's comment near the top of this file for why --
+ // short version: it never reliably acked on real hardware, and the only
+ // proven-working alvik.rotate() usage in this codebase (driveTo.ino)
+ // never polls it either, always just waits a fixed duration instead.
+ // rotate_rel_done_ms below is that same approach, non-blocking.
+ float rel_deg = cmd.substring(11).toFloat();
+ reset_marker_stability();
+ marker_ignore_until_ms = millis() + getMarkerIgnoreMs();
+ char rr_buf[32];
+ snprintf(rr_buf, sizeof(rr_buf), "BUSY ROTATE_REL %.1f", rel_deg);
+ publish_status(rr_buf);
+ alvik.rotate(rel_deg, DEG, false);  // non-blocking call; completion is timed, not acked -- see below
+ rotate_rel_done_ms = millis()
+     + (unsigned long)(1000.0f * fabsf(rel_deg) / ROTATE_DEG_PER_SEC)
+     + ROTATE_REL_MARGIN_MS;
+ current_state = STATE_ROTATE_REL; is_busy = true;
 
  } else if (cmd == "DWELL" || cmd.startsWith("DWELL ")) {
  unsigned long dwell_ms = WORKSTATION_WAIT_MS;
@@ -949,6 +1144,26 @@ void update_state_machine() {
  }
  break;
 
+ case STATE_ROTATE_REL:
+ // Timed completion, NOT is_target_reached() polling -- CHANGED
+ // 2026-07-30, same day, after is_target_reached() was tried first and
+ // caused two full hardware hangs (LED frozen, ALL ROS traffic dead,
+ // robot unresponsive to any command, required power-cycle both times)
+ // even after removing a suspected alvik.brake()-race cause. See
+ // ROTATE_DEG_PER_SEC's comment near the top of this file for the full
+ // reasoning -- short version: is_target_reached() never reliably acked
+ // rotate() on this hardware, and the only proven-working alvik.rotate()
+ // usage anywhere in this codebase (driveTo.ino) never polls it either,
+ // it always just waits a fixed duration. rotate_rel_done_ms (set in the
+ // ROTATE_REL command handler) is that same proven approach, timed via
+ // millis() instead of delay() so it stays non-blocking.
+ if (millis() >= rotate_rel_done_ms) {
+ publish_status("ROTATE_REL COMPLETE");
+ publish_status("IDLE");
+ current_state = IDLE; is_busy = false;
+ }
+ break;
+
  case STATE_DWELL:
  alvik.brake();
  if (((millis() / WORKSTATION_BLINK_MS) % 2) == 0) setLEDYellow(); else setLEDOff();
@@ -1000,12 +1215,12 @@ void update_state_machine() {
 int getAlvikID() {
  String mac = WiFi.macAddress();
  mac.toUpperCase();
- if (mac == "02:00:00:00:00:01") return 1;    // Alvik1
- if (mac == "02:00:00:00:00:04") return 2;    // Alvik2
- if (mac == "02:00:00:00:00:08") return 3;    // Alvik3
- if (mac == "02:00:00:00:00:07") return 4;    // Alvik4
- if (mac == "02:00:00:00:00:0B") return 5;    // Alvik5
- if (mac == "02:00:00:00:00:05") return 6;    // Alvik6
+ if (mac == "3C:84:27:C2:87:50") return 1;    // Alvik1
+ if (mac == "3C:84:27:C3:E8:4C") return 2;    // Alvik2
+ if (mac == "48:CA:43:2E:32:FC") return 3;    // Alvik3
+ if (mac == "48:CA:43:2E:1D:CC") return 4;    // Alvik4
+ if (mac == "80:65:99:C5:E5:70") return 5;    // Alvik5
+ if (mac == "3C:84:27:C3:EA:EC") return 6;    // Alvik6
  return 1;
 }
 
@@ -1018,6 +1233,52 @@ void initTransport() {
  while (WiFi.status() != WL_CONNECTED && millis() - start_ms < 15000) {
  setLEDYellow(); delay(250);
  setLEDOff(); delay(250);
+ }
+}
+
+// =============================================================================
+// finalizeGraph — teardown for reconnectGraph() below, added 2026-07-31.
+// Reverse of initGraph()'s creation order: executor first (it holds
+// references to the subscriptions, must go before they're finalized), then
+// subscriptions, then publishers, then node, then support. Best-effort: a
+// stale/already-broken session may fail some of these finalizers (the whole
+// POINT of this path is that our local handles may no longer correspond to
+// anything real on the agent side) -- every call result is ignored on
+// purpose, since the actual recovery is initGraph() creating BRAND NEW
+// entities afterward, not these old ones succeeding at cleanup.
+// =============================================================================
+void finalizeGraph() {
+ rclc_executor_fini(&executor);
+ rcl_subscription_fini(&sub_wheel_cmd, &node);
+ rcl_subscription_fini(&sub_cmd, &node);
+ rcl_publisher_fini(&pub_color, &node);
+ rcl_publisher_fini(&pub_pose, &node);
+ rcl_publisher_fini(&pub_status, &node);
+ rcl_node_fini(&node);
+ rclc_support_fini(&support);
+}
+
+// =============================================================================
+// reconnectGraph — called from loop() once consecutive_publish_failures
+// crosses PUBLISH_FAILURE_REINIT_THRESHOLD (see that constant's own comment
+// for the full story: the agent can silently re-establish a fresh session
+// after a restart without this robot ever power-cycling, leaving our old
+// entities bound to nothing). Tears down whatever we currently hold and
+// re-runs initGraph() to bind fresh entities to the CURRENT session.
+// millis()-only timing throughout (no delay()), matching the rest of this
+// firmware's control loop -- a blocking reconnect here would freeze
+// followLine()/update_state_machine() for its duration, same reasoning
+// already applied everywhere else in this file.
+// =============================================================================
+void reconnectGraph() {
+ setLEDYellow();  // visible "reconnecting" indicator, matches initTransport()'s use of yellow while WiFi associates
+ finalizeGraph();
+ ros_ready = initGraph();
+ consecutive_publish_failures = 0;
+ if (ros_ready) {
+ setLEDGreen();
+ } else {
+ setLEDRed();
  }
 }
 
@@ -1126,7 +1387,28 @@ void setup() {
 // =============================================================================
 // loop()
 // =============================================================================
+// delay(LOOP_DELAY_MS) REMOVED 2026-07-30 -- standing rule: never use
+// delay() anywhere it could run during normal operation, it blocks
+// rclc_executor_spin_some()/state-machine servicing for its full duration
+// (exactly the kind of stall the ROTATE_REL hang investigation was
+// chasing, even though this specific 5ms delay() was not itself the
+// confirmed cause -- removing it costs nothing and rules it out entirely).
+// delay(5) existed only to avoid spinning the ESP32 at 100% CPU, not to
+// rate-limit anything semantically -- rclc_executor_spin_some() and the
+// state machine should run every pass, as fast as possible, not be gated
+// behind a timer. No replacement pacing added: loop() just runs
+// unthrottled now.
 void loop() {
+ // Stale-session recovery -- checked BEFORE spin_some()/anything else uses
+ // the (possibly stale) executor this tick. See
+ // consecutive_publish_failures' own comment for the full story. Only
+ // fires once ros_ready was true at least once (initTransport()'s own WiFi
+ // retry loop in setup() handles never having connected at all -- a
+ // different problem from a connection that was good and went stale).
+ if (ros_ready && consecutive_publish_failures >= PUBLISH_FAILURE_REINIT_THRESHOLD) {
+ reconnectGraph();
+ }
+
  if (ros_ready) {
  rclc_executor_spin_some(&executor, RCL_MS_TO_NS(1));
  }
@@ -1154,6 +1436,4 @@ void loop() {
  publish_pose();
  publish_color();
  }
-
- delay(LOOP_DELAY_MS);
 }
