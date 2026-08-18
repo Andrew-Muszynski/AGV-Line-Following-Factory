@@ -71,20 +71,59 @@ of ~30-38x/sec.
 `last_render`/`RENDER_INTERVAL_SEC` state, gated the draw/stream/imshow
 block behind the throttle, added `render[...]` to the printed bench line.
 
+### 3. `--publish-rate` default raised 30 -> 1000 (the real per-robot Hz bottleneck)
+
+After the decimate + render-throttle work above, `total_loop rate` was
+reading ~44-60Hz in the `bench:` line, but real end-to-end throughput
+checked independently via `ros2 topic hz /Alvik1_vision_pose` on the
+subscriber side was only reaching ~35Hz/robot (`rosbridge: ~210 pose
+publishes/sec` across 6 robots) — a real gap between "the loop is fast" and
+"robots are actually getting fresh poses that fast."
+
+Root cause: `publish_interval = 1.0 / args.publish_rate` gates every call to
+`publisher.publish()` in the main loop (`now - last_publish >=
+publish_interval`). At the old default (`--publish-rate 60` ->
+`publish_interval ≈ 16.7ms`), once the loop itself was running close to or
+faster than that same period, ordinary timer jitter meant iterations landing
+even slightly early would skip the publish entirely — silently holding real
+publish rate below the loop's own achieved rate. This matches an OLDER
+comment already in the code from 2026-07-27 describing the same symptom
+(~2.5Hz pose arrival despite `--publish-rate 60`) — the same underlying bug,
+just not root-caused at the time.
+
+Raised `--publish-rate` default to 1000 (`publish_interval ≈ 1ms`), which
+never binds at any loop rate measured so far. Confirmed via `ros2 topic hz`:
+jumped straight from ~35Hz/robot to a steady **~59Hz/robot**
+(`rosbridge: ~360 pose publishes/sec` across 6 robots), matching the loop's
+own real rate almost exactly. This was the actual missing piece — decimate
+and the render throttle made the LOOP fast, but the publish gate was
+independently capping what actually reached rosbridge/the robots.
+
+**Changed in `apriltag_localize.py`**: `--publish-rate` default `30.0` ->
+`1000.0`, with an inline comment recording this finding (verified via
+`ros2 topic hz`, not just this process's own diagnostic print).
+
+**Lesson for later tuning**: always keep `--publish-rate` comfortably above
+whatever `total_loop rate` the `bench:` line reports, and verify real
+end-to-end rate with `ros2 topic hz <topic>` on the subscriber, not just this
+process's own `rosbridge: ... publishes/sec` line — the two can disagree
+when a rate-gate elsewhere in the pipeline is the actual bottleneck.
+
 ### Combined result (same 6-robot hardware, same command each time)
 
-| Configuration | total_loop rate |
-|---|---|
-| Baseline: decimate 1.0, unthrottled render | ~20-26Hz |
-| decimate 2.0, unthrottled render | ~30-38Hz |
-| decimate 2.0, render throttled to 15Hz | **~44-48Hz** |
-| decimate 2.0, `--no-preview` (no window at all) | ~60Hz |
+| Configuration | total_loop rate | real per-robot Hz (`ros2 topic hz`) |
+|---|---|---|
+| Baseline: decimate 1.0, unthrottled render, publish-rate 60 | ~20-26Hz | ~20Hz |
+| decimate 2.0, unthrottled render, publish-rate 60 | ~30-38Hz | not measured |
+| decimate 2.0, render throttled to 15Hz, publish-rate 60 | ~44-48Hz | ~35Hz (gated) |
+| decimate 2.0, `--no-preview`, publish-rate 1000 | ~60Hz | **~59Hz** |
 
-More than doubled the starting rate with the live preview window still open,
-via two real-hardware-verified, low-risk changes — no code path removed, no
-accuracy regression observed in ~2400+ frames of test data, both changes are
-plain flag/config-level (fully reversible: drop `--decimate` back to 1.0, or
-raise `RENDER_INTERVAL_SEC` back toward 0 to disable throttling).
+Nearly tripled real per-robot pose rate from the starting point (~20Hz ->
+~59Hz), via three real-hardware-verified, low-risk changes — no code path
+removed, no accuracy regression observed across the session's test runs, all
+three changes are plain flag/config-level (fully reversible: drop
+`--decimate` back to 1.0, raise `RENDER_INTERVAL_SEC` back toward 0, or lower
+`--publish-rate` back down).
 
 ## What we deliberately did NOT do this session
 
@@ -106,7 +145,10 @@ raise `RENDER_INTERVAL_SEC` back toward 0 to disable throttling).
 
 `apriltag_localize.py`'s current defaults (as of this session) now run at
 ~44-48Hz total loop rate with the live preview window open, ~60Hz with
-`--no-preview`, on the full 6-robot testbed. Both changes are committed
-in-code (not just flags you have to remember) — `--decimate 2.0` and the
-15Hz render cap are now the defaults, so the original baseline command still
-gets the speedup with no extra flags needed.
+`--no-preview`, on the full 6-robot testbed — and, critically, real
+per-robot pose delivery (confirmed via `ros2 topic hz`) now matches that
+loop rate at ~59Hz/robot instead of trailing it. All three changes are
+committed in-code (not just flags you have to remember) — `--decimate 2.0`,
+the 15Hz render cap, and `--publish-rate 1000` are now the defaults, so the
+original baseline command still gets the full speedup with no extra flags
+needed.

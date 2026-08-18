@@ -1557,13 +1557,30 @@ def main() -> None:
                         help="publish poses to a rosbridge websocket on the ROS2 "
                              "laptop; bare --rosbridge uses the lab default "
                              "192.168.0.212:9090")
-    parser.add_argument("--publish-rate", type=float, default=30.0,
-                        help="rosbridge publish rate in Hz (default 30 -- capture "
-                             "FPS and publish rate are independent; raising --fps "
-                             "alone does not reach the supervisor faster unless "
-                             "this also goes up). Was 10; raised alongside --fps "
-                             "so a faster camera actually lowers correction "
-                             "latency instead of being throttled back down here.")
+    # Default raised 30 -> 1000 (2026-08-18) after a real hardware finding:
+    # publish_interval = 1/publish_rate gates EVERY publish call below, and
+    # when that interval is even close to the loop's real period, ordinary
+    # timer jitter causes it to silently skip publishes on iterations that
+    # land slightly early -- confirmed via `ros2 topic hz /Alvik1_vision_pose`
+    # on the actual subscriber (not just this process's own diagnostic
+    # print): --publish-rate 60 with a real ~35-40Hz loop was topping out
+    # around 210 total pose/sec (~35Hz/robot across 6 robots), matching the
+    # OLDER 2026-07-27 comment on RosbridgePublisher's _publish_count (~2.5Hz
+    # arrival despite --publish-rate 60) -- same underlying gate-vs-jitter
+    # bug, just less visible at the time. Raising to 1000 (interval ~1ms)
+    # makes the gate never bind at any loop rate we've measured (up to
+    # ~60Hz), so every iteration's pose actually gets published -- confirmed
+    # jumped straight to ros2 topic hz reporting ~59Hz/robot. There is no
+    # real reason to cap this below the loop's own rate; rosbridge/network
+    # was never the bottleneck here, the gate itself was.
+    parser.add_argument("--publish-rate", type=float, default=1000.0,
+                        help="rosbridge publish rate in Hz (default 1000, "
+                             "i.e. effectively unthrottled -- capture FPS and "
+                             "publish rate are independent; a publish-rate "
+                             "gate close to the loop's real rate silently "
+                             "drops publishes to timer jitter, so keep this "
+                             "comfortably above whatever total_loop rate "
+                             "the bench: line reports).")
     parser.add_argument("--stream", type=int, nargs="?", const=8081,
                         default=None, metavar="PORT",
                         help="serve the annotated view as MJPEG for the "
