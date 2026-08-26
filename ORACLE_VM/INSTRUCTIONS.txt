@@ -1,0 +1,44 @@
+Launch order
+1. Micro-ROS agent — already running on the VM, nothing to do.
+
+2. Flash the Alviks — open AGV_MULTI_WS_DISPATCH.ino in Arduino IDE, set ROBOT_NAME to Alvik1/Alvik2/etc. for each unit, flash and place each one on its blue start sticker facing north. The LED will blink red/off until it confirms the blue marker, then go solid blue.
+
+3. Launch the dispatch node on the VM:
+
+
+cd ~/VRP/ORACLE_VM
+python dispatch_node.py
+Or if running inside a ROS 2 workspace:
+
+
+ros2 run <your_package> dispatch_node
+4. Send a mission — publish to /agv_dispatch/command from any terminal:
+
+
+# Specific ordered route
+ros2 topic pub --once /agv_dispatch/command std_msgs/msg/String \
+  "{data: 'DISPATCH {\"routes\":[{\"agv\":\"agv_1\",\"workstations\":[\"WS01\",\"WS04\",\"WS07\"]}]}'}"
+
+# Random 3-stop route
+ros2 topic pub --once /agv_dispatch/command std_msgs/msg/String \
+  "{data: 'RANDOM {\"agv\":\"agv_1\",\"n_stops\":3,\"seed\":42}'}"
+
+# Reroute mid-mission (collision avoidance)
+ros2 topic pub --once /agv_dispatch/command std_msgs/msg/String \
+  "{data: 'REROUTE {\"agv\":\"agv_1\",\"workstations\":[\"WS03\",\"WS06\"]}'}"
+
+# Emergency stop all
+ros2 topic pub --once /agv_dispatch/command std_msgs/msg/String \
+  "{data: 'STOP_ALL'}"
+Monitor status
+
+# All AGVs (1 Hz summary JSON from dispatch node)
+ros2 topic echo /agv_dispatch/status
+
+# Single Alvik raw telemetry (200 ms, includes x/y/yaw/sensors)
+ros2 topic echo /Alvik1_status
+Debug a route without the robot
+
+cd ~/VRP/ORACLE_VM
+python route_planner.py route WS01 WS04 WS07 --format explain
+python route_planner.py random 4 --seed 42 --format json

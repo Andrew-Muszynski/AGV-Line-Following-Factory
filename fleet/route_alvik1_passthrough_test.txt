@@ -1,0 +1,23 @@
+# Manual bench test for FORWARD_THROUGH_RED (2026-07-24), isolated from any
+# supervisor automation -- proves the firmware no-brake handoff works before
+# building plan-scanning/auto-dispatch logic on top of it.
+#
+# Matches a real chained-RED stretch from Alvik1's route (items #42-45:
+# four consecutive FORWARD_UNTIL_RED). Here the FIRST of a pair is sent as
+# FORWARD_THROUGH_RED; watch for:
+#   - BUSY FORWARD_THROUGH_RED ack
+#   - DETECTED RED (send_route.py treats this as "done" for THIS command
+#     only when pass-through -- see awaiting_pass_through)
+#   - NO brake/no IDLE in between -- the robot should keep rolling
+#   - the second FORWARD_UNTIL_RED continues normally (brakes/IDLEs as usual)
+#
+# Run from depot; the fixed start (FORWARD_UNTIL_BLUE x2 + turns) gets the
+# robot onto the same stretch of tape as the real route before the test pair.
+FORWARD_UNTIL_BLUE
+RIGHT_UNTIL_COLOR
+FORWARD_UNTIL_BLUE
+RIGHT_UNTIL_COLOR
+FORWARD_UNTIL_RED
+FORWARD_THROUGH_RED
+FORWARD_UNTIL_RED
+STOP
