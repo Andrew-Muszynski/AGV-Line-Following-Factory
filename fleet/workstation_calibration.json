@@ -1,0 +1,498 @@
+{
+  "cols": 8,
+  "nodes": {
+    "100": {
+      "measured_utc": "2026-08-26T21:23:18+00:00",
+      "robot": "Alvik1",
+      "samples": 60,
+      "spread_in": 0.02,
+      "x_in": 18.68,
+      "y_in": 71.56,
+      "yaw_deg": -179.77,
+      "yaw_spread_deg": 0.42
+    },
+    "101": {
+      "measured_utc": "2026-08-26T21:23:18+00:00",
+      "robot": "Alvik2",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 28.65,
+      "y_in": 71.38,
+      "yaw_deg": 179.93,
+      "yaw_spread_deg": 0.4
+    },
+    "102": {
+      "measured_utc": "2026-08-26T21:23:18+00:00",
+      "robot": "Alvik3",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 38.22,
+      "y_in": 71.51,
+      "yaw_deg": 179.87,
+      "yaw_spread_deg": 0.15
+    },
+    "103": {
+      "measured_utc": "2026-08-26T21:23:18+00:00",
+      "robot": "Alvik4",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 48.45,
+      "y_in": 71.61,
+      "yaw_deg": -178.56,
+      "yaw_spread_deg": 0.66
+    },
+    "104": {
+      "measured_utc": "2026-08-26T21:23:18+00:00",
+      "robot": "Alvik5",
+      "samples": 60,
+      "spread_in": 0.022,
+      "x_in": 58.61,
+      "y_in": 71.53,
+      "yaw_deg": 179.86,
+      "yaw_spread_deg": 0.41
+    },
+    "105": {
+      "measured_utc": "2026-08-26T21:23:18+00:00",
+      "robot": "Alvik6",
+      "samples": 60,
+      "spread_in": 0.02,
+      "x_in": 68.3,
+      "y_in": 71.79,
+      "yaw_deg": -178.04,
+      "yaw_spread_deg": 0.47
+    },
+    "106": {
+      "measured_utc": "2026-08-26T21:23:18+00:00",
+      "robot": "tag7",
+      "samples": 60,
+      "spread_in": 0.022,
+      "x_in": 78.01,
+      "y_in": 71.98,
+      "yaw_deg": -179.51,
+      "yaw_spread_deg": 0.28
+    },
+    "107": {
+      "measured_utc": "2026-08-26T21:24:38+00:00",
+      "robot": "Alvik1",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 18.44,
+      "y_in": 81.8,
+      "yaw_deg": -178.6,
+      "yaw_spread_deg": 0.58
+    },
+    "108": {
+      "measured_utc": "2026-08-26T21:24:38+00:00",
+      "robot": "Alvik2",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 28.46,
+      "y_in": 81.69,
+      "yaw_deg": -179.57,
+      "yaw_spread_deg": 0.24
+    },
+    "109": {
+      "measured_utc": "2026-08-26T21:24:38+00:00",
+      "robot": "Alvik3",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 38.44,
+      "y_in": 81.6,
+      "yaw_deg": 178.99,
+      "yaw_spread_deg": 0.22
+    },
+    "110": {
+      "measured_utc": "2026-08-26T21:24:38+00:00",
+      "robot": "Alvik4",
+      "samples": 60,
+      "spread_in": 0.01,
+      "x_in": 48.44,
+      "y_in": 81.65,
+      "yaw_deg": -179.18,
+      "yaw_spread_deg": 0.23
+    },
+    "111": {
+      "measured_utc": "2026-08-26T21:24:38+00:00",
+      "robot": "Alvik5",
+      "samples": 60,
+      "spread_in": 0.022,
+      "x_in": 58.54,
+      "y_in": 81.5,
+      "yaw_deg": -179.77,
+      "yaw_spread_deg": 0.35
+    },
+    "112": {
+      "measured_utc": "2026-08-26T21:24:38+00:00",
+      "robot": "Alvik6",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 68.56,
+      "y_in": 81.65,
+      "yaw_deg": -178.28,
+      "yaw_spread_deg": 0.47
+    },
+    "113": {
+      "measured_utc": "2026-08-26T21:24:38+00:00",
+      "robot": "tag7",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 78.49,
+      "y_in": 81.81,
+      "yaw_deg": 179.69,
+      "yaw_spread_deg": 0.44
+    },
+    "65": {
+      "measured_utc": "2026-08-26T21:13:29+00:00",
+      "robot": "Alvik1",
+      "samples": 60,
+      "spread_in": 0.01,
+      "x_in": 18.3,
+      "y_in": 21.76,
+      "yaw_deg": -179.5,
+      "yaw_spread_deg": 0.15
+    },
+    "66": {
+      "measured_utc": "2026-08-26T21:13:29+00:00",
+      "robot": "Alvik2",
+      "samples": 60,
+      "spread_in": 0.0,
+      "x_in": 28.12,
+      "y_in": 21.81,
+      "yaw_deg": -178.84,
+      "yaw_spread_deg": 0.2
+    },
+    "67": {
+      "measured_utc": "2026-08-26T21:13:29+00:00",
+      "robot": "Alvik3",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 38.19,
+      "y_in": 21.88,
+      "yaw_deg": 179.7,
+      "yaw_spread_deg": 0.23
+    },
+    "68": {
+      "measured_utc": "2026-08-26T21:13:29+00:00",
+      "robot": "Alvik4",
+      "samples": 60,
+      "spread_in": 0.01,
+      "x_in": 48.19,
+      "y_in": 21.86,
+      "yaw_deg": 179.45,
+      "yaw_spread_deg": 0.18
+    },
+    "69": {
+      "measured_utc": "2026-08-26T21:13:29+00:00",
+      "robot": "Alvik5",
+      "samples": 60,
+      "spread_in": 0.01,
+      "x_in": 58.29,
+      "y_in": 21.85,
+      "yaw_deg": 179.75,
+      "yaw_spread_deg": 0.23
+    },
+    "70": {
+      "measured_utc": "2026-08-26T21:13:29+00:00",
+      "robot": "Alvik6",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 68.25,
+      "y_in": 21.76,
+      "yaw_deg": -179.83,
+      "yaw_spread_deg": 0.15
+    },
+    "71": {
+      "measured_utc": "2026-08-26T21:13:29+00:00",
+      "robot": "tag7",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 77.73,
+      "y_in": 21.74,
+      "yaw_deg": -179.36,
+      "yaw_spread_deg": 0.16
+    },
+    "72": {
+      "measured_utc": "2026-08-26T21:16:59+00:00",
+      "robot": "Alvik1",
+      "samples": 60,
+      "spread_in": 0.01,
+      "x_in": 18.42,
+      "y_in": 31.9,
+      "yaw_deg": -179.91,
+      "yaw_spread_deg": 0.22
+    },
+    "73": {
+      "measured_utc": "2026-08-26T21:16:59+00:00",
+      "robot": "Alvik2",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 28.25,
+      "y_in": 31.78,
+      "yaw_deg": -179.82,
+      "yaw_spread_deg": 0.17
+    },
+    "74": {
+      "measured_utc": "2026-08-26T21:16:59+00:00",
+      "robot": "Alvik3",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 38.32,
+      "y_in": 31.72,
+      "yaw_deg": 178.66,
+      "yaw_spread_deg": 0.12
+    },
+    "75": {
+      "measured_utc": "2026-08-26T21:16:59+00:00",
+      "robot": "Alvik4",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 48.07,
+      "y_in": 31.76,
+      "yaw_deg": -179.05,
+      "yaw_spread_deg": 0.52
+    },
+    "76": {
+      "measured_utc": "2026-08-26T21:16:59+00:00",
+      "robot": "Alvik5",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 58.28,
+      "y_in": 31.73,
+      "yaw_deg": -179.99,
+      "yaw_spread_deg": 0.26
+    },
+    "77": {
+      "measured_utc": "2026-08-26T21:16:59+00:00",
+      "robot": "Alvik6",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 68.08,
+      "y_in": 31.9,
+      "yaw_deg": -179.39,
+      "yaw_spread_deg": 0.18
+    },
+    "78": {
+      "measured_utc": "2026-08-26T21:16:59+00:00",
+      "robot": "tag7",
+      "samples": 60,
+      "spread_in": 0.02,
+      "x_in": 78.23,
+      "y_in": 31.9,
+      "yaw_deg": 179.65,
+      "yaw_spread_deg": 0.28
+    },
+    "79": {
+      "measured_utc": "2026-08-26T21:18:21+00:00",
+      "robot": "Alvik1",
+      "samples": 60,
+      "spread_in": 0.015,
+      "x_in": 18.605,
+      "y_in": 41.69,
+      "yaw_deg": 179.49,
+      "yaw_spread_deg": 0.29
+    },
+    "80": {
+      "measured_utc": "2026-08-26T21:18:21+00:00",
+      "robot": "Alvik2",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 28.49,
+      "y_in": 41.75,
+      "yaw_deg": -179.91,
+      "yaw_spread_deg": 0.29
+    },
+    "81": {
+      "measured_utc": "2026-08-26T21:18:21+00:00",
+      "robot": "Alvik3",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 38.3,
+      "y_in": 41.82,
+      "yaw_deg": 179.85,
+      "yaw_spread_deg": 0.18
+    },
+    "82": {
+      "measured_utc": "2026-08-26T21:18:21+00:00",
+      "robot": "Alvik4",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 48.18,
+      "y_in": 41.86,
+      "yaw_deg": -179.46,
+      "yaw_spread_deg": 0.24
+    },
+    "83": {
+      "measured_utc": "2026-08-26T21:18:21+00:00",
+      "robot": "Alvik5",
+      "samples": 60,
+      "spread_in": 0.01,
+      "x_in": 58.26,
+      "y_in": 41.83,
+      "yaw_deg": 179.9,
+      "yaw_spread_deg": 0.2
+    },
+    "84": {
+      "measured_utc": "2026-08-26T21:18:21+00:00",
+      "robot": "Alvik6",
+      "samples": 60,
+      "spread_in": 0.022,
+      "x_in": 68.03,
+      "y_in": 41.79,
+      "yaw_deg": -179.72,
+      "yaw_spread_deg": 0.29
+    },
+    "85": {
+      "measured_utc": "2026-08-26T21:18:21+00:00",
+      "robot": "tag7",
+      "samples": 60,
+      "spread_in": 0.01,
+      "x_in": 78.04,
+      "y_in": 41.86,
+      "yaw_deg": -179.71,
+      "yaw_spread_deg": 0.21
+    },
+    "86": {
+      "measured_utc": "2026-08-26T21:20:13+00:00",
+      "robot": "Alvik1",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 18.62,
+      "y_in": 51.7,
+      "yaw_deg": -179.96,
+      "yaw_spread_deg": 0.29
+    },
+    "87": {
+      "measured_utc": "2026-08-26T21:20:13+00:00",
+      "robot": "Alvik2",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 28.58,
+      "y_in": 51.55,
+      "yaw_deg": 179.07,
+      "yaw_spread_deg": 0.19
+    },
+    "88": {
+      "measured_utc": "2026-08-26T21:20:13+00:00",
+      "robot": "Alvik3",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 37.98,
+      "y_in": 51.46,
+      "yaw_deg": 179.03,
+      "yaw_spread_deg": 0.14
+    },
+    "89": {
+      "measured_utc": "2026-08-26T21:20:13+00:00",
+      "robot": "Alvik4",
+      "samples": 60,
+      "spread_in": 0.01,
+      "x_in": 48.1,
+      "y_in": 51.52,
+      "yaw_deg": -179.22,
+      "yaw_spread_deg": 0.17
+    },
+    "90": {
+      "measured_utc": "2026-08-26T21:20:13+00:00",
+      "robot": "Alvik5",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 58.4,
+      "y_in": 51.54,
+      "yaw_deg": -179.29,
+      "yaw_spread_deg": 0.21
+    },
+    "91": {
+      "measured_utc": "2026-08-26T21:20:13+00:00",
+      "robot": "Alvik6",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 68.19,
+      "y_in": 51.62,
+      "yaw_deg": -178.81,
+      "yaw_spread_deg": 0.32
+    },
+    "92": {
+      "measured_utc": "2026-08-26T21:20:13+00:00",
+      "robot": "tag7",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 78.14,
+      "y_in": 51.71,
+      "yaw_deg": 179.77,
+      "yaw_spread_deg": 0.32
+    },
+    "93": {
+      "measured_utc": "2026-08-26T21:21:59+00:00",
+      "robot": "Alvik1",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 18.88,
+      "y_in": 61.55,
+      "yaw_deg": 179.5,
+      "yaw_spread_deg": 0.25
+    },
+    "94": {
+      "measured_utc": "2026-08-26T21:21:59+00:00",
+      "robot": "Alvik2",
+      "samples": 60,
+      "spread_in": 0.01,
+      "x_in": 28.78,
+      "y_in": 61.67,
+      "yaw_deg": -179.44,
+      "yaw_spread_deg": 0.14
+    },
+    "95": {
+      "measured_utc": "2026-08-26T21:21:59+00:00",
+      "robot": "Alvik3",
+      "samples": 60,
+      "spread_in": 0.01,
+      "x_in": 38.48,
+      "y_in": 61.67,
+      "yaw_deg": 179.84,
+      "yaw_spread_deg": 0.28
+    },
+    "96": {
+      "measured_utc": "2026-08-26T21:21:59+00:00",
+      "robot": "Alvik4",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 48.32,
+      "y_in": 61.91,
+      "yaw_deg": -179.46,
+      "yaw_spread_deg": 0.22
+    },
+    "97": {
+      "measured_utc": "2026-08-26T21:21:59+00:00",
+      "robot": "Alvik5",
+      "samples": 60,
+      "spread_in": 0.02,
+      "x_in": 58.4,
+      "y_in": 61.8,
+      "yaw_deg": -179.83,
+      "yaw_spread_deg": 0.47
+    },
+    "98": {
+      "measured_utc": "2026-08-26T21:21:59+00:00",
+      "robot": "Alvik6",
+      "samples": 60,
+      "spread_in": 0.022,
+      "x_in": 68.38,
+      "y_in": 61.77,
+      "yaw_deg": -179.21,
+      "yaw_spread_deg": 0.51
+    },
+    "99": {
+      "measured_utc": "2026-08-26T21:21:59+00:00",
+      "robot": "tag7",
+      "samples": 60,
+      "spread_in": 0.014,
+      "x_in": 78.24,
+      "y_in": 61.78,
+      "yaw_deg": -179.12,
+      "yaw_spread_deg": 0.41
+    }
+  },
+  "rows": 8,
+  "units": "inches",
+  "updated_utc": "2026-08-26T21:24:38+00:00"
+}
