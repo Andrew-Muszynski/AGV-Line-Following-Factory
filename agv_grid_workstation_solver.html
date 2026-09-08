@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AGV Grid & Workstation Solver</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
 <style>
   *, *::before, *::after { box-sizing: border-box; }
   body {
@@ -846,10 +847,17 @@
         per-robot lists (especially the depot exit), then Start. Every command passes the deterministic
         conflict gate + vision checks; Hold pauses issuing, Abort sends STOP to all robots.</p>
       <div class="tool-row">
-        <span class="tool-label">Drive mode</span>
-        <button class="secondary" id="drive-mode-color">Color sensor + camera safety</button>
-        <button class="secondary" id="drive-mode-vision">Camera only</button>
+        <span class="tool-label">Navigation protocol</span>
+        <button class="secondary" id="drive-mode-color">Color nodes + tape follow</button>
+        <button class="secondary" id="drive-mode-vision">Position targets (no color)</button>
         <span id="drive-mode-status" class="mode-status muted"></span>
+      </div>
+      <div class="tool-row">
+        <span class="tool-label">Localization</span>
+        <button class="secondary" id="localization-encoder">Encoder only</button>
+        <button class="secondary" id="localization-camera-assist">Encoder + camera correction</button>
+        <button class="secondary" id="localization-camera">Camera only</button>
+        <span id="localization-status" class="mode-status muted"></span>
       </div>
       <div class="tool-row">
         <span class="tool-label">Turn+drive fusion</span>
@@ -866,11 +874,14 @@
       <p class="muted" style="margin:0;">Preferred path: hand the mission to the fleet supervisor on the
         Linux laptop (run it with <b>--listen</b>) — it dispatches natively with lower latency, the
         BUSY-ack protocol, and the same conflict + vision gates. The browser Start above is the fallback.
-        <b>Drive mode</b> picks how the supervisor moves each robot once a mission starts: <b>Color sensor +
-        camera safety</b> dispatches the original FORWARD_UNTIL_&lt;color&gt;/turn command vocabulary, with
-        vision only monitoring/veto (the long-proven path). <b>Camera only</b> dispatches pure AprilTag
-        position/heading control (drive_leg/turn_to_heading) and never uses the color sensor at all. Chosen
-        per mission, sent with it — no supervisor restart needed to switch.
+        <b>Navigation protocol</b> picks how the supervisor moves each robot. <b>Color nodes + tape
+        follow</b> dispatches the original FORWARD_UNTIL_&lt;color&gt;/turn vocabulary; the color sensor
+        declares node arrival and the firmware follows tape. <b>Position targets</b> streams wheel commands
+        toward route coordinates and never reads the color sensor. For position-target runs,
+        <b>Localization</b> selects onboard encoder odometry, encoder odometry corrected by AprilTags, or
+        AprilTag camera localization with no onboard odometry. The localization choice is intentionally
+        inactive in the color/tape baseline. Both choices are sent per mission, so switching requires no
+        supervisor restart.
         <b>Turn+drive fusion</b> is DISABLED — built 2026-07-31 to skip the brake/settle between a turn
         and the following drive, but caused two real hardware collisions the same day (the arrival
         square-up after a fused turn+drive pointed the wrong way, since it only knew the heading it had
@@ -940,6 +951,19 @@
   </div>
 </div>
 
+<div id="robot-topic-modal" class="modal" aria-hidden="true">
+  <div class="modal-card" style="width:min(560px, 96vw);">
+    <div class="modal-header">
+      <div>
+        <h2 style="margin:0;" id="robot-topic-modal-title">Robot Topics</h2>
+        <p style="margin:3px 0 0;">Live rostopic values for this robot, updating in real time.</p>
+      </div>
+      <button class="secondary" id="close-robot-topic-modal">Close</button>
+    </div>
+    <div id="robot-topic-modal-body" class="modal-body"></div>
+  </div>
+</div>
+
 <script>
 const svg = document.getElementById("grid-svg");
 const state = {
@@ -977,12 +1001,16 @@ const state = {
   decisionLog: [],    // Run & Monitor event feed from /fleet_events
   decisionLogSeen: new Set(),  // event seqs already logged (dedupe re-delivery)
   timelineToggles: { dropoff: true, pickup: true, depotLeave: true, depotReturn: true },
-  // "color": FORWARD_UNTIL_<color>/turn command vocabulary, vision is a
-  // monitor/veto only (the original, long-proven path). "vision": pure
-  // AprilTag position/heading control (drive_leg/turn_to_heading), color
-  // sensor never used. Sent with each /fleet_mission so it can be flipped
-  // per test run without restarting fleetSupervisor.py.
-  driveMode: "color",
+  // "color": firmware tape follow + color-triggered node arrival. "vision":
+  // position-target wheel control with no color-sensor dependency. Sent with
+  // each /fleet_mission so it can be flipped per experimental run.
+  // Position-target navigation remains the default experiment; color/tape
+  // remains fully available via the toggle below.
+  driveMode: "vision",
+  // Pose feedback for position-target navigation. Deliberately orthogonal to
+  // driveMode so the same route can compare encoder drift, camera-corrected
+  // odometry, and pure camera localization. Inactive for the color baseline.
+  localizationMode: "camera_assist",
   // Turn-then-drive fusion (Camera only mode) -- skip the brake/settle
   // between a turn and the following drive when heading is already within
   // tolerance. Supervisor forces this off for missions with 2+ robots
@@ -1858,7 +1886,25 @@ function distributeWork() {
 
   let templates = buckets.map((baysForAgent, agent) => buildAgentRoute(agent, baysForAgent, 0));
   if (state.rpdMode) templates = assignPickups(templates);
-  const polished = polishCollisionPlan(templates);
+  // includeOrders=true (2026-08-20): the built-in solve previously only let
+  // polishCollisionPlan() try alternate PATH_MODES for a route, never
+  // alternate bay VISIT ORDERS -- reordering is what candidateOrders()
+  // actually needs to escape a mid-grid ROTATE_180 that's forced by which
+  // side of a bay the robot happens to approach from (see buildAgentRoute()'s
+  // own sides.sort() fallback: it already prefers a flip-free approach side
+  // per bay, but if NEITHER side avoids a flip for the CURRENT bay order, it
+  // has no choice but to accept one -- a different visit order can change
+  // which side that ends up being). This mattered little for multi-robot
+  // missions (conflictFocusAgents() already ran polishCollisionPlan for
+  // agents in real scheduling conflicts, which passes includeOrders=true via
+  // rerouteAgent()'s own manual-reroute path), but a SINGLE-agent mission has
+  // no scheduling conflict to trigger that at all -- confirmed 2026-08-20 via
+  // a real 1-agent/12-bay mission producing mid-grid flips that nothing ever
+  // searched an alternative for. midGridFlips is already the top-priority
+  // "fatal" tier in evaluateRoutes()/isBetterPlanEval(), so enabling this
+  // search doesn't change WHAT wins when a flip-free candidate exists --
+  // it only widens what candidates get tried in the first place.
+  const polished = polishCollisionPlan(templates, SOLVE_POLISH_BUDGET_MS, null, true);
   state.routes = polished.routes;
   state.conflicts = polished.conflicts;
   state.schedule = polished.schedule;
@@ -2352,15 +2398,21 @@ function conflictScore(conflicts) {
 // introducing candidate can never be chosen over a flip-free one with
 // equal/better scheduling quality.
 function countMidGridFlips(route) {
+  // Must mirror generateCommandLines()'s own flip-exemption logic exactly
+  // (arrivingAtWork AND leavingWork -- see that function's 2026-08-24
+  // comment on leavingWork) or a route could score as flip-free here while
+  // still producing a real mid-grid-flip warning at dispatch time, or the
+  // reverse.
   const segs = route.segments || [];
   let flips = 0;
   let prevHeading = "N";
   for (const seg of segs) {
     if (seg.type === "RED_TO_BLUE_RETURN") break;
+    const arrivingAtWork = seg.to && seg.to.kind === "workstation";
     const leavingWork = seg.from && seg.from.kind === "workstation";
     const turn = turnCommandBetween(prevHeading, seg.heading);
-    if (turn === "ROTATE_180" && !leavingWork) flips++;
-    prevHeading = seg.heading;
+    if (turn === "ROTATE_180" && !arrivingAtWork && !leavingWork) flips++;
+    prevHeading = arrivingAtWork ? "S" : seg.heading;
   }
   return flips;
 }
@@ -3603,7 +3655,24 @@ function renderAgentControls() {
   document.getElementById("drive-mode-vision").className =
     state.driveMode === "vision" ? "secondary active" : "secondary";
   document.getElementById("drive-mode-status").textContent =
-    state.driveMode === "vision" ? "camera-only (no color sensor)" : "color sensor + camera safety";
+    state.driveMode === "vision"
+      ? "position-target control; color sensor ignored"
+      : "color-triggered nodes + firmware tape following";
+  document.getElementById("localization-encoder").className =
+    state.localizationMode === "encoder" ? "secondary active" : "secondary";
+  document.getElementById("localization-camera-assist").className =
+    state.localizationMode === "camera_assist" ? "secondary active" : "secondary";
+  document.getElementById("localization-camera").className =
+    state.localizationMode === "camera" ? "secondary active" : "secondary";
+  const localizationLabels = {
+    encoder: "encoder only",
+    camera_assist: "encoder + camera correction",
+    camera: "camera only (onboard odometry ignored)",
+  };
+  document.getElementById("localization-status").textContent =
+    state.driveMode === "vision"
+      ? localizationLabels[state.localizationMode]
+      : `${localizationLabels[state.localizationMode]} selected; inactive in color mode`;
   document.getElementById("edit-hint").textContent = state.editMode
     ? `Editing AGV ${state.editAgent + 1}: click intersections to add waypoints. Clear edits removes this AGV's manual path.`
     : "Select an AGV, turn on Edit path, then click intersections to add route waypoints.";
@@ -4008,6 +4077,7 @@ function recordRobotTopic(robotName, topic, value) {
   if (!state.robotTopics.has(agent)) state.robotTopics.set(agent, new Map());
   state.robotTopics.get(agent).set(topic, { value, receivedAt: Date.now() });
   renderRobotTopicPanel();
+  if (agent === robotTopicModalAgent) renderRobotTopicModal();
 }
 
 // A robot counts as "currently connected" if we've heard from it on any
@@ -4048,7 +4118,7 @@ function renderRobotTopicPanel() {
       `</button>`;
   }).join("");
   for (const btn of buttonsBox.querySelectorAll(".robot-topic-btn")) {
-    btn.addEventListener("click", () => toggleRobotTopicPanel(Number(btn.dataset.agent)));
+    btn.addEventListener("click", () => showRobotTopicModal(Number(btn.dataset.agent)));
   }
   const expanded = connected.filter((agent) => state.robotTopicsExpanded.has(agent));
   detailsBox.innerHTML = expanded.length
@@ -4069,7 +4139,64 @@ function renderRobotTopicPanel() {
 
 // Refreshes the "Xs ago" ages / stale-dot state even when no new message has
 // arrived — cheap no-op while state.robotTopics is empty (before Real connect).
-setInterval(() => renderRobotTopicPanel(), 1000);
+setInterval(() => { renderRobotTopicPanel(); renderRobotTopicModal(); }, 1000);
+
+// ---- Robot Topics pop-up (secondary view of the same live rostopic data) --
+// A click on any connected robot's chip (in #robot-topic-buttons) opens this
+// modal instead of only expanding the inline side-panel card -- same data
+// source (state.robotTopics), so nothing new is subscribed here. Stays open
+// and live-updating across incoming messages until closed (X button, click
+// outside the card, or Escape); reused for whichever robot was last clicked.
+let robotTopicModalAgent = null;
+
+function showRobotTopicModal(agent) {
+  robotTopicModalAgent = agent;
+  renderRobotTopicModal();
+  const modal = document.getElementById("robot-topic-modal");
+  modal.classList.add("open");
+  modal.setAttribute("aria-hidden", "false");
+}
+
+function closeRobotTopicModal() {
+  robotTopicModalAgent = null;
+  const modal = document.getElementById("robot-topic-modal");
+  modal.classList.remove("open");
+  modal.setAttribute("aria-hidden", "true");
+}
+
+function renderRobotTopicModal() {
+  const modal = document.getElementById("robot-topic-modal");
+  if (!modal || !modal.classList.contains("open")) return;
+  const agent = robotTopicModalAgent;
+  const title = document.getElementById("robot-topic-modal-title");
+  const body = document.getElementById("robot-topic-modal-body");
+  if (agent === null || !state.robotTopics.has(agent)) {
+    if (title) title.textContent = "Robot Topics";
+    if (body) body.innerHTML = `<p class="muted">This robot is no longer reporting data.</p>`;
+    return;
+  }
+  const now = Date.now();
+  const color = palette[agent % palette.length];
+  const topics = [...state.robotTopics.get(agent).entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const newestAge = Math.min(...topics.map(([, entry]) => now - entry.receivedAt));
+  const stale = newestAge > ROBOT_TOPIC_STALE_MS;
+  const battery = realBatteryForAgent(agent);
+  if (title) {
+    title.innerHTML = `<span class="dot${stale ? " stale" : ""}" style="background:${color};display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:7px;"></span>` +
+      `${escapeHtml(agvName(agent))}${battery !== null ? ` <span class="muted" style="font-size:13px;font-weight:400;">${battery}%</span>` : ""}`;
+  }
+  if (body) {
+    const rows = topics.map(([topic, entry]) => {
+      const ageSec = ((now - entry.receivedAt) / 1000).toFixed(1);
+      return `<tr><td class="rt-topic">${escapeHtml(topic)}</td>` +
+        `<td class="rt-value">${escapeHtml(entry.value)}</td>` +
+        `<td class="rt-age">${ageSec}s ago</td></tr>`;
+    }).join("");
+    body.innerHTML = `<div class="robot-topic-card" style="border:none; padding:0; box-shadow:none;">` +
+      `<table>${rows}</table></div>` +
+      (stale ? `<p class="warning" style="margin-top:10px;">No update in over ${(ROBOT_TOPIC_STALE_MS / 1000).toFixed(0)}s — this robot may be offline.</p>` : "");
+  }
+}
 
 function connectRealMode() {
   if (!("WebSocket" in window)) {
@@ -4131,7 +4258,14 @@ function setMode(mode) {
 }
 
 function setDriveMode(mode) {
+  if (!['color', 'vision'].includes(mode)) return;
   state.driveMode = mode;
+  render();
+}
+
+function setLocalizationMode(mode) {
+  if (!['encoder', 'camera_assist', 'camera'].includes(mode)) return;
+  state.localizationMode = mode;
   render();
 }
 
@@ -4655,6 +4789,22 @@ function dwellCommandLines(seconds, out) {
 // segment). The Plan & Simulate command panel uses segIndex to highlight the
 // line the robot is executing at the current playback time; generateCommandText
 // joins .text for dispatch/mission-send, so on-wire output is unchanged.
+//
+// _midGridFlipWarned (2026-08-20): renderSimCommands() calls this function
+// fresh on every render() -- correctly, since the returned .text/segIndex
+// per-line highlighting depends on the live playback timestep, not just the
+// route. But render() itself fires on EVERY incoming rosbridge pose message
+// in Real/Live mode (handleRealMessage() -> render()), which at 6 robots x
+// ~59Hz (post 2026-08-18 throughput work) is 300+ calls/sec -- each one
+// re-running the mid-grid-flip console.warn below for a route that hasn't
+// actually changed, flooding the console (confirmed: ~5000 warnings in 10s)
+// and burying real errors (in this case, a live camera-stream connection
+// failure someone was trying to diagnose). The in-panel warning banner
+// (out.unshift() below) stays UNCONDITIONAL -- that's real, useful UI
+// feedback and needs to reflect the current route every render. Only the
+// console.warn is deduped, keyed by robot+flip-count, so it fires once per
+// distinct warning state instead of once per pose tick.
+const _midGridFlipWarned = new Map();
 function generateCommandLines(route) {
   const out = [];
   const push = (text, segIndex = null, warn = false) => out.push({ text, segIndex, warn });
@@ -4685,30 +4835,61 @@ function generateCommandLines(route) {
       push("LEFT_UNTIL_COLOR", si); push("FORWARD_UNTIL_BLUE", si); push("ROTATE_180", si);
       break;
     }
+    // arrivingAtWork (2026-08-19, real hardware failure: 3/6 robots drove
+    // off-tape because they moved forward into the next leg still facing
+    // the workstation's ENTRY heading): every workstation's only
+    // entry/exit is its Northern segment, so a robot always arrives
+    // facing north (0deg) and the exit trajectory is always due south
+    // (180deg) -- this is a fixed physical fact of the layout, not
+    // something to derive from turnCommandBetween(prevHeading, seg.heading)
+    // (that comparison depends on where the route goes AFTER the
+    // workstation and returned null/no-turn whenever that happened to
+    // match the entry heading, silently skipping the flip). The rotation
+    // must happen on ARRIVAL, before the drop-off/pick-up DWELL begins --
+    // NOT deferred to the departure leg -- so the robot is never sitting
+    // mid-service facing the wrong way, and departs already square with
+    // its exit heading (no second turn needed).
+    const arrivingAtWork = seg.to && seg.to.kind === "workstation";
+    // ROOT-CAUSED 2026-08-24: a bay is a dead end -- its only entry/exit is
+    // the Northern segment -- so LEAVING a workstation always requires
+    // retracing that same segment, which is a real, physically-necessary
+    // 180 (arrive facing S per the fixed exit heading below, then must
+    // face N again to walk back out to the grid). That turn was being
+    // counted as a "mid-grid flip" (the open-lattice doubling-back defect
+    // this counter exists to catch) even though it has nothing to do with
+    // that defect -- confirmed on a real single-robot, 12-workstation
+    // mission: every one of the 12 warned "flips" was exactly this
+    // departure turn, not an actual route defect. leavingWork exempts it
+    // the same way arrivingAtWork already exempts the arrival turn.
     const leavingWork = seg.from && seg.from.kind === "workstation";
-    if (!leavingWork && seg.waitBeforeSec > 0) {
+    if (seg.waitBeforeSec > 0) {
       const dw = []; dwellCommandLines(seg.waitBeforeSec, dw); dw.forEach((l) => push(l, si));
     }
     const turn = turnCommandBetween(prevHeading, seg.heading);
     if (turn) {
-      if (turn === "ROTATE_180" && !leavingWork) midGridFlips++;
+      if (turn === "ROTATE_180" && !arrivingAtWork && !leavingWork) midGridFlips++;
       push(turn, si);
     }
-    if (leavingWork) {
-      push("DWELL", si);  // service pause (AGV_Factory_color_pose.ino default 2000 ms)
-      if (seg.waitBeforeSec > 0) {
-        const dw = []; dwellCommandLines(seg.waitBeforeSec, dw); dw.forEach((l) => push(l, si));
-      }
-    }
     push(`FORWARD_UNTIL_${dispatchMarkerColor(seg.toNode)}`, si);
-    prevHeading = seg.heading;
+    if (arrivingAtWork) {
+      push("ROTATE_180", si);  // square up to the fixed exit heading BEFORE service
+      push("DWELL", si);       // service pause (AGV_Factory_color_pose.ino default 2000 ms)
+      prevHeading = "S";       // now facing the exit heading; departure leg needs no turn
+    } else {
+      prevHeading = seg.heading;
+    }
   }
   if (midGridFlips > 0) {
-    console.warn(`${agvName(route.agent)}: ${midGridFlips} mid-grid ROTATE_180 — route doubles back`);
+    if (_midGridFlipWarned.get(route.agent) !== midGridFlips) {
+      _midGridFlipWarned.set(route.agent, midGridFlips);
+      console.warn(`${agvName(route.agent)}: ${midGridFlips} mid-grid ROTATE_180 — route doubles back`);
+    }
     out.unshift({
       text: `# WARNING: ${midGridFlips} mid-grid ROTATE_180 — route doubles back; fix the route before starting`,
       segIndex: null, warn: true,
     });
+  } else if (_midGridFlipWarned.has(route.agent)) {
+    _midGridFlipWarned.delete(route.agent);
   }
   return out;
 }
@@ -5346,6 +5527,8 @@ function supervisorSendMission() {
     schedule: buildExportPayload(),
     commands: supervisorMissionCommands(),
     drive_mode: state.driveMode,  // "color" | "vision" — see setDriveMode()
+    node_detection_mode: state.driveMode === "color" ? "color_sensor" : "position_target",
+    localization_mode: state.localizationMode,
     // Turn+drive fusion request -- the supervisor forces this off for
     // missions with 2+ robots regardless of what's sent here (see
     // run_advised_vision()'s docstring in fleetSupervisor.py).
@@ -5353,8 +5536,14 @@ function supervisorSendMission() {
     ms: Date.now(),
   };
   if (supPublish("fleet_mission", JSON.stringify(mission))) {
+    const protocolLabel = state.driveMode === "vision"
+      ? "position targets / no color"
+      : "color nodes + tape";
+    const localizationLabel = state.driveMode === "vision"
+      ? ` / ${state.localizationMode}`
+      : "";
     document.getElementById("sup-status").textContent =
-      `mission sent (${state.driveMode === "vision" ? "camera-only" : "color+camera"}` +
+      `mission sent (${protocolLabel}${localizationLabel}` +
       `${state.fuseTurns ? ", fuse_turns" : ""}) — wait for 'loaded', then Start`;
   }
 }
@@ -5647,6 +5836,9 @@ document.getElementById("mode-real").addEventListener("click", () => setMode("re
 document.getElementById("mode-live").addEventListener("click", () => setMode("live"));
 document.getElementById("drive-mode-color").addEventListener("click", () => setDriveMode("color"));
 document.getElementById("drive-mode-vision").addEventListener("click", () => setDriveMode("vision"));
+document.getElementById("localization-encoder").addEventListener("click", () => setLocalizationMode("encoder"));
+document.getElementById("localization-camera-assist").addEventListener("click", () => setLocalizationMode("camera_assist"));
+document.getElementById("localization-camera").addEventListener("click", () => setLocalizationMode("camera"));
 document.getElementById("fuse-turns-toggle").addEventListener("click", toggleFuseTurns);
 document.getElementById("view-setup").addEventListener("click", () => setView("setup"));
 document.getElementById("view-plan").addEventListener("click", () => setView("plan"));
@@ -5676,6 +5868,19 @@ document.getElementById("clear-route-edit").addEventListener("click", () => {
 });
 document.getElementById("route-modal").addEventListener("click", (event) => {
   if (event.target.id === "route-modal") closeReport();
+});
+document.getElementById("close-robot-topic-modal").addEventListener("click", closeRobotTopicModal);
+document.getElementById("robot-topic-modal").addEventListener("click", (event) => {
+  // event.target is the click's actual origin; a click on the backdrop
+  // itself (not the card or anything inside it) has the modal wrapper as
+  // its target, exactly like #route-modal's own click-outside handling.
+  if (event.target.id === "robot-topic-modal") closeRobotTopicModal();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" &&
+      document.getElementById("robot-topic-modal").classList.contains("open")) {
+    closeRobotTopicModal();
+  }
 });
 
 // MAX_ROBOTS is the single source of truth for the depot's real physical

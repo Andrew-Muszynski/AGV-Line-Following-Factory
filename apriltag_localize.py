@@ -4,11 +4,17 @@ apriltag_localize.py — Metric localization of robot AprilTags from the
 table-corner reference tags.
 
 Builds on apriltag_detect.py (pixel-only viewer). The table-corner tags
-(IDs 20-23) lie in the SAME plane as the robot-mounted tags, so a single 2D
-homography image->table maps any detected tag center straight to metric table
-coordinates. No camera intrinsics are needed for this — perspective is
-absorbed by the homography. (Lens distortion is currently ignored; if accuracy
-demands it later, calibrate the Nexigo N980P and undistort frames first.)
+(IDs 20-23) must lie in the SAME PHYSICAL PLANE as the robot-mounted tag
+faces, so a single 2D homography image->table maps any detected tag center
+straight to metric table coordinates. If the reference tags are on the table
+while robot tags are several inches higher, parallax creates location-
+dependent position and yaw error that this one-plane model cannot remove. The
+preferred physical fix is to place reference-tag faces at robot-tag height;
+multi-plane or full 3-D localization is a separate redesign.
+
+Perspective within that plane is absorbed by the homography. Radial lens
+distortion is not: supply --camera-calibration to undistort full frames before
+crop/detection, or omit it to retain the original behavior.
 
 World frame (inches):
     origin  = table corner nearest tag 20 (bottom-left)
@@ -24,10 +30,10 @@ so expect the largest errors near the empty 21/22 corners until those tags are
 placed Thursday — then the same code picks them up automatically.
 
 Robot tags: every detected tag whose ID is NOT in REF_TAG_WORLD is treated as
-a robot and reported as (x, y, yaw). Yaw is the world-frame direction of the
-tag's corner-0 -> corner-1 edge; it is consistent across tags but has a fixed
-offset that depends on how the tag is mounted on the robot — calibrate that
-offset once per robot (or mount all tags the same way).
+a robot and reported as (x, y, yaw). Raw yaw averages both canonical +X tag
+edges (corner 0 -> 1 and corner 3 -> 2) in the world frame. A separate fixed
+per-robot offset corrects tag mounting; those offsets remain zero until they
+are physically measured.
 
 Usage:
     python apriltag_localize.py --tag-size 4.0        # ref tag black square, inches
@@ -41,6 +47,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import ctypes
+import importlib.metadata
 import json
 import math
 import select
@@ -51,6 +59,7 @@ import threading
 import time
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -322,6 +331,20 @@ ROBOT_NAMES: dict[int, str] = {
     1: "Alvik1", 2: "Alvik2", 3: "Alvik3", 4: "Alvik4", 5: "Alvik5", 6: "Alvik6",
 }
 
+# Fixed tag-frame -> robot-heading corrections. Positive values rotate the
+# reported robot yaw counterclockwise in the table world frame. Keep these at
+# zero until each physical mount is measured; tag_world_pose() deliberately
+# remains a raw tag-geometry function so mounting calibration cannot become
+# entangled with the canonical AprilTag corner convention.
+ROBOT_YAW_OFFSET_DEG: dict[int, float] = {
+    1: 0.0,
+    2: 0.0,
+    3: 0.0,
+    4: 0.0,
+    5: 0.0,
+    6: 0.0,
+}
+
 # ---- grid anchor (tape-measured 2026-07-09) ----
 # Node 1 (first node of the 8x8 lattice) center in table inches: 13.5 in x,
 # 16.75 in y from the table edges = +10.75/+14.0 from tag 20's center.
@@ -333,7 +356,92 @@ ROBOT_NAMES: dict[int, str] = {
 GRID_NODE1_WORLD_IN = (13.5, 16.75)
 GRID_PITCH_IN = 10.0
 
-# ---- depot slots / entries / node 0 (measured 2026-07-30) ----
+# MEASURED workstation (bay) positions, world inches, replacing the derived
+# grid_y = (row_up + 1) - 0.44 offset for workstation nodes ONLY.
+#
+# Measured 2026-08-26 with fleet/calibrate_workstations.py: seven robots
+# parked one row of bays at a time, all 49 bays, each value the median of
+# 60 AprilTag pose samples. Sample spread was 0.01in and every heading
+# landed within 2.0deg of the 180deg service heading, so these are clean
+# position reads, not averages over a moving or mis-aimed robot.
+#
+# WHY THIS EXISTS: the 0.44 offset was measured ONCE, on bay 1
+# (node114/node65) on 2026-07-27, then applied to all 49 bays. It is
+# wrong -- the real mean offset is 0.503 grid units, so every bay sat
+# 0.63in further from its row than the formula assumed (worst 0.97in),
+# on a 4.4in bay approach leg with POS_TOL_IN at 0.15in. There is also
+# genuine per-bay scatter the single constant could never capture:
+# ~0.18in mean residual even after removing row and column trends.
+#
+# ENTRY NODES ARE NOT IN THIS TABLE, deliberately. They sit on the
+# lattice row and the routing/reservation model is built on that.
+#
+# KNOWN LIMITATION: each column was measured by one robot (col 0 =
+# Alvik1 ... col 6 = tag7), so a robot's tag-mounting offset and that
+# column's true position are confounded. Column means run +0.06 to
+# -0.37in in x. Re-measuring one row with the robots shifted a column
+# would separate the two; until then up to ~0.4in of the x component
+# may be robot mount, not bay.
+#
+# REGENERATE with: calibrate_workstations.py --emit-python
+# (paste into BOTH apriltag_localize.py and fleet/camera_grid_navigate.py
+# -- they run on different machines and cannot import each other.)
+WORKSTATION_WORLD_IN: dict[int, tuple[float, float]] = {
+    65: (18.30, 21.76),  # row 0 col 0, Alvik1
+    66: (28.12, 21.81),  # row 0 col 1, Alvik2
+    67: (38.19, 21.88),  # row 0 col 2, Alvik3
+    68: (48.19, 21.86),  # row 0 col 3, Alvik4
+    69: (58.29, 21.85),  # row 0 col 4, Alvik5
+    70: (68.25, 21.76),  # row 0 col 5, Alvik6
+    71: (77.73, 21.74),  # row 0 col 6, tag7
+    72: (18.42, 31.90),  # row 1 col 0, Alvik1
+    73: (28.25, 31.78),  # row 1 col 1, Alvik2
+    74: (38.32, 31.72),  # row 1 col 2, Alvik3
+    75: (48.07, 31.76),  # row 1 col 3, Alvik4
+    76: (58.28, 31.73),  # row 1 col 4, Alvik5
+    77: (68.08, 31.90),  # row 1 col 5, Alvik6
+    78: (78.23, 31.90),  # row 1 col 6, tag7
+    79: (18.61, 41.69),  # row 2 col 0, Alvik1
+    80: (28.49, 41.75),  # row 2 col 1, Alvik2
+    81: (38.30, 41.82),  # row 2 col 2, Alvik3
+    82: (48.18, 41.86),  # row 2 col 3, Alvik4
+    83: (58.26, 41.83),  # row 2 col 4, Alvik5
+    84: (68.03, 41.79),  # row 2 col 5, Alvik6
+    85: (78.04, 41.86),  # row 2 col 6, tag7
+    86: (18.62, 51.70),  # row 3 col 0, Alvik1
+    87: (28.58, 51.55),  # row 3 col 1, Alvik2
+    88: (37.98, 51.46),  # row 3 col 2, Alvik3
+    89: (48.10, 51.52),  # row 3 col 3, Alvik4
+    90: (58.40, 51.54),  # row 3 col 4, Alvik5
+    91: (68.19, 51.62),  # row 3 col 5, Alvik6
+    92: (78.14, 51.71),  # row 3 col 6, tag7
+    93: (18.88, 61.55),  # row 4 col 0, Alvik1
+    94: (28.78, 61.67),  # row 4 col 1, Alvik2
+    95: (38.48, 61.67),  # row 4 col 2, Alvik3
+    96: (48.32, 61.91),  # row 4 col 3, Alvik4
+    97: (58.40, 61.80),  # row 4 col 4, Alvik5
+    98: (68.38, 61.77),  # row 4 col 5, Alvik6
+    99: (78.24, 61.78),  # row 4 col 6, tag7
+    100: (18.68, 71.56),  # row 5 col 0, Alvik1
+    101: (28.65, 71.38),  # row 5 col 1, Alvik2
+    102: (38.22, 71.51),  # row 5 col 2, Alvik3
+    103: (48.45, 71.61),  # row 5 col 3, Alvik4
+    104: (58.61, 71.53),  # row 5 col 4, Alvik5
+    105: (68.30, 71.79),  # row 5 col 5, Alvik6
+    106: (78.01, 71.98),  # row 5 col 6, tag7
+    107: (18.44, 81.80),  # row 6 col 0, Alvik1
+    108: (28.46, 81.69),  # row 6 col 1, Alvik2
+    109: (38.44, 81.60),  # row 6 col 2, Alvik3
+    110: (48.44, 81.65),  # row 6 col 3, Alvik4
+    111: (58.54, 81.50),  # row 6 col 4, Alvik5
+    112: (68.56, 81.65),  # row 6 col 5, Alvik6
+    113: (78.49, 81.81),  # row 6 col 6, tag7
+}
+
+# ---- depot slots / entries / node 0 ----
+# node 0 still carries its 2026-07-30 measurement: it sits west of
+# DE1, which moved only +0.11in in the respacing, so it was not
+# remeasured. Verify it if depot-lane approaches start drifting.
 # Each robot's AprilTag read directly off apriltag_localize.py's own preview
 # overlay while physically parked -- NOT extrapolated from a fixed pitch.
 # CONFIRMED this matters: the dashboard HTML (agv_grid_workstation_solver.html)
@@ -346,13 +454,44 @@ GRID_PITCH_IN = 10.0
 # Two separate passes: all 6 robots parked at D1-D6 for one frame, then all
 # 6 moved to DE1-DE6 for a second frame (robots can't occupy both at once).
 # node 0 measured the same way (Alvik1 driven onto it, facing west/-x).
+# Depot slots and entries REMEASURED 2026-08-26 with
+# fleet/calibrate_workstations.py, after the depot tape was physically
+# respaced to 16cm centres. The previous values (measured 2026-07-30) were
+# left up to 3.2in wrong by that move, and their 5.0in spacing gave a
+# rotating robot NEGATIVE clearance against a parked neighbour -- 5.001in
+# centre-to-centre against the 5.04in a 15cm-hypotenuse robot needs, which
+# is why Alvik3 struck a parked Alvik2 on the 4-robot depot return. The new
+# spacing measures 6.14-6.38in, giving +1.10in at the tightest pair.
+#
+# D7/DE7 are new: a 7th tag position, measured so the table is complete.
+# Routing a 7th robot is a separate job -- ROBOT_NAMES in
+# apriltag_localize.py still maps tags 1-6 only, so tag 7 publishes as
+# "tag7".
+#
+# NOTE both-robots-rotating clearance at the tightest pair is only +0.23in,
+# inside placement error. Sequenced (one-at-a-time) depot rotations are
+# fine; simultaneous adjacent ones are not.
+#
+# Regenerate with: calibrate_workstations.py --emit-python
+# (paste into BOTH this file and the other one -- they run on different
+# machines and cannot import each other.)
 DEPOT_SLOT_WORLD_IN: dict[str, tuple[float, float]] = {
-    "D1": (20.0, 10.5), "D2": (25.3, 10.7), "D3": (30.3, 10.8),
-    "D4": (35.7, 10.7), "D5": (42.0, 10.6), "D6": (49.3, 10.6),
+    "D1": (19.64, 10.86),  # Alvik1
+    "D2": (25.88, 11.04),  # Alvik2
+    "D3": (32.20, 11.08),  # Alvik3
+    "D4": (38.58, 11.15),  # Alvik4
+    "D5": (44.96, 11.20),  # Alvik5
+    "D6": (51.20, 11.19),  # Alvik6
+    "D7": (57.34, 11.23),  # tag7
 }
 DEPOT_ENTRY_WORLD_IN: dict[str, tuple[float, float]] = {
-    "DE1": (19.6, 3.0), "DE2": (24.9, 3.0), "DE3": (30.2, 3.3),
-    "DE4": (35.4, 3.2), "DE5": (41.9, 3.2), "DE6": (49.1, 3.2),
+    "DE1": (19.71, 2.94),  # Alvik1
+    "DE2": (25.93, 3.07),  # Alvik2
+    "DE3": (32.09, 3.15),  # Alvik3
+    "DE4": (38.56, 3.21),  # Alvik4
+    "DE5": (45.07, 3.27),  # Alvik5
+    "DE6": (51.47, 3.36),  # Alvik6
+    "DE7": (57.51, 3.46),  # tag7
 }
 NODE0_WORLD_IN: tuple[float, float] = (13.3, 2.9)
 
@@ -398,6 +537,11 @@ def node_to_world(n: int, rows: int, cols: int) -> tuple[float, float]:
         grid_y = float(idx // cols)
     elif nodes < n <= nodes + 2 * bays:
         is_workstation = n <= nodes + bays
+        # Measured position wins over the derived offset for WORKSTATION
+        # nodes -- see WORKSTATION_WORLD_IN. Entry nodes are never in that
+        # table, so they always fall through to the lattice-aligned formula.
+        if is_workstation and n in WORKSTATION_WORLD_IN:
+            return WORKSTATION_WORLD_IN[n]
         bay_num = (n - nodes) if is_workstation else (n - nodes - bays)
         b = bay_num - 1
         row_up = b // (cols - 1)
@@ -713,8 +857,9 @@ def compute_crop_rect(frame_shape, H: np.ndarray,
 
 def map_points(H: np.ndarray, pts) -> np.ndarray:
     """Apply homography H to an (N,2) array of points."""
-    pts = np.asarray(pts, dtype=float).reshape(-1, 1, 2)
-    return cv2.perspectiveTransform(pts, H).reshape(-1, 2)
+    pts = np.asarray(pts, dtype=np.float64).reshape(-1, 1, 2)
+    return cv2.perspectiveTransform(
+        pts, np.asarray(H, dtype=np.float64)).reshape(-1, 2)
 
 
 def _rot(theta: float) -> np.ndarray:
@@ -904,13 +1049,56 @@ def fit_table_homography(
     return best
 
 
-def tag_world_pose(H: np.ndarray, det) -> tuple[float, float, float]:
-    """(x_in, y_in, yaw_deg) of a detection. Yaw = world direction of the
-    tag's corner0->corner1 edge, degrees, CCW from +x."""
-    center = map_points(H, np.asarray(det.center, dtype=float).reshape(1, 2))[0]
-    e0, e1 = map_points(H, np.asarray(det.corners[:2], dtype=float))
-    yaw = math.degrees(math.atan2(e1[1] - e0[1], e1[0] - e0[0]))
-    return float(center[0]), float(center[1]), yaw
+def wrap_degrees(angle: float) -> float:
+    """Wrap an angle to [-180, 180), preserving fractional precision."""
+    return (float(angle) + 180.0) % 360.0 - 180.0
+
+
+def tag_world_pose(H: np.ndarray, det) -> tuple[float, float, float] | None:
+    """Return raw-tag ``(x_in, y_in, yaw_deg)`` or ``None`` if invalid.
+
+    Yaw preserves the detector's canonical direction while reducing corner
+    noise: both corresponding +X tag edges (corner 0 -> 1 and corner 3 -> 2)
+    are transformed into the world plane and averaged. Mounting offsets and
+    optional temporal filtering are intentionally applied by separate steps.
+    """
+    try:
+        H64 = np.asarray(H, dtype=np.float64)
+        center_img = np.asarray(det.center, dtype=np.float64).reshape(1, 2)
+        corners_img = np.asarray(det.corners, dtype=np.float64)
+    except (TypeError, ValueError):
+        return None
+    if H64.shape != (3, 3) or corners_img.shape != (4, 2):
+        return None
+    if (not np.all(np.isfinite(H64))
+            or not np.all(np.isfinite(center_img))
+            or not np.all(np.isfinite(corners_img))):
+        return None
+    try:
+        center = map_points(H64, center_img)[0]
+        corners = map_points(H64, corners_img)
+    except cv2.error:
+        return None
+
+    # Preserve canonical raw-tag direction using both parallel tag edges.
+    axis = 0.5 * (
+        (corners[1] - corners[0])
+        + (corners[2] - corners[3])
+    )
+    if not np.all(np.isfinite(center)) or not np.all(np.isfinite(axis)):
+        return None
+    if float(np.linalg.norm(axis)) < 1e-9:
+        return None
+    yaw = wrap_degrees(math.degrees(math.atan2(axis[1], axis[0])))
+    if not math.isfinite(yaw):
+        return None
+    return float(center[0]), float(center[1]), float(yaw)
+
+
+def corrected_robot_yaw(tag_id: int, raw_tag_yaw_deg: float) -> float:
+    """Apply the measured tag-mount offset; positive is world-frame CCW."""
+    return wrap_degrees(
+        raw_tag_yaw_deg + ROBOT_YAW_OFFSET_DEG.get(int(tag_id), 0.0))
 
 
 class TableCalibration:
@@ -925,18 +1113,24 @@ class TableCalibration:
     ref tag corner moves at all, which under EMA smoothing of live pixel
     noise is essentially every frame; this was previously bundled into the
     same "avg detect" timer as detector.detect() itself, so its true cost was
-    never isolated. Setting freeze_after_n > 0 accumulates that many ref-tag
-    observations (averaging corners, following implementation review --
+    never isolated. Setting freeze_after_n > 0 accumulates that many
+    observations independently for each eligible ref tag (averaging corners --
     NOT freezing on the first noisy single-frame fit), fits ONE homography,
     and stops re-fitting after that (only --tag-size/geometry are fixed
     inputs; recalibration still needs an explicit reset(), e.g. after the
     camera is bumped)."""
 
     def __init__(self, tag_size_in: float, ema_alpha: float = 0.15,
-                 freeze_after_n: int = 0):
+                 freeze_after_n: int = 0, freeze_min_refs: int = 2):
+        if freeze_after_n < 0:
+            raise ValueError("freeze_after_n must be >= 0")
+        if not 2 <= freeze_min_refs <= len(REF_TAG_WORLD):
+            raise ValueError(
+                f"freeze_min_refs must be within 2..{len(REF_TAG_WORLD)}")
         self.tag_size_in = tag_size_in
         self.ema_alpha = ema_alpha
         self.freeze_after_n = freeze_after_n
+        self.freeze_min_refs = freeze_min_refs
         self.corners: dict[int, np.ndarray] = {}
         self.H: np.ndarray | None = None
         self.rms_in: float | None = None
@@ -944,7 +1138,10 @@ class TableCalibration:
         self.thetas: dict[int, float] = {}
         self._frozen = False
         self._accum: dict[int, np.ndarray] = {}
-        self._accum_count = 0
+        self._accum_counts: dict[int, int] = {}
+        # Diagnostic counts include every valid observation, including in
+        # continuous mode. Frozen-calibration math uses _accum_counts only.
+        self._observation_counts: dict[int, int] = {}
 
     def reset(self) -> None:
         self.corners.clear()
@@ -954,7 +1151,31 @@ class TableCalibration:
         self.thetas = {}
         self._frozen = False
         self._accum.clear()
-        self._accum_count = 0
+        self._accum_counts.clear()
+        self._observation_counts.clear()
+
+    @property
+    def reference_counts(self) -> dict[int, int]:
+        """Per-reference observations used/seen by the active calibration."""
+        counts = (self._accum_counts if self.freeze_after_n > 0
+                  else self._observation_counts)
+        return dict(sorted(counts.items()))
+
+    @property
+    def frozen(self) -> bool:
+        return self._frozen
+
+    @staticmethod
+    def _valid_ref_corners(det) -> np.ndarray | None:
+        if det.tag_id not in REF_TAG_WORLD:
+            return None
+        try:
+            corners = np.asarray(det.corners, dtype=np.float64)
+        except (TypeError, ValueError):
+            return None
+        if corners.shape != (4, 2) or not np.all(np.isfinite(corners)):
+            return None
+        return corners
 
     def update(self, detections) -> None:
         if self._frozen:
@@ -964,9 +1185,11 @@ class TableCalibration:
             return
         changed = False
         for det in detections:
-            if det.tag_id not in REF_TAG_WORLD:
+            c = self._valid_ref_corners(det)
+            if c is None:
                 continue
-            c = np.asarray(det.corners, dtype=float)
+            self._observation_counts[det.tag_id] = (
+                self._observation_counts.get(det.tag_id, 0) + 1)
             prev = self.corners.get(det.tag_id)
             self.corners[det.tag_id] = (
                 c if prev is None else (1 - self.ema_alpha) * prev + self.ema_alpha * c
@@ -981,26 +1204,450 @@ class TableCalibration:
     def _update_freezing(self, detections) -> None:
         """Accumulate up to freeze_after_n observations per ref tag, average
         them, fit ONCE, then stop touching self.corners/H/etc entirely."""
-        seen_this_frame = False
         for det in detections:
-            if det.tag_id not in REF_TAG_WORLD:
+            c = self._valid_ref_corners(det)
+            if c is None:
                 continue
-            seen_this_frame = True
-            c = np.asarray(det.corners, dtype=float)
+            self._observation_counts[det.tag_id] = (
+                self._observation_counts.get(det.tag_id, 0) + 1)
+            count = self._accum_counts.get(det.tag_id, 0)
+            if count >= self.freeze_after_n:
+                continue
             prev = self._accum.get(det.tag_id)
             self._accum[det.tag_id] = c if prev is None else prev + c
-        if seen_this_frame:
-            self._accum_count += 1
-        if self._accum_count < self.freeze_after_n:
+            self._accum_counts[det.tag_id] = count + 1
+
+        eligible = sorted(
+            tid for tid, count in self._accum_counts.items()
+            if count >= self.freeze_after_n)
+        if len(eligible) < self.freeze_min_refs:
             return
-        if len(self._accum) < 2:
-            return  # not enough distinct ref tags seen yet to fit
-        averaged = {tid: c / self._accum_count for tid, c in self._accum.items()}
+        averaged = {
+            tid: self._accum[tid] / self._accum_counts[tid]
+            for tid in eligible
+        }
         fit = fit_table_homography(averaged, self.tag_size_in)
         if fit is not None:
             self.H, self.rms_in, self.used_ids, self.thetas = fit
             self.corners = averaged
             self._frozen = True
+            selected_counts = {
+                tid: self._accum_counts[tid] for tid in self.used_ids}
+            print(
+                "Calibration frozen: refs "
+                f"{self.used_ids}, per-ref samples {selected_counts}, "
+                f"rms {self.rms_in:.3f} in")
+
+
+class CircularYawFilter:
+    """Per-tag exponential filter in the unit-circle domain.
+
+    ``alpha=1`` returns each new measurement unchanged. Smaller values reduce
+    random jitter but add latency; they do not correct systematic yaw bias.
+    """
+
+    def __init__(self, alpha: float = 1.0):
+        if not 0.0 < alpha <= 1.0:
+            raise ValueError("yaw filter alpha must be within (0, 1]")
+        self.alpha = float(alpha)
+        self._vectors: dict[int, tuple[float, float]] = {}
+
+    def reset(self) -> None:
+        self._vectors.clear()
+
+    def update(self, tag_id: int, yaw_deg: float) -> float:
+        radians = math.radians(wrap_degrees(yaw_deg))
+        measured = (math.cos(radians), math.sin(radians))
+        previous = self._vectors.get(int(tag_id))
+        if previous is None or self.alpha >= 1.0:
+            vector = measured
+        else:
+            vector = (
+                (1.0 - self.alpha) * previous[0] + self.alpha * measured[0],
+                (1.0 - self.alpha) * previous[1] + self.alpha * measured[1],
+            )
+            norm = math.hypot(*vector)
+            if norm < 1e-12 or not math.isfinite(norm):
+                vector = measured
+            else:
+                vector = (vector[0] / norm, vector[1] / norm)
+        self._vectors[int(tag_id)] = vector
+        return wrap_degrees(math.degrees(math.atan2(vector[1], vector[0])))
+
+
+class RateLimitedDiagnostics:
+    """Small stdout diagnostic gate used for invalid Python-side geometry."""
+
+    def __init__(self, interval_sec: float = 5.0):
+        self.interval_sec = interval_sec
+        self._last: dict[str, float] = {}
+
+    def report(self, key: str, message: str) -> None:
+        now = time.monotonic()
+        if now - self._last.get(key, -math.inf) >= self.interval_sec:
+            print(message)
+            self._last[key] = now
+
+
+class LensUndistorter:
+    """Optional full-frame OpenCV lens correction with cached remap tables."""
+
+    def __init__(self, camera_matrix: np.ndarray, distortion: np.ndarray,
+                 calibration_width: int, calibration_height: int,
+                 source_path: str, model: str = "pinhole"):
+        self.camera_matrix = np.asarray(camera_matrix, dtype=np.float64)
+        self.distortion = np.asarray(distortion, dtype=np.float64).reshape(-1)
+        self.calibration_width = int(calibration_width)
+        self.calibration_height = int(calibration_height)
+        self.source_path = source_path
+        self.model = str(model).lower()
+        if self.model not in {"pinhole", "fisheye"}:
+            raise ValueError(
+                f"unsupported camera model {model!r}; use pinhole or fisheye")
+        if self.camera_matrix.shape != (3, 3):
+            raise ValueError("camera_matrix must be a 3x3 matrix")
+        if not np.all(np.isfinite(self.camera_matrix)):
+            raise ValueError("camera_matrix contains a non-finite value")
+        if self.distortion.size < 4 or not np.all(np.isfinite(self.distortion)):
+            raise ValueError(
+                "distortion_coefficients must contain at least four finite values")
+        if self.model == "fisheye" and self.distortion.size != 4:
+            raise ValueError(
+                "OpenCV fisheye calibration requires exactly four "
+                "distortion coefficients")
+        if self.calibration_width <= 0 or self.calibration_height <= 0:
+            raise ValueError("calibration image dimensions must be positive")
+        self._frame_size: tuple[int, int] | None = None
+        self._map_x: np.ndarray | None = None
+        self._map_y: np.ndarray | None = None
+
+    @staticmethod
+    def _first_file_storage_matrix(fs, names: tuple[str, ...]):
+        for name in names:
+            node = fs.getNode(name)
+            if not node.empty():
+                value = node.mat()
+                if value is not None:
+                    return value
+        return None
+
+    @staticmethod
+    def _first_file_storage_number(fs, names: tuple[str, ...]) -> int | None:
+        for name in names:
+            node = fs.getNode(name)
+            if not node.empty():
+                return int(node.real())
+        return None
+
+    @staticmethod
+    def _first_file_storage_string(fs, names: tuple[str, ...]) -> str | None:
+        for name in names:
+            node = fs.getNode(name)
+            if not node.empty() and node.isString():
+                return node.string()
+        return None
+
+    @classmethod
+    def from_file(cls, path: str | Path) -> "LensUndistorter":
+        source = Path(path)
+        if not source.is_file():
+            raise ValueError(f"camera calibration file not found: {source}")
+        if source.suffix.lower() == ".json":
+            data = json.loads(source.read_text(encoding="utf-8"))
+            matrix = data.get("camera_matrix")
+            distortion = data.get(
+                "distortion_coefficients", data.get("dist_coeffs"))
+            width = data.get("image_width")
+            height = data.get("image_height")
+            model = data.get("model", "pinhole")
+        else:
+            fs = cv2.FileStorage(str(source), cv2.FILE_STORAGE_READ)
+            if not fs.isOpened():
+                raise ValueError(f"OpenCV could not open calibration file: {source}")
+            try:
+                matrix = cls._first_file_storage_matrix(
+                    fs, ("camera_matrix", "K"))
+                distortion = cls._first_file_storage_matrix(
+                    fs, ("distortion_coefficients", "dist_coeffs", "D"))
+                width = cls._first_file_storage_number(
+                    fs, ("image_width", "calibration_width"))
+                height = cls._first_file_storage_number(
+                    fs, ("image_height", "calibration_height"))
+                model = cls._first_file_storage_string(
+                    fs, ("model", "camera_model")) or "pinhole"
+            finally:
+                fs.release()
+        missing = [name for name, value in (
+            ("camera_matrix", matrix),
+            ("distortion_coefficients", distortion),
+            ("image_width", width),
+            ("image_height", height),
+        ) if value is None]
+        if missing:
+            raise ValueError(
+                f"camera calibration {source} is missing: {', '.join(missing)}")
+        return cls(
+            matrix, distortion, int(width), int(height), str(source), model)
+
+    def _prepare(self, frame_width: int, frame_height: int) -> None:
+        size = (int(frame_width), int(frame_height))
+        if self._frame_size == size:
+            return
+        if self._frame_size is not None:
+            raise ValueError(
+                f"incoming frame dimensions changed from {self._frame_size} to {size}")
+        source_aspect = self.calibration_width / self.calibration_height
+        frame_aspect = frame_width / frame_height
+        if not math.isclose(source_aspect, frame_aspect, rel_tol=1e-6, abs_tol=1e-9):
+            raise ValueError(
+                "camera calibration aspect ratio does not match incoming frame: "
+                f"{self.calibration_width}x{self.calibration_height} vs "
+                f"{frame_width}x{frame_height}")
+        sx = frame_width / self.calibration_width
+        sy = frame_height / self.calibration_height
+        scaled = self.camera_matrix.copy()
+        scaled[0, :] *= sx
+        scaled[1, :] *= sy
+        if self.model == "fisheye":
+            self._map_x, self._map_y = cv2.fisheye.initUndistortRectifyMap(
+                scaled, self.distortion.reshape(-1, 1), np.eye(3), scaled,
+                size, cv2.CV_32FC1)
+        else:
+            self._map_x, self._map_y = cv2.initUndistortRectifyMap(
+                scaled, self.distortion, None, scaled, size, cv2.CV_32FC1)
+        self._frame_size = size
+        scale_note = "" if (sx == 1.0 and sy == 1.0) else (
+            f" (intrinsics scaled by {sx:.6f}x/{sy:.6f}y)")
+        print(
+            f"Lens undistortion enabled ({self.model}) from {self.source_path}: "
+            f"{frame_width}x{frame_height}{scale_note}")
+
+    def apply(self, frame: np.ndarray) -> np.ndarray:
+        height, width = frame.shape[:2]
+        self._prepare(width, height)
+        return cv2.remap(
+            frame, self._map_x, self._map_y,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT)
+
+
+class AprilTagBackendDiagnostics:
+    """Optional counters exported by the repository's patched C backend."""
+
+    def __init__(self, detector: Detector):
+        self._get = getattr(
+            detector.libc, "apriltag_get_rejected_homography_count", None)
+        self._reset = getattr(
+            detector.libc, "apriltag_reset_rejected_homography_count", None)
+        self._validate = getattr(
+            detector.libc, "apriltag_validate_homography_correspondences", None)
+        if self._get is not None:
+            self._get.argtypes = []
+            self._get.restype = ctypes.c_uint64
+        if self._reset is not None:
+            self._reset.argtypes = []
+            self._reset.restype = None
+        if self._validate is not None:
+            self._validate.argtypes = [ctypes.POINTER(ctypes.c_double)]
+            self._validate.restype = ctypes.c_int
+
+    @property
+    def available(self) -> bool:
+        return self._get is not None and self._reset is not None
+
+    def reset(self) -> None:
+        if self.available:
+            self._reset()
+
+    def rejected_count(self) -> int | None:
+        return int(self._get()) if self.available else None
+
+    def validate_correspondences(self, values: np.ndarray) -> bool | None:
+        if self._validate is None:
+            return None
+        corr = np.ascontiguousarray(values, dtype=np.float64)
+        if corr.shape != (4, 4):
+            raise ValueError("homography correspondences must have shape (4, 4)")
+        return bool(self._validate(
+            corr.ctypes.data_as(ctypes.POINTER(ctypes.c_double))))
+
+
+class SessionDiagnostics:
+    """Detection/dropout/invalid-geometry accounting for one process run."""
+
+    def __init__(self, expected_tag_ids: list[int],
+                 known_yaws: dict[int, float] | None = None):
+        self.expected_tag_ids = tuple(sorted(set(int(v) for v in expected_tag_ids)))
+        self.known_yaws = known_yaws or {}
+        self.frames = 0
+        self.detections: Counter[int] = Counter()
+        self.dropouts: Counter[int] = Counter()
+        self.invalid_geometry = 0
+        self.raw_yaws: dict[int, list[float]] = {}
+
+    def observe(self, detections) -> None:
+        self.frames += 1
+        ids = {int(det.tag_id) for det in detections}
+        self.detections.update(int(det.tag_id) for det in detections)
+        for tag_id in self.expected_tag_ids:
+            if tag_id not in ids:
+                self.dropouts[tag_id] += 1
+
+    def record_raw_yaw(self, tag_id: int, yaw_deg: float) -> None:
+        self.raw_yaws.setdefault(int(tag_id), []).append(float(yaw_deg))
+
+    @staticmethod
+    def _yaw_summary(values: list[float], known_yaw: float | None) -> dict:
+        radians = np.radians(np.asarray(values, dtype=np.float64))
+        mean_sin = float(np.mean(np.sin(radians)))
+        mean_cos = float(np.mean(np.cos(radians)))
+        resultant = min(1.0, math.hypot(mean_sin, mean_cos))
+        mean = wrap_degrees(math.degrees(math.atan2(mean_sin, mean_cos)))
+        circular_std = math.degrees(math.sqrt(
+            max(0.0, -2.0 * math.log(max(resultant, 1e-15)))))
+        result = {
+            "samples": len(values),
+            "circular_mean_deg": mean,
+            "circular_std_deg": circular_std,
+        }
+        if known_yaw is not None:
+            errors = np.abs([
+                wrap_degrees(value - known_yaw) for value in values])
+            result.update({
+                "known_yaw_deg": known_yaw,
+                "bias_deg": wrap_degrees(mean - known_yaw),
+                "max_abs_error_deg": float(np.max(errors)),
+                "p95_abs_error_deg": float(np.percentile(errors, 95)),
+            })
+        return result
+
+    def as_dict(self, backend: AprilTagBackendDiagnostics | None = None) -> dict:
+        return {
+            "frames": self.frames,
+            "detection_count": dict(sorted(self.detections.items())),
+            "dropout_count": dict(sorted(self.dropouts.items())),
+            "dropout_rate": {
+                tag_id: (self.dropouts[tag_id] / self.frames
+                         if self.frames else 0.0)
+                for tag_id in self.expected_tag_ids
+            },
+            "invalid_python_geometry_count": self.invalid_geometry,
+            "raw_yaw": {
+                tag_id: self._yaw_summary(values, self.known_yaws.get(tag_id))
+                for tag_id, values in sorted(self.raw_yaws.items())
+            },
+            "singular_candidate_count": (
+                backend.rejected_count() if backend is not None else None),
+        }
+
+
+def parse_known_yaws(values: list[str] | None) -> dict[int, float]:
+    """Parse repeatable ``TAG_ID=DEGREES`` ground-truth headings."""
+    result: dict[int, float] = {}
+    for value in values or []:
+        try:
+            tag_text, yaw_text = value.split("=", 1)
+            tag_id = int(tag_text)
+            yaw = float(yaw_text)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"invalid known yaw {value!r}; expected TAG_ID=DEGREES") from exc
+        if not math.isfinite(yaw):
+            raise ValueError(f"known yaw must be finite: {value!r}")
+        result[tag_id] = wrap_degrees(yaw)
+    return result
+
+
+def detection_edge_lengths_px(det) -> np.ndarray:
+    corners = np.asarray(det.corners, dtype=np.float64)
+    if corners.shape != (4, 2) or not np.all(np.isfinite(corners)):
+        return np.array([], dtype=np.float64)
+    return np.linalg.norm(np.roll(corners, -1, axis=0) - corners, axis=1)
+
+
+def pose_json_fields(x: float, y: float, yaw: float, raw_tag_yaw: float,
+                     grid_x: float, grid_y: float, tag_id: int,
+                     frame_seq: int, timestamp_ms: int,
+                     yaw_filter_alpha: float) -> dict:
+    """Stable ROS JSON fields; yaw values remain unrounded Python floats."""
+    return {
+        "x_in": round(x, 2),
+        "y_in": round(y, 2),
+        "yaw_deg": float(yaw),
+        "tag_yaw_raw_deg": float(raw_tag_yaw),
+        "yaw_filter_alpha": float(yaw_filter_alpha),
+        "yaw_filtered": bool(yaw_filter_alpha < 1.0),
+        "grid_x": round(grid_x, 3),
+        "grid_y": round(grid_y, 3),
+        "tag_id": int(tag_id),
+        "seq": int(frame_seq),
+        "ms": int(timestamp_ms),
+    }
+
+
+def pose_csv_row(now: float, tag_id: int, x: float, y: float, yaw: float,
+                 grid_x: float, grid_y: float) -> list[str | int]:
+    return [f"{now:.3f}", int(tag_id), f"{x:.2f}", f"{y:.2f}",
+            f"{yaw:.6f}", f"{grid_x:.3f}", f"{grid_y:.3f}"]
+
+
+def format_preview_pose_line(tag_id: int, x: float, y: float,
+                             yaw: float) -> str:
+    """Format only the UI copy; no formatted value re-enters pose/control."""
+    name = ROBOT_NAMES.get(tag_id, f"id {tag_id}")
+    gx, gy = world_to_grid(x, y)
+    return (f"{tag_id} {name:<7}{x:6.1f} {y:6.1f} {yaw:+8.2f}  "
+            f"({gx:+.2f},{gy:+.2f})")
+
+
+# The field order is stated once here rather than repeated as "x=" / "y=" /
+# "yaw=" on every row. That is what let the panel shrink from ~440px wide to
+# something that fits the blank table margin without covering grid nodes.
+PREVIEW_POSE_HEADER = "#  robot      x      y      yaw   (grid x,y)"
+
+
+class QualityCsvLogger:
+    HEADER = [
+        "time_s", "frame_seq", "tag_id", "tag_yaw_raw_deg",
+        "robot_yaw_corrected_deg", "yaw_output_deg", "yaw_filter_alpha",
+        "edge_avg_px", "edge_min_px", "edge_max_px", "decision_margin",
+        "hamming", "quad_decimate", "refine_edges", "undistortion_enabled",
+        "calibration_ref_ids", "calib_count_20", "calib_count_21",
+        "calib_count_22", "calib_count_23", "calibration_rms_in",
+        "singular_candidate_count",
+    ]
+
+    def __init__(self, path: str):
+        self._file = open(path, "a", newline="")
+        self._writer = csv.writer(self._file)
+        if self._file.tell() == 0:
+            self._writer.writerow(self.HEADER)
+
+    def write(self, *, now: float, frame_seq: int, det,
+              raw_yaw: float, corrected_yaw: float, output_yaw: float,
+              yaw_filter_alpha: float, decimate: float, refine_edges: bool,
+              undistortion_enabled: bool, calib: TableCalibration,
+              singular_candidate_count: int | None) -> None:
+        edges = detection_edge_lengths_px(det)
+        if edges.size == 0:
+            return
+        counts = calib.reference_counts
+        self._writer.writerow([
+            f"{now:.6f}", frame_seq, int(det.tag_id), f"{raw_yaw:.9f}",
+            f"{corrected_yaw:.9f}", f"{output_yaw:.9f}",
+            f"{yaw_filter_alpha:.6f}", f"{float(np.mean(edges)):.6f}",
+            f"{float(np.min(edges)):.6f}", f"{float(np.max(edges)):.6f}",
+            f"{float(det.decision_margin):.6f}", int(det.hamming),
+            f"{decimate:.3f}", int(refine_edges), int(undistortion_enabled),
+            "|".join(str(v) for v in calib.used_ids),
+            counts.get(20, 0), counts.get(21, 0),
+            counts.get(22, 0), counts.get(23, 0),
+            "" if calib.rms_in is None else f"{calib.rms_in:.9f}",
+            "" if singular_candidate_count is None else singular_candidate_count,
+        ])
+
+    def close(self) -> None:
+        self._file.close()
 
 
 class RosbridgePublisher:
@@ -1009,9 +1656,9 @@ class RosbridgePublisher:
     installed on this machine.
 
     One std_msgs/String topic per robot, `/<Name>_vision_pose`, JSON payload
-    {"x_in", "y_in", "yaw_deg", "tag_id", "ms"} — explicit units to avoid
-    confusion with the cm-based odometry `_pose` topics. Calibration health
-    goes to `/vision_calib` every couple of seconds.
+    {"x_in", "y_in", "yaw_deg", "tag_yaw_raw_deg", "tag_id", "ms", ...}
+    — explicit units to avoid confusion with the cm-based odometry `_pose`
+    topics. Calibration health goes to `/vision_calib` every couple of seconds.
     """
 
     def __init__(self, host: str, port: int, batch: bool = False):
@@ -1053,7 +1700,9 @@ class RosbridgePublisher:
         return t
 
     def publish(self, poses: dict[int, tuple[float, float, float]],
-                calib: "TableCalibration", now: float) -> float:
+                calib: "TableCalibration", now: float,
+                raw_tag_yaws: dict[int, float] | None = None,
+                yaw_filter_alpha: float = 1.0) -> float:
         """Returns the publish-enqueue wall time (seconds) for this call, so
         the caller can feed it into the publish_enqueue_ms RollingStats."""
         t0 = time.perf_counter()
@@ -1064,16 +1713,17 @@ class RosbridgePublisher:
             return time.perf_counter() - t0
         self._warned = False
         ms = int(now * 1000)
+        raw_tag_yaws = raw_tag_yaws or {}
         self.frame_seq += 1
         if self.batch:
             batch_poses = []
             for tid, (x, y, yaw) in sorted(poses.items()):
                 gx, gy = world_to_grid(x, y)
-                batch_poses.append({
-                    "tag_id": tid, "name": ROBOT_NAMES.get(tid, f"tag{tid}"),
-                    "x_in": round(x, 2), "y_in": round(y, 2),
-                    "yaw_deg": round(yaw, 1),
-                    "grid_x": round(gx, 3), "grid_y": round(gy, 3)})
+                fields = pose_json_fields(
+                    x, y, yaw, raw_tag_yaws.get(tid, yaw), gx, gy, tid,
+                    self.frame_seq, ms, yaw_filter_alpha)
+                fields["name"] = ROBOT_NAMES.get(tid, f"tag{tid}")
+                batch_poses.append(fields)
             payload = {"seq": self.frame_seq, "ms": ms, "poses": batch_poses}
             self._topic("/vision_poses_batch").publish(
                 self._roslibpy.Message({"data": json.dumps(payload)}))
@@ -1082,10 +1732,9 @@ class RosbridgePublisher:
             for tid, (x, y, yaw) in sorted(poses.items()):
                 name = ROBOT_NAMES.get(tid, f"tag{tid}")
                 gx, gy = world_to_grid(x, y)
-                payload = {"x_in": round(x, 2), "y_in": round(y, 2),
-                           "yaw_deg": round(yaw, 1),
-                           "grid_x": round(gx, 3), "grid_y": round(gy, 3),
-                           "tag_id": tid, "seq": self.frame_seq, "ms": ms}
+                payload = pose_json_fields(
+                    x, y, yaw, raw_tag_yaws.get(tid, yaw), gx, gy, tid,
+                    self.frame_seq, ms, yaw_filter_alpha)
                 self._topic(f"/{name}_vision_pose").publish(
                     self._roslibpy.Message({"data": json.dumps(payload)}))
                 self._publish_count += 1
@@ -1095,8 +1744,14 @@ class RosbridgePublisher:
             self._publish_count = 0
             self._publish_count_since = now
         if now - self._last_calib_pub >= 2.0 and calib.H is not None:
-            status = {"refs": calib.used_ids, "rms_in": round(calib.rms_in, 3),
-                      "ms": ms}
+            status = {
+                "refs": calib.used_ids,
+                # Fit residual only; not an independent position/yaw accuracy
+                # measurement against external ground truth.
+                "rms_in": round(calib.rms_in, 3),
+                "ref_counts": calib.reference_counts,
+                "ms": ms,
+            }
             self._topic("/vision_calib").publish(
                 self._roslibpy.Message({"data": json.dumps(status)}))
             self._last_calib_pub = now
@@ -1113,23 +1768,85 @@ class RosbridgePublisher:
 
 # ---------------- live viewer ----------------
 
-def build_detector(family: str, decimate: float, nthreads: int = 16) -> Detector:
+def build_detector(family: str, decimate: float, nthreads: int = 16,
+                   refine_edges: bool = True) -> Detector:
     return Detector(
         families=family,
         nthreads=nthreads,
         quad_decimate=decimate,
         quad_sigma=0.0,
-        refine_edges=1,
+        refine_edges=int(refine_edges),
         decode_sharpening=0.25,
     )
 
 
-# distinct outline colors per robot (BGR): yellow, orange, magenta, cyan
-ROBOT_PALETTE = [(0, 255, 255), (0, 140, 255), (255, 0, 255), (255, 255, 0)]
+# One distinct colour per robot (BGR). Widened 2026-09-08 from four to
+# seven: the old list wrapped with tag_id % 4, so on a full fleet tags 5/6/7
+# reused the colours of 1/2/3 and two robots on screen were the same colour.
+# Magenta is gone (hard to read against the tape and confusable with the
+# bay markers), and these deliberately avoid the three colours already
+# meaning something else in this overlay:
+#     (0, 255, 0)   REF tag outlines and the +y axis
+#     (0, 0, 255)   tag centre dots and the +x axis
+#     (255, 160, 0) the table border quad
+ROBOT_PALETTE = [
+    (0, 255, 255),      # yellow
+    (0, 165, 255),      # orange
+    (255, 255, 0),      # cyan
+    (100, 255, 100),    # light green (lighter than the REF green)
+    (255, 255, 255),    # white
+    (140, 200, 255),    # apricot
+    (255, 210, 140),    # pale sky
+]
+
+
+# Pose panel top edge: just under the one-line calibration status, which is
+# drawn at y=25. Pinned to the top rather than vertically centred -- there is
+# more clear width up here (the table's left edge slants away), so the panel
+# can render at a larger, more readable font while still clearing the corner
+# tag and the first node column.
+PANEL_TOP_Y = 42
 
 
 def _robot_color(tag_id: int) -> tuple[int, int, int]:
-    return ROBOT_PALETTE[tag_id % len(ROBOT_PALETTE)]
+    # tag_id-1 so tags 1..7 map onto indices 0..6 with no wrap on a full
+    # fleet; anything beyond still wraps rather than crashing.
+    return ROBOT_PALETTE[(tag_id - 1) % len(ROBOT_PALETTE)]
+
+
+def _quad_left_bound(calib, y0: int, y1: int) -> float | None:
+    """Smallest x the table-border quad reaches between scanlines y0..y1.
+
+    The HUD used to sit in the top-left corner, where it covered a corner
+    AprilTag and two grid nodes and crossed the border quad. Moving it to a
+    fixed x would only trade one overlap for another, because the quad's
+    left edge slants with the camera angle. This measures the actual
+    boundary for the rows the panel will occupy so the panel can be clamped
+    to whatever room genuinely exists."""
+    if calib.H is None:
+        return None
+    try:
+        Hinv = np.linalg.inv(calib.H)
+        quad = map_points(Hinv, np.array([
+            [0.0, 0.0], [TABLE_SIZE_IN, 0.0],
+            [TABLE_SIZE_IN, TABLE_SIZE_IN], [0.0, TABLE_SIZE_IN]]))
+    except Exception:
+        return None
+    best = None
+    n = len(quad)
+    for i in range(n):
+        ax, ay = float(quad[i][0]), float(quad[i][1])
+        bx, by = float(quad[(i + 1) % n][0]), float(quad[(i + 1) % n][1])
+        if y0 <= ay <= y1:
+            best = ax if best is None else min(best, ax)
+        if ay == by:
+            continue
+        for yy in (y0, y1):
+            t = (yy - ay) / (by - ay)
+            if 0.0 <= t <= 1.0:
+                xx = ax + t * (bx - ax)
+                best = xx if best is None else min(best, xx)
+    return best
 
 
 def _panel_bg(frame, x0: int, y0: int, x1: int, y1: int, alpha: float = 0.55) -> None:
@@ -1310,30 +2027,89 @@ def draw_overlay(frame, calib: TableCalibration, detections, poses,
 
     pose_lines = []
     for tid, (x, y, yaw) in sorted(poses.items()):
-        name = ROBOT_NAMES.get(tid, f"id {tid}")
-        gx, gy = world_to_grid(x, y)
         pose_lines.append((
-            f"{tid}  {name:<8} x={x:6.1f}  y={y:6.1f}  yaw={yaw:+5.0f}"
-            f"  grid=({gx:+5.2f},{gy:+5.2f})",
+            format_preview_pose_line(tid, x, y, yaw),
             _robot_color(tid)))
 
-    # One dark backing panel behind the whole status + pose block, sized to
-    # the actual widest line (measured, not guessed) and however many robots
-    # are currently detected, so the text stays readable regardless of what's
-    # in the live scene behind it (a bright window or whiteboard previously
-    # washed the plain outlined text out).
-    widest = cv2.getTextSize(status, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)[0][0]
-    for line, _ in pose_lines:
-        w = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)[0][0]
-        widest = max(widest, w)
-    panel_bottom = 55 + 24 * len(pose_lines) - 8
-    _panel_bg(frame, 4, 6, 18 + widest, panel_bottom)
+    # ---- pose panel: left edge, vertically centred, clear of the quad -----
+    # Previously pinned to the top-left corner, where it covered a corner
+    # AprilTag and two grid nodes. Now it is centred vertically down the left
+    # side and its width is clamped to the room actually available before the
+    # table-border quad, measured for the rows it occupies.
+    #
+    # The font auto-shrinks to fit rather than the text being truncated: a
+    # clipped coordinate is worse than a small one, and the panel has to
+    # survive a full seven-robot fleet.
+    fh, fw = frame.shape[:2]
+    row_h_at = lambda sc: int(round(20 * (sc / 0.5)))
+    n_rows = len(pose_lines) + 1                      # +1 for the header
+    scale = 0.5
+    # Down to 0.24: at 960px preview width the panel has to fit between
+    # the frame edge and the first grid node column (~220px on this
+    # camera), and a slightly small row beats one that clips a node.
+    for cand in (0.5, 0.46, 0.42, 0.38, 0.34, 0.30, 0.27, 0.24):
+        block_h = row_h_at(cand) * n_rows + 14
+        top = PANEL_TOP_Y
+        # Clamp to the leftmost thing that must stay VISIBLE in these rows --
+        # a grid node or a corner AprilTag -- not to the table border.
+        #
+        # The border is the wrong reference twice over: no readable font fits
+        # in the gap before it (measured, the narrowest row is 232px against
+        # ~127px), and crossing it costs nothing because the strip between
+        # the border and the first node column is blank table margin. What
+        # genuinely must not be obscured is a node or a REF tag, so those are
+        # what the panel is measured against.
+        limit = None
+        for _n, npx, npy, _bay in (node_overlay_pixels or []):
+            if top - 8 <= npy <= top + block_h + 8:
+                limit = npx if limit is None else min(limit, npx)
+        for det in detections:
+            if det.tag_id not in REF_TAG_WORLD:
+                continue
+            cs = det.corners
+            ymin, ymax = float(cs[:, 1].min()), float(cs[:, 1].max())
+            if ymax >= top - 8 and ymin <= top + block_h + 8:
+                lx = float(cs[:, 0].min())
+                limit = lx if limit is None else min(limit, lx)
+        if limit is None:
+            limit = _quad_left_bound(calib, top, top + block_h)
+        # 22px, not a couple: _text() draws a thickness-4 black outline that
+        # extends past what getTextSize() reports, so a margin sized to the
+        # measured width alone left only 2px of real clearance.
+        avail = (limit - 22) if limit is not None else (fw * 0.45)
+        widest = max(
+            [cv2.getTextSize(PREVIEW_POSE_HEADER, cv2.FONT_HERSHEY_SIMPLEX,
+                             cand, 1)[0][0]]
+            + [cv2.getTextSize(ln, cv2.FONT_HERSHEY_SIMPLEX, cand, 1)[0][0]
+               for ln, _ in pose_lines])
+        scale = cand
+        if 6 + widest + 6 <= avail:
+            break
 
-    _text(frame, status, (10, 25), scolor, scale=0.65)
-    panel_y = 55
-    for line, color in pose_lines:
-        _text(frame, line, (10, panel_y), color)
-        panel_y += 24
+    row_h = row_h_at(scale)
+    block_h = row_h * n_rows + 14
+    top = PANEL_TOP_Y
+    widest = max(
+        [cv2.getTextSize(PREVIEW_POSE_HEADER, cv2.FONT_HERSHEY_SIMPLEX,
+                         scale, 1)[0][0]]
+        + [cv2.getTextSize(ln, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)[0][0]
+           for ln, _ in pose_lines])
+    if pose_lines:
+        _panel_bg(frame, 2, top - 6, 10 + widest, top + block_h - 6,
+                  alpha=0.72)
+        # Header states the field order once instead of repeating the names
+        # on every row, which is what made the old lines so wide.
+        _text(frame, PREVIEW_POSE_HEADER, (6, top + row_h - 6),
+              (200, 200, 200), scale=scale)
+        y_at = top + row_h
+        for line, color in pose_lines:
+            y_at += row_h
+            _text(frame, line, (6, y_at - 6), color, scale=scale)
+
+    # Calibration status stays top-left: it is one short line, it belongs
+    # with the corner tags it is reporting on, and it is what you look for
+    # first when something is wrong.
+    _text(frame, status, (10, 25), scolor, scale=0.6)
 
 
 class MjpegServer:
@@ -1487,24 +2263,36 @@ def main() -> None:
                              "silently clamp/ignore this -- the printed 'Capture "
                              "FPS' line after startup shows what was actually "
                              "granted, not just what was requested.")
-    # Default raised 1.0 -> 2.0 (2026-08-18) after a real 6-robot hardware
-    # A/B: 1.0 gave total_loop rate ~20-26Hz (apriltag median ~20ms), 1.5 gave
-    # ~29-34Hz (~9-10ms), 2.0 gave ~30-38Hz (~6-7ms) -- all three held
-    # calibration rms at 0.06in and showed no pose jitter/dropout increase.
-    # 2.0 does trigger pupil_apriltags' internal "WRN: Matrix is singular."
-    # far more often (dozens/run vs 1-2 at 1.5) -- traced to refine_edges=1's
-    # per-tag corner-refinement solve failing to converge more often from a
-    # coarser initial estimate; confirmed cosmetic (falls back to the
-    # unrefined corner for that one tag/frame, doesn't touch calib.H, never
-    # crashed the loop, no corresponding pose degradation observed). If a
-    # future accuracy regression shows up, try 1.5 (same speed tier, far
-    # fewer refinement fallbacks) before going back to 1.0.
-    parser.add_argument("--decimate", type=float, default=2.0,
+    # A degenerate pre-decode candidate may come from tape/background or a
+    # real tag; the patched backend safely rejects it and counts it. It is
+    # therefore not described as cosmetic or as an automatic corner fallback.
+    parser.add_argument("--decimate", type=float, default=1.5,
                         help="detector quad_decimate; lower toward 1.0 if accuracy "
-                             "matters more than fps (default 2.0)")
+                             "matters more than fps (default 1.5)")
+    parser.add_argument(
+        "--refine-edges", action=argparse.BooleanOptionalAction, default=True,
+        help="enable subpixel quad-edge refinement (default enabled; use "
+             "--no-refine-edges only as a controlled diagnostic A/B)")
     parser.add_argument("--print-interval", type=float, default=0.5,
                         help="seconds between console pose lines (default 0.5)")
     parser.add_argument("--log", default=None, help="append poses to this CSV file")
+    parser.add_argument("--log-quality", nargs="?", const="apriltag_quality.csv",
+                        default=None, metavar="CSV",
+                        help="append per-detection quality/calibration data "
+                             "(default path when flag is bare: apriltag_quality.csv)")
+    parser.add_argument("--camera-calibration", default=None, metavar="PATH",
+                        help="optional OpenCV JSON/YAML/XML lens calibration; "
+                             "undistortion occurs before crop and detection")
+    parser.add_argument("--yaw-filter-alpha", type=float, default=1.0,
+                        help="per-tag circular EMA alpha in (0,1]; 1.0 is "
+                             "unfiltered and is the default")
+    parser.add_argument("--expected-tags", type=int, nargs="+",
+                        default=sorted([*ROBOT_NAMES, *REF_TAG_WORLD]),
+                        metavar="ID", help="tag IDs used for dropout accounting")
+    parser.add_argument("--known-yaw", action="append", default=None,
+                        metavar="TAG_ID=DEGREES",
+                        help="optional stationary ground truth for session yaw "
+                             "bias/error statistics; repeat per robot")
     parser.add_argument("--no-preview", action="store_true", help="headless: console output only")
     parser.add_argument("--rows", type=int, default=8,
                         help="grid rows, for the --show-nodes overlay -- "
@@ -1612,6 +2400,10 @@ def main() -> None:
                              "Recalibration still needs 'r' (or camera "
                              "move detection, not implemented) since this "
                              "is a hard freeze, not a slowdown.")
+    parser.add_argument("--freeze-min-refs", type=int, default=2, metavar="N",
+                        choices=range(2, len(REF_TAG_WORLD) + 1),
+                        help="minimum independently complete reference tags "
+                             "required to freeze (default 2; recommend 4)")
     parser.add_argument("--test-local-crop", action="store_true",
                         help="Added 2026-08-05 (isaac_ros_apriltag_gpu "
                              "throughput investigation): once the table "
@@ -1675,6 +2467,17 @@ def main() -> None:
                              "reflect the whole run, not one short slice)")
     args = parser.parse_args()
 
+    if args.decimate <= 0:
+        parser.error("--decimate must be > 0")
+    if not 0.0 < args.yaw_filter_alpha <= 1.0:
+        parser.error("--yaw-filter-alpha must be within (0, 1]")
+    if args.freeze_calib < 0:
+        parser.error("--freeze-calib must be >= 0")
+    try:
+        known_yaws = parse_known_yaws(args.known_yaw)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     if args.capture_only is not None:
         _run_capture_only(args)
         return
@@ -1721,12 +2524,42 @@ def main() -> None:
                   + ("  <-- did not grant the request, check camera/driver support"
                      if granted_fps <= 0 or abs(granted_fps - args.fps) > 1.0 else ""))
 
-    detector = build_detector(args.family, args.decimate, args.threads)
-    calib = TableCalibration(tag_size, freeze_after_n=args.freeze_calib)
+    detector = build_detector(
+        args.family, args.decimate, args.threads, args.refine_edges)
+    backend_diagnostics = AprilTagBackendDiagnostics(detector)
+    backend_diagnostics.reset()
+    try:
+        pupil_version = importlib.metadata.version("pupil-apriltags")
+    except importlib.metadata.PackageNotFoundError:
+        pupil_version = "unknown"
+    print(
+        f"AprilTag backend: pupil-apriltags {pupil_version}; "
+        f"binary={getattr(detector.libc, '_name', 'unknown')}; "
+        f"safe-rejection-counter={'available' if backend_diagnostics.available else 'UNAVAILABLE'}")
+    if not backend_diagnostics.available:
+        print("WARNING: loaded AprilTag binary is not the repository-patched "
+              "build; singular candidates cannot be counted and may still "
+              "follow the unsafe legacy path. See third_party build instructions.")
+
+    calib = TableCalibration(
+        tag_size, freeze_after_n=args.freeze_calib,
+        freeze_min_refs=args.freeze_min_refs)
     if args.freeze_calib > 0:
         print(f"Calibration will FREEZE after averaging {args.freeze_calib} "
-              "observations (T2 benchmark mode) -- press 'r' to reset and "
-              "recollect if needed.")
+              f"observations PER reference and waiting for "
+              f"{args.freeze_min_refs} eligible refs -- press 'r' to reset "
+              "and recollect if needed.")
+
+    try:
+        undistorter = (LensUndistorter.from_file(args.camera_calibration)
+                       if args.camera_calibration else None)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"Invalid --camera-calibration: {exc}") from exc
+    yaw_filter = CircularYawFilter(args.yaw_filter_alpha)
+    rate_limited = RateLimitedDiagnostics()
+    session = SessionDiagnostics(args.expected_tags, known_yaws)
+    quality_logger = (QualityCsvLogger(args.log_quality)
+                      if args.log_quality else None)
 
     log_file = None
     log_writer = None
@@ -1846,11 +2679,17 @@ def main() -> None:
     # bug symptom -- alternating ~38Hz/~11Hz -- is exactly the kind of
     # occasional-slow-frame behavior an average hides.
     stats = {
-        "read": RollingStats(), "cvt": RollingStats(),
+        "read": RollingStats(), "undistort": RollingStats(),
+        "cvt": RollingStats(),
         "apriltag": RollingStats(), "calibration": RollingStats(),
         "pose_math": RollingStats(), "publish_enqueue": RollingStats(),
         "render": RollingStats(), "total_loop": RollingStats(),
     }
+    session_stats = {
+        "undistort": RollingStats(), "apriltag": RollingStats(),
+        "total_loop": RollingStats(),
+    }
+    session_started = time.perf_counter()
     bench_since = time.perf_counter()
     try:
         while True:
@@ -1863,17 +2702,28 @@ def main() -> None:
                 continue
             stats["read"].add(_t_read - _loop_t0)
 
+            if undistorter is not None:
+                try:
+                    frame = undistorter.apply(frame)
+                except ValueError as exc:
+                    raise RuntimeError(f"lens undistortion failed: {exc}") from exc
+            _t_undistort = time.perf_counter()
+            stats["undistort"].add(_t_undistort - _t_read)
+            session_stats["undistort"].add(_t_undistort - _t_read)
+
             if crop_rect is not None:
                 cx0, cy0, cx1, cy1 = crop_rect
                 frame = frame[cy0:cy1, cx0:cx1]
 
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             _t_cvt = time.perf_counter()
-            stats["cvt"].add(_t_cvt - _t_read)
+            stats["cvt"].add(_t_cvt - _t_undistort)
 
             detections = detector.detect(gray)
             _t_apriltag = time.perf_counter()
             stats["apriltag"].add(_t_apriltag - _t_cvt)
+            session_stats["apriltag"].add(_t_apriltag - _t_cvt)
+            session.observe(detections)
 
             if crop_rect is not None:
                 # Detections just came back relative to the CROPPED frame's
@@ -1895,6 +2745,7 @@ def main() -> None:
             frame_seq += 1
             now = time.time()
             poses: dict[int, tuple[float, float, float]] = {}
+            raw_tag_yaws: dict[int, float] = {}
             if calib.H is not None:
                 if not calib_announced:
                     print(f"Calibration locked: refs {calib.used_ids}, "
@@ -2003,18 +2854,47 @@ def main() -> None:
                               + (" (already ON)" if show_stickers else ""))
                 for det in detections:
                     if det.tag_id not in REF_TAG_WORLD:
-                        poses[det.tag_id] = tag_world_pose(calib.H, det)
+                        raw_pose = tag_world_pose(calib.H, det)
+                        if raw_pose is None:
+                            session.invalid_geometry += 1
+                            rate_limited.report(
+                                f"invalid-pose-{det.tag_id}",
+                                f"Skipping tag {det.tag_id}: non-finite or "
+                                "degenerate world-plane geometry.")
+                            continue
+                        x, y, raw_yaw = raw_pose
+                        corrected_yaw = corrected_robot_yaw(
+                            det.tag_id, raw_yaw)
+                        output_yaw = yaw_filter.update(
+                            det.tag_id, corrected_yaw)
+                        poses[det.tag_id] = (x, y, output_yaw)
+                        raw_tag_yaws[det.tag_id] = raw_yaw
+                        session.record_raw_yaw(det.tag_id, raw_yaw)
+                        if quality_logger is not None:
+                            quality_logger.write(
+                                now=now, frame_seq=frame_seq, det=det,
+                                raw_yaw=raw_yaw,
+                                corrected_yaw=corrected_yaw,
+                                output_yaw=output_yaw,
+                                yaw_filter_alpha=args.yaw_filter_alpha,
+                                decimate=args.decimate,
+                                refine_edges=args.refine_edges,
+                                undistortion_enabled=undistorter is not None,
+                                calib=calib,
+                                singular_candidate_count=(
+                                    backend_diagnostics.rejected_count()))
                 if log_writer is not None:
                     for tid, (x, y, yaw) in sorted(poses.items()):
                         gx, gy = world_to_grid(x, y)
-                        log_writer.writerow([f"{now:.3f}", tid, f"{x:.2f}", f"{y:.2f}",
-                                             f"{yaw:.1f}", f"{gx:.3f}", f"{gy:.3f}"])
+                        log_writer.writerow(
+                            pose_csv_row(now, tid, x, y, yaw, gx, gy))
             _t_pose_math = time.perf_counter()
             stats["pose_math"].add(_t_pose_math - _t_calib)
 
             if (publisher is not None and calib.H is not None and poses
                     and now - last_publish >= publish_interval):
-                enqueue_sec = publisher.publish(poses, calib, now)
+                enqueue_sec = publisher.publish(
+                    poses, calib, now, raw_tag_yaws, args.yaw_filter_alpha)
                 stats["publish_enqueue"].add(enqueue_sec)
                 last_publish = now
 
@@ -2022,7 +2902,7 @@ def main() -> None:
                 if poses:
                     print("; ".join(
                         f"{ROBOT_NAMES.get(tid, f'id {tid}')}: "
-                        f"x={x:.1f} y={y:.1f} yaw={yaw:+.1f} "
+                        f"x={x:.1f} y={y:.1f} yaw={yaw:+.3f} "
                         f"grid=({world_to_grid(x, y)[0]:+.2f},{world_to_grid(x, y)[1]:+.2f})"
                         for tid, (x, y, yaw) in sorted(poses.items())))
                     last_print = now
@@ -2064,6 +2944,7 @@ def main() -> None:
                     break
                 if key == ord("r"):
                     calib.reset()
+                    yaw_filter.reset()
                     calib_announced = False
                     # Stale relative to whatever the NEXT calibration lock
                     # fits -- clear and let it rebuild on that lock rather
@@ -2090,11 +2971,14 @@ def main() -> None:
                           + ("" if sticker_detections is not None else
                              " (waiting for calibration to lock first)"))
 
-            stats["total_loop"].add(time.perf_counter() - _loop_t0)
+            loop_sec = time.perf_counter() - _loop_t0
+            stats["total_loop"].add(loop_sec)
+            session_stats["total_loop"].add(loop_sec)
             elapsed = time.perf_counter() - bench_since
             if elapsed >= args.bench_interval:
                 print(f"bench: seq={frame_seq}  "
                       f"read[{stats['read'].summary(elapsed)}]  "
+                      f"undistort[{stats['undistort'].summary(elapsed)}]  "
                       f"cvt[{stats['cvt'].summary(elapsed)}]  "
                       f"apriltag[{stats['apriltag'].summary(elapsed)}]  "
                       f"calibration[{stats['calibration'].summary(elapsed)}]  "
@@ -2102,16 +2986,38 @@ def main() -> None:
                       f"publish_enqueue[{stats['publish_enqueue'].summary(elapsed)}]  "
                       f"render[{stats['render'].summary(elapsed)}]  "
                       f"total_loop[{stats['total_loop'].summary(elapsed)}]")
+                print("quality: " + json.dumps({
+                    "calibration_refs": calib.used_ids,
+                    "calibration_ref_counts": calib.reference_counts,
+                    "calibration_rms_in": calib.rms_in,
+                    "singular_candidate_count": (
+                        backend_diagnostics.rejected_count()),
+                    "detection_count": dict(sorted(session.detections.items())),
+                    "dropout_count": dict(sorted(session.dropouts.items())),
+                }, sort_keys=True))
                 for s in stats.values():
                     s.reset()
                 bench_since = time.perf_counter()
     except KeyboardInterrupt:
         pass
     finally:
+        session_elapsed = time.perf_counter() - session_started
+        session_report = session.as_dict(backend_diagnostics)
+        session_report["elapsed_sec"] = session_elapsed
+        session_report["performance"] = {
+            name: stat.summary(session_elapsed)
+            for name, stat in session_stats.items()
+        }
+        session_report["calibration_refs"] = calib.used_ids
+        session_report["calibration_ref_counts"] = calib.reference_counts
+        session_report["calibration_rms_in"] = calib.rms_in
+        print("session-summary: " + json.dumps(session_report, sort_keys=True))
         cap.release()
         cv2.destroyAllWindows()
         if log_file is not None:
             log_file.close()
+        if quality_logger is not None:
+            quality_logger.close()
         if publisher is not None:
             publisher.close()
         if streamer is not None:

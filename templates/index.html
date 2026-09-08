@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AGV Grid & Workstation Solver</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
+<link rel="stylesheet" href="/static/css/app.css">
+<link rel="stylesheet" href="/static/css/metrics.css">
+</head>
+<body data-view="setup">
+<nav class="topbar">
+  <span class="brand">AGV Solver</span>
+  <button class="secondary active" id="view-setup">1 &middot; Setup</button>
+  <button class="secondary" id="view-plan">2 &middot; Plan &amp; Simulate</button>
+  <button class="secondary" id="view-run">3 &middot; Run &amp; Monitor</button>
+  <button class="secondary" id="view-metrics">4 &middot; Performance Metrics</button>
+  <span id="setup-summary" class="v-plan-run">
+    <span id="setup-summary-text"></span>
+    <button class="secondary" id="edit-setup">Edit Setup</button>
+  </span>
+</nav>
+<div id="metrics-banner" class="v-plan-run">
+  <div class="stat"><b id="metric-bays">0</b><span>workstations</span></div>
+  <div class="stat"><b id="metric-agents">4</b><span>depot slots</span></div>
+  <div class="stat"><b id="metric-distance">0</b><span>overall makespan</span></div>
+  <div class="stat"><b id="metric-hotspot">None</b><span>collision risk / hotspot</span></div>
+</div>
+<div id="robot-topic-panel" class="v-plan-run">
+  <div id="robot-topic-buttons"></div>
+</div>
+<main>
+  <section class="left v-setup">
+    <div>
+      <h1>AGV Grid & Workstation Solver</h1>
+      <p>Click a bay to place a workstation. Each workstation enters from the north edge of its bay. Depot slots sit south of the grid and all enter through node 0, then grid node 1.</p>
+    </div>
+
+    <div class="panel">
+      <h2>1. Grid Size</h2>
+      <label class="field">Rows <input id="rows" type="number" min="2" max="16" value="8"></label>
+      <label class="field">Columns <input id="cols" type="number" min="2" max="16" value="8"></label>
+      <div class="actions">
+        <button id="build-grid">Build grid</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>2. Workstations</h2>
+      <p><b id="bay-count">0</b> of <span id="bay-total">49</span> possible workstation bays selected.</p>
+      <div class="actions">
+        <button class="secondary" id="select-all">Select all bays</button>
+        <button class="secondary" id="clear-bays">Clear</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>3. Agents & Resources</h2>
+      <label class="field">Number of agents <input id="agents" type="number" min="1" max="6" value="4"></label>
+      <label class="field">Resources per agent <input id="capacity" type="number" min="1" max="20" value="3"></label>
+      <label class="field">Random seed <input id="seed" type="number" value="42"></label>
+      <label class="field">Route mode
+        <select id="route-mode">
+          <option value="nearest">Built-in: nearest next bay</option>
+          <option value="sweep">Built-in: left-to-right sweep</option>
+          <option value="ext:regret">vrp_rpd: Max Regret</option>
+          <option value="ext:nn">vrp_rpd: Nearest Neighbor</option>
+          <option value="ext:defer">vrp_rpd: Greedy Defer</option>
+          <option value="ext:heuristics">vrp_rpd: best of 3 heuristics</option>
+          <option value="ext:brkga">vrp_rpd: BRKGA</option>
+        </select>
+      </label>
+      <label class="field">VRP-RPD pickups (return processed parts)
+        <input id="rpd-mode" type="checkbox">
+      </label>
+      <label class="field">Processing time (sec)
+        <input id="process-sec" type="number" min="0" max="600" value="15">
+      </label>
+      <label class="field">Import plan (external solver JSON)
+        <input id="import-plan" type="file" accept=".json,application/json">
+      </label>
+      <div class="actions">
+        <button id="solve">Solve</button>
+        <button class="secondary" id="download-json" disabled>Download JSON</button>
+      </div>
+      <p id="capacity-warning" class="warning" style="display:none;"></p>
+    </div>
+  </section>
+
+  <section class="panel grid-panel">
+    <h2 style="position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap;">Grid, Depot, Workstations, and Routes</h2>
+    <div id="map-key" aria-hidden="true">
+      <span class="mk-item"><i class="mk-dot" style="background:#dc2626;"></i>Intersection</span>
+      <span class="mk-item"><i class="mk-dot" style="background:#facc15;"></i>Workstation / entry</span>
+      <span class="mk-item"><i class="mk-dot" style="background:#2563eb;"></i>Depot slot</span>
+      <span class="mk-item"><i class="mk-dot" style="background:#111827;"></i>Node 0</span>
+      <span class="mk-item"><i class="mk-line" style="background:#8a98aa;"></i>Grid edge</span>
+      <span class="mk-item"><i class="mk-line" style="background:#16a34a;"></i>Entry &rarr; work</span>
+      <span class="mk-item"><i class="mk-line" style="background:#2563eb;"></i>Route: A1</span>
+      <span class="mk-item"><i class="mk-line" style="background:#dc2626;"></i>Route: A2</span>
+      <span class="mk-item"><i class="mk-line" style="background:#16a34a;"></i>Route: A3</span>
+      <span class="mk-item"><i class="mk-line" style="background:#9333ea;"></i>Route: A4</span>
+      <span class="mk-item"><i class="mk-dot" style="background:#f97316;"></i>Congestion</span>
+      <span class="mk-item"><i class="mk-dot" style="background:#ef4444;"></i>Collision</span>
+    </div>
+    <img id="live-feed" alt="annotated camera view (run apriltag_localize.py --stream)">
+    <svg id="grid-svg" viewBox="0 0 820 760" role="img" aria-label="AGV grid visualization"></svg>
+    <div class="sim-controls v-plan">
+      <button class="secondary" id="play-route">Play</button>
+      <button class="secondary" id="step-route">Step</button>
+      <select id="play-speed" title="Playback speed">
+        <option value="0.5">0.5x</option>
+        <option value="1" selected>1x</option>
+        <option value="1.25">1.25x</option>
+        <option value="1.5">1.5x</option>
+        <option value="1.75">1.75x</option>
+        <option value="2">2x</option>
+        <option value="3">3x</option>
+        <option value="5">5x</option>
+        <option value="10">10x</option>
+      </select>
+      <input id="timestep-slider" type="range" min="0" max="0" value="0" style="display:none;">
+      <span id="sim-time" class="muted">t=0 / 0</span>
+    </div>
+    <div id="timeline-toggles" class="v-plan"></div>
+    <div class="v-plan" style="position:relative;">
+      <svg id="event-timeline" viewBox="0 0 1000 70" preserveAspectRatio="none" role="img" aria-label="Simulation event timeline"></svg>
+      <div id="timeline-tooltip"></div>
+    </div>
+    <div class="actions v-plan" style="margin-top:8px;">
+      <button class="secondary" id="open-report" disabled>Route report</button>
+    </div>
+    <div id="route-legend" class="route-legend v-plan-run"></div>
+    <div id="sim-commands" class="sim-commands v-plan"></div>
+    <div class="agent-tools v-plan-run">
+      <div class="tool-row v-run">
+        <span class="tool-label">Mode</span>
+        <button class="secondary active" id="mode-sim">Sim</button>
+        <button class="secondary" id="mode-real">Real</button>
+        <button class="secondary" id="mode-live">Live</button>
+        <span id="real-status" class="mode-status muted">Simulated playback</span>
+      </div>
+      <div class="tool-row">
+        <span class="tool-label">Visible</span>
+        <span id="agent-visibility-controls" class="tool-row"></span>
+      </div>
+      <div class="tool-row v-plan">
+        <span class="tool-label">Edit</span>
+        <span id="agent-edit-controls" class="tool-row"></span>
+        <button class="secondary" id="toggle-edit-route">Edit path</button>
+        <button class="secondary" id="clear-route-edit">Clear edits</button>
+      </div>
+      <p id="edit-hint" class="muted v-plan" style="margin:0;">Select an AGV, turn on Edit path, then click intersections to add route waypoints.</p>
+    </div>
+    <div class="agent-tools v-run">
+      <div class="tool-row">
+        <span class="tool-label">Dispatch</span>
+        <button class="secondary" id="dispatch-generate">Generate commands</button>
+        <button class="secondary" id="dispatch-start" disabled>Start</button>
+        <button class="secondary" id="dispatch-hold" disabled>Hold</button>
+        <button class="secondary" id="dispatch-abort" disabled>Abort (STOP all)</button>
+        <span id="dispatch-status" class="mode-status muted">off</span>
+      </div>
+      <p class="muted" style="margin:0;">Live dispatch over rosbridge: solve, generate commands, review the
+        per-robot lists (especially the depot exit), then Start. Every command passes the deterministic
+        conflict gate + vision checks; Hold pauses issuing, Abort sends STOP to all robots.</p>
+      <div class="tool-row">
+        <span class="tool-label">Drive mode</span>
+        <button class="secondary" id="drive-mode-color">Color sensor + camera safety</button>
+        <button class="secondary" id="drive-mode-vision">Camera only</button>
+        <span id="drive-mode-status" class="mode-status muted"></span>
+      </div>
+      <div class="tool-row">
+        <span class="tool-label">Turn+drive fusion</span>
+        <button class="secondary" id="fuse-turns-toggle" disabled>Fuse turns (disabled)</button>
+        <span id="fuse-turns-status" class="mode-status muted">disabled — caused 2 collisions 2026-07-31</span>
+      </div>
+      <div class="tool-row">
+        <span class="tool-label">Supervisor</span>
+        <button class="secondary" id="sup-send">Send mission</button>
+        <button class="secondary" id="sup-start">Start</button>
+        <button class="secondary" id="sup-abort">Abort</button>
+        <span id="sup-status" class="mode-status muted">no mission sent</span>
+      </div>
+      <p class="muted" style="margin:0;">Preferred path: hand the mission to the fleet supervisor on the
+        Linux laptop (run it with <b>--listen</b>) — it dispatches natively with lower latency, the
+        BUSY-ack protocol, and the same conflict + vision gates. The browser Start above is the fallback.
+        <b>Drive mode</b> picks how the supervisor moves each robot once a mission starts: <b>Color sensor +
+        camera safety</b> dispatches the original FORWARD_UNTIL_&lt;color&gt;/turn command vocabulary, with
+        vision only monitoring/veto (the long-proven path). <b>Camera only</b> dispatches pure AprilTag
+        position/heading control (drive_leg/turn_to_heading) and never uses the color sensor at all. Chosen
+        per mission, sent with it — no supervisor restart needed to switch.
+        <b>Turn+drive fusion</b> is DISABLED — built 2026-07-31 to skip the brake/settle between a turn
+        and the following drive, but caused two real hardware collisions the same day (the arrival
+        square-up after a fused turn+drive pointed the wrong way, since it only knew the heading it had
+        just driven, not the heading of the leg after that). The supervisor forces it off unconditionally
+        regardless of what's sent here. See turn_then_drive_leg()'s docstring in camera_grid_navigate.py
+        for the full history before ever re-enabling it.</p>
+      <div id="sup-robot-status" class="muted" style="font-family:monospace; white-space:pre; font-size:11px;"></div>
+      <div id="dispatch-editors"></div>
+      <div id="dispatch-robot-status" class="muted" style="font-family:monospace; white-space:pre; font-size:11px;"></div>
+      <pre id="dispatch-log" style="max-height:180px; overflow:auto; background:#10151d; color:#9ecb9e; padding:6px; font-size:11px; display:none; margin:4px 0 0;"></pre>
+      <div class="decision-log-panel">
+        <div class="tool-row" style="justify-content:space-between;">
+          <span class="tool-label">Decision Log</span>
+          <span style="display:flex; gap:6px; align-items:center;">
+            <span id="decision-log-count" class="muted" style="font-size:11px;">0 event(s)</span>
+            <button class="secondary" id="decision-log-save">Save</button>
+            <button class="secondary" id="decision-log-clear">Clear</button>
+          </span>
+        </div>
+        <div id="decision-log"></div>
+        <p class="muted" style="margin:2px 0 0; font-size:11px;">Live feed from the fleet supervisor
+          over rosbridge. Save downloads this run as .json + .txt; Clear resets it for the next run.</p>
+      </div>
+    </div>
+    <div class="legend">
+      <span><i class="swatch" style="background:#ffedd5;border:1px solid #f97316;"></i>Bay: awaiting delivery</span>
+      <span><i class="swatch" style="background:#dbeafe;border:1px solid #3b82f6;"></i>Bay: processing</span>
+      <span><i class="swatch" style="background:#dcfce7;border:1px solid #4ade80;"></i>Bay: ready for pickup</span>
+      <span><i class="swatch" style="background:#bbf7d0;border:1px solid #15803d;"></i>Bay: complete</span>
+    </div>
+  </section>
+
+  <section class="right v-plan-run">
+    <div class="panel">
+      <div class="side-tabs" id="side-tabs">
+        <button class="secondary active" data-tab="routes">Agent Routes</button>
+        <button class="secondary" data-tab="bays">Selected Bays</button>
+        <button class="secondary" data-tab="conflicts">Events / Conflicts</button>
+        <button class="secondary" data-tab="topics">Robot Topics</button>
+        <button class="secondary" data-tab="ask">Ask</button>
+      </div>
+      <div id="tab-routes" class="side-tab-pane active">
+        <div id="route-list" class="route-list"><p class="muted">Solve to draw complete paths.</p></div>
+      </div>
+      <div id="tab-bays" class="side-tab-pane">
+        <div id="bay-list" class="bay-list"><p class="muted">No workstation bays selected.</p></div>
+      </div>
+      <div id="tab-conflicts" class="side-tab-pane">
+        <div id="conflict-pane"><p class="muted">Solve to evaluate conflicts.</p></div>
+      </div>
+      <div id="tab-topics" class="side-tab-pane">
+        <div id="robot-topic-details"><p class="muted">Click a robot above (or connect Real mode) to see its live rostopic values.</p></div>
+      </div>
+      <!-- Ask: natural-language questions about the LIVE testbed, answered by
+           a local VLM (Ollama). Every turn sends the current measured state
+           plus a freshly-pulled camera frame -- see vlm_chat.py. Entirely
+           additive: with the model or camera down this pane explains why and
+           nothing else on the page is affected. -->
+      <div id="tab-ask" class="side-tab-pane">
+        <div id="vlm-status" class="vlm-status muted">checking assistant...</div>
+        <div id="vlm-log" class="vlm-log">
+          <p class="muted">Ask about the current state of the table — how many
+          robots are tracked, where one is, whether anything looks wrong.
+          Measured positions come from AprilTag tracking; the model is told
+          not to contradict them.</p>
+        </div>
+        <div class="vlm-input">
+          <textarea id="vlm-question" rows="2" placeholder="e.g. Is anything blocking Alvik3?"></textarea>
+          <div class="vlm-actions">
+            <button id="vlm-send">Ask</button>
+            <button class="secondary" id="vlm-clear">Clear</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== 4 · Performance Metrics (Page 4) ====================
+       Backed by the Flask metrics API (app.py + SQLite). Everything inside is
+       populated by static/js/metrics.js; if the backend is unreachable only
+       the unavailable banner shows and the rest of the app is unaffected. -->
+  <section id="metrics-page" class="v-metrics">
+    <div id="metrics-unavailable" class="panel" style="display:none;">
+      <h2>Metrics backend unavailable</h2>
+      <p>Page 4 needs the Flask backend. Start it from the VRP folder with
+        <b>python app.py</b> and open this page at <b>http://localhost:8000/</b>.
+        The Setup, Plan &amp; Simulate, and Run &amp; Monitor pages work without it.</p>
+      <div class="actions"><button class="secondary" id="metrics-retry">Retry connection</button></div>
+    </div>
+    <div id="metrics-body" style="display:none;">
+      <div class="panel">
+        <div class="metrics-current-head">
+          <h2 style="margin:0;">Current Run <span id="metrics-run-badge" class="metrics-badge"></span></h2>
+          <span class="tool-row">
+            <select id="metrics-run-select" title="Pick which run the KPI cards show"></select>
+            <button class="secondary" id="metrics-refresh">Refresh</button>
+          </span>
+        </div>
+        <p id="metrics-current-hint" class="muted" style="margin:8px 0 10px;"></p>
+        <p id="metrics-stuck-run-notice" class="warning" style="display:none; margin:0 0 10px;">
+          This run's status is still recorded as running/created, but no run-completion event has
+          arrived from the supervisor (it may have been lost, or this run predates the metrics
+          integration). <button class="secondary" id="metrics-mark-finished">Mark this run finished</button>
+        </p>
+        <div id="metrics-kpi-cards" class="metrics-kpis"></div>
+      </div>
+      <div class="panel">
+        <h2>Run Filters</h2>
+        <div id="metrics-filters" class="metrics-filters"></div>
+        <div class="actions">
+          <button id="metrics-apply-filters">Apply filters</button>
+          <button class="secondary" id="metrics-clear-filters">Clear</button>
+          <a class="metrics-export-link" id="metrics-export-csv" href="/api/export/runs.csv" download>Export runs CSV</a>
+        </div>
+        <div id="metrics-history"></div>
+      </div>
+      <div class="panel">
+        <div class="side-tabs" id="metrics-tabs"></div>
+        <div id="metrics-tab-content"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="route-modal" class="modal" aria-hidden="true">
+  <div class="modal-card">
+    <div class="modal-header">
+      <div>
+        <h2 style="margin:0;">Route Report</h2>
+        <p style="margin:3px 0 0;">Assignments, exact node routes, second-by-second comparison, and collision risks.</p>
+      </div>
+      <button class="secondary" id="close-report">Close</button>
+    </div>
+    <div id="route-report" class="modal-body"></div>
+  </div>
+</div>
+
+<div id="robot-topic-modal" class="modal" aria-hidden="true">
+  <div class="modal-card" style="width:min(560px, 96vw);">
+    <div class="modal-header">
+      <div>
+        <h2 style="margin:0;" id="robot-topic-modal-title">Robot Topics</h2>
+        <p style="margin:3px 0 0;">Live rostopic values for this robot, updating in real time.</p>
+      </div>
+      <button class="secondary" id="close-robot-topic-modal">Close</button>
+    </div>
+    <div id="robot-topic-modal-body" class="modal-body"></div>
+  </div>
+</div>
+
+<script src="/static/js/solver.js"></script>
+<script src="/static/js/live-monitor.js"></script>
+<script src="/static/js/metrics.js"></script>
+<script src="/static/js/vlm-chat.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

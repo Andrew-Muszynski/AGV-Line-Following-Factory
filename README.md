@@ -160,15 +160,19 @@ tag to metric table coordinates (inches) plus yaw, using the table-corner
 reference tags 20-23 (20=bottom-left origin corner, 21=bottom-right,
 22=top-left, 23=top-right; tag 20 center is 2.75 in from both edges, 20->23
 center offset is 91.5 in in x and y). Because the corner tags share the robot
-tags' plane, a single image->table homography gives metric positions with no
-camera intrinsics; lens distortion is currently ignored. It runs with just the
+tags' physical plane, a single image->table homography gives metric positions.
+Reference tags on the table below elevated robot tags violate that assumption
+and introduce location-dependent parallax error; raise references to robot-tag
+height. Optional measured lens correction is available through
+`--camera-calibration`; it is disabled by default. It runs with just the
 two diagonal tags 20+23 (weakest accuracy near the empty 21/22 corners) and
 automatically tightens up when all four are placed. With
 `--rosbridge <ros2-laptop-ip>` it publishes each robot's pose into the ROS2
 graph through the rosbridge websocket (the same route the solver HTML's Real
 mode uses; needs `roslibpy` on this machine, `rosbridge_suite` on the ROS2
 laptop): one `std_msgs/String` topic per robot, `/<Name>_vision_pose`, JSON
-`{"x_in", "y_in", "yaw_deg", "grid_x", "grid_y", "tag_id", "ms"}`, plus
+`{"x_in", "y_in", "yaw_deg", "grid_x", "grid_y", "tag_id", "ms"}` plus
+additive raw-yaw/filter metadata, and
 `/vision_calib` health. Grid coordinates are continuous cells relative to
 node 1 (tape-measured at 13.5, 16.75 in from the table edges), 10 in pitch,
 axes parallel to the table.

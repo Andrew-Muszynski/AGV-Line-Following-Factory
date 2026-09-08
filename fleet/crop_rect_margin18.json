@@ -1,0 +1,20 @@
+{
+  "full_width": 1920,
+  "full_height": 1080,
+  "x0": 0,
+  "y0": 0,
+  "x1": 1920,
+  "y1": 1080,
+  "crop_width": 1920,
+  "crop_height": 1080,
+  "margin_in": 18.0,
+  "tag_size_in": 3.835,
+  "rms_in": 0.060622045519681526,
+  "ref_tag_ids": [
+    20,
+    21,
+    22,
+    23
+  ],
+  "measured_at": "2026-08-05T18:49:06"
+}

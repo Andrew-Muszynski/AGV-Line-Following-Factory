@@ -60,3 +60,61 @@ vrp_rpd/
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# Page-4 metrics backend: local database + telemetry captures (raw run data
+# stays on this machine; schema.sql recreates the structure anywhere)
+data/
+backups/
+
+# ---------------------------------------------------------------------------
+# Added 2026-09-08 with the VLM-integration branch. Everything below is either
+# private, regenerable, or too large for GitHub -- the working tree holds
+# ~6 GB of run footage and ~1.7 GB of slide decks that must never be pushed.
+# ---------------------------------------------------------------------------
+
+# Screen recordings of runs (VRP/PROGRESS, VRP/SUCCESS) -- 6 GB, kept local
+VRP/
+*.mp4
+*.mov
+
+# Thesis slide decks: private drafts, and 350 MB - 990 MB each, well over
+# GitHub's 100 MB per-file limit
+*.pptx
+*.ppt
+
+# Captured imagery: calibration frames, VLM sample frames, screenshots
+*.png
+*.jpg
+*.jpeg
+calib_frames/
+calib_frames_v2/
+tools/vlm_samples/
+
+# Benchmark result dumps -- regenerate with tools/vlm_bench.py
+tools/vlm_results_*.json
+
+# Per-run output directories, bench transcripts, and loose measurements
+fleet_yaw_stress_*/
+lighting_pass.csv
+TurnSpeedBenchAlvik6.txt
+Blue stickers then Red stickers.txt
+
+# Working notes and incident write-ups (same policy as the other local notes)
+APRILTAG_LOCALIZATION_RELIABILITY.md
+LOCALIZATION_EXPERIMENT_MODES.md
+METRICS_PAGE_2026-08-20.md
+ROTATE_REL_HAZARD_2026-08-20.md
+
+# Backup copy of the Linux-laptop tree. It duplicates the advisor files this
+# repo deliberately keeps private (ollama_advisor, dispatch_advisor,
+# fleetSupervisor), and the rules above are anchored to fleet/ so they would
+# not catch these copies.
+failsafe_linux_laptop/
+
+# Vendored pupil_apriltags fork: the build tree contains a nested .git repo,
+# which git would turn into a broken submodule. The patch and build script
+# above it are kept.
+third_party/*/build/
+
+# Superseded sketches and ROS nodes, kept locally for reference
+archive/

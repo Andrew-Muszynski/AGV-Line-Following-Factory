@@ -1,0 +1,170 @@
+diff --git a/apriltag.c b/apriltag.c
+index ae96cf9..7dc4013 100644
+--- a/apriltag.c
++++ b/apriltag.c
+@@ -415,6 +415,33 @@ struct evaluate_quad_ret
+     struct quick_decode_entry e;
+ };
+ 
++static uint64_t rejected_homography_count = 0;
++static pthread_mutex_t rejected_homography_mutex = PTHREAD_MUTEX_INITIALIZER;
++
++static matd_t *reject_homography(void)
++{
++    pthread_mutex_lock(&rejected_homography_mutex);
++    rejected_homography_count++;
++    pthread_mutex_unlock(&rejected_homography_mutex);
++    return NULL;
++}
++
++uint64_t apriltag_get_rejected_homography_count(void)
++{
++    uint64_t count;
++    pthread_mutex_lock(&rejected_homography_mutex);
++    count = rejected_homography_count;
++    pthread_mutex_unlock(&rejected_homography_mutex);
++    return count;
++}
++
++void apriltag_reset_rejected_homography_count(void)
++{
++    pthread_mutex_lock(&rejected_homography_mutex);
++    rejected_homography_count = 0;
++    pthread_mutex_unlock(&rejected_homography_mutex);
++}
++
+ matd_t* homography_compute2(double c[4][4]) {
+     double A[] =  {
+             c[0][0], c[0][1], 1,       0,       0, 0, -c[0][0]*c[0][2], -c[0][1]*c[0][2], c[0][2],
+@@ -442,9 +469,11 @@ matd_t* homography_compute2(double c[4][4]) {
+             }
+         }
+ 
+-        if (max_val < epsilon) {
+-            fprintf(stderr, "WRN: Matrix is singular.\n");
+-        }
++        // A degenerate candidate is expected occasionally in clutter. The
++        // legacy implementation warned but then indexed row -1 and divided
++        // by the invalid pivot. Reject it before elimination instead.
++        if (max_val_idx < 0 || !isfinite(max_val) || max_val < epsilon)
++            return reject_homography();
+ 
+         // Swap to get best row.
+         if (max_val_idx != col) {
+@@ -458,24 +487,51 @@ matd_t* homography_compute2(double c[4][4]) {
+         // Do eliminate.
+         for (int i = col + 1; i < 8; i++) {
+             double f = A[i*9 + col]/A[col*9 + col];
++            if (!isfinite(f))
++                return reject_homography();
+             A[i*9 + col] = 0;
+             for (int j = col + 1; j < 9; j++) {
+                 A[i*9 + j] -= f*A[col*9 + j];
++                if (!isfinite(A[i*9 + j]))
++                    return reject_homography();
+             }
+         }
+     }
+ 
+     // Back solve.
+     for (int col = 7; col >=0; col--) {
++        if (!isfinite(A[col*9 + col]) || fabs(A[col*9 + col]) < epsilon)
++            return reject_homography();
+         double sum = 0;
+         for (int i = col + 1; i < 8; i++) {
+             sum += A[col*9 + i]*A[i*9 + 8];
+         }
+         A[col*9 + 8] = (A[col*9 + 8] - sum)/A[col*9 + col];
++        if (!isfinite(A[col*9 + 8]))
++            return reject_homography();
+     }
+     return matd_create_data(3, 3, (double[]) { A[8], A[17], A[26], A[35], A[44], A[53], A[62], A[71], 1 });
+ }
+ 
++int apriltag_validate_homography_correspondences(const double *corr_flat)
++{
++    double corr[4][4];
++    if (corr_flat == NULL)
++        return 0;
++    memcpy(corr, corr_flat, sizeof(corr));
++    matd_t *H = homography_compute2(corr);
++    if (H == NULL)
++        return 0;
++    for (int i = 0; i < 9; i++) {
++        if (!isfinite(H->data[i])) {
++            matd_destroy(H);
++            return 0;
++        }
++    }
++    matd_destroy(H);
++    return 1;
++}
++
+ // returns non-zero if an error occurs (i.e., H has no inverse)
+ int quad_update_homographies(struct quad *quad)
+ {
+@@ -490,20 +546,30 @@ int quad_update_homographies(struct quad *quad)
+         corr_arr[i][3] = quad->p[i][1];
+     }
+ 
+-    if (quad->H)
++    if (quad->H) {
+         matd_destroy(quad->H);
+-    if (quad->Hinv)
++        quad->H = NULL;
++    }
++    if (quad->Hinv) {
+         matd_destroy(quad->Hinv);
++        quad->Hinv = NULL;
++    }
+ 
+     // XXX Tunable
+     quad->H = homography_compute2(corr_arr);
+ 
++    if (quad->H == NULL)
++        return -1;
++
+     quad->Hinv = matd_inverse(quad->H);
+ 
+-    if (quad->H && quad->Hinv)
+-        return 0;
++    if (quad->Hinv == NULL) {
++        matd_destroy(quad->H);
++        quad->H = NULL;
++        return -1;
++    }
+ 
+-    return -1;
++    return 0;
+ }
+ 
+ double value_for_pixel(image_u8_t *im, double px, double py) {
+diff --git a/apriltag.h b/apriltag.h
+index e5abcd7..ae74876 100644
+--- a/apriltag.h
++++ b/apriltag.h
+@@ -32,6 +32,7 @@ extern "C" {
+ #endif
+ 
+ #include <stdlib.h>
++#include <stdint.h>
+ 
+ #include "common/matd.h"
+ #include "common/image_u8.h"
+@@ -271,6 +272,16 @@ void apriltag_detections_destroy(zarray_t *detections);
+ // Caller is responsible for calling image_u8_destroy on the image
+ image_u8_t *apriltag_to_image(apriltag_family_t *fam, int idx);
+ 
++// Diagnostics for safely rejected, degenerate candidate homographies.
++// These are process-wide because candidate construction runs in the shared
++// detector backend, before a candidate has decoded to a tag ID.
++uint64_t apriltag_get_rejected_homography_count(void);
++void apriltag_reset_rejected_homography_count(void);
++
++// Test hook: four rows of (source_x, source_y, destination_x, destination_y).
++// Returns 1 only when homography construction produces a finite matrix.
++int apriltag_validate_homography_correspondences(const double *corr_flat);
++
+ #ifdef __cplusplus
+ }
+ #endif

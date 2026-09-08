@@ -15,7 +15,8 @@
 //   BUSY-acked, same vocabulary as AGV_Factory_color_pose.ino.
 // <ROBOT_NAME>_pose      (publisher), e.g. Alvik1_pose
 //   JSON string: {"x":cm,"y":cm,"yaw":deg,"battery":pct,"ms":millis}
-//   Published every POSE_PERIOD_MS from alvik.get_pose() / get_battery_charge().
+//   Published every POSE_PERIOD_MS when idle/color-driving and every
+//   POSE_CONTROL_PERIOD_MS in WHEEL_FOLLOW_MODE.
 // <ROBOT_NAME>_color     (publisher), e.g. Alvik1_color
 //   JSON string: {"r":0..1,"g":0..1,"b":0..1,"h":deg,"s":0..1,"v":0..1,
 //                 "color_label":"RED|YELLOW|BLUE|NONE","ms":millis}
@@ -23,10 +24,10 @@
 // <ROBOT_NAME>_wheel_cmd (subscriber), e.g. Alvik1_wheel_cmd — NEW.
 //   Plain-text "<left_rpm> <right_rpm>", applied immediately, no ack. Only
 //   has effect in STATE_WHEEL_FOLLOW (entered via the WHEEL_FOLLOW_MODE
-//   command on <ROBOT_NAME>_cmd); ignored otherwise. A watchdog
-//   (WHEEL_CMD_TIMEOUT_MS) brakes and exits the mode if fresh setpoints stop
-//   arriving, so a stalled/crashed off-board controller or a dropped WiFi
-//   link can't leave the robot spinning at its last commanded speed.
+//   command on <ROBOT_NAME>_cmd); ignored otherwise. A watchdog brakes after
+//   WHEEL_CMD_BRAKE_MS and exits the mode after WHEEL_CMD_ABORT_MS if fresh
+//   setpoints stop arriving, so a stalled/crashed off-board controller or a
+//   dropped WiFi link can't leave the robot spinning at its last speed.
 //
 // "DWELL" waits WORKSTATION_WAIT_MS (2000ms). "DWELL <ms>" overrides the wait
 // (clamped to [MIN_DWELL_MS, MAX_DWELL_MS]) — lets a supervisor lengthen or
@@ -138,6 +139,12 @@ unsigned long last_color_ms = 0;
 int consecutive_publish_failures = 0;
 const int PUBLISH_FAILURE_REINIT_THRESHOLD = 5;
 const unsigned long POSE_PERIOD_MS = 300;
+// Encoder/camera-assisted position-target control needs fresh odometry while
+// wheel setpoints are streaming. 300 ms is acceptable idle telemetry but can
+// move the robot several inches between control observations at cruise speed.
+// Raise only the active WHEEL_FOLLOW rate so ordinary color/tape missions keep
+// their existing network load and timing.
+const unsigned long POSE_CONTROL_PERIOD_MS = 50;
 const unsigned long COLOR_PERIOD_MS = 150;
 
 // =============================================================================
@@ -156,54 +163,21 @@ const float YAW_TOLERANCE = 1.0f; // was 2.0 -- tighter stop shrinks the residua
 const float TURN_MIN_SPEED = 18.0f;  //possibly lower this
 const float TURN_MAX_SPEED = 60.0f; // was 20.0
 const unsigned long TURN_CONTROL_MS = 5;
-// ROTATE_REL completion timing (added 2026-07-30): alvik.rotate()'s own
-// is_target_reached() ack was tried first and did NOT reliably fire on
-// real hardware -- two separate --rotate-test runs hung completely (LED
-// frozen, zero ROS traffic, robot unresponsive to GET_STATUS, required
-// power-cycle) even after removing a suspected alvik.brake() race. The
-// ONLY pattern found in this codebase that's actually bench-verified
-// working with alvik.rotate(..., false) is driveTo.ino's (Arduino Alvik
-// examples): fire the non-blocking rotate(), then just WAIT a fixed
-// duration without ever checking is_target_reached() at all (it pairs
-// every rotate() call with an immediate delay(200-500)). ROTATE_REL
-// reproduces that same proven approach, but with a non-blocking millis()
-// deadline (rotate_rel_done_ms) instead of delay(), per the no-delay()
-// rule -- see STATE_ROTATE_REL in loop(). ROTATE_DEG_PER_SEC matches the
-// library's own internal estimate (MOTOR_CONTROL_DEG_S in definitions.h,
-// used by rotate()'s own now-unused blocking-mode wait_for_target() call)
-// -- not independently measured on this hardware yet. If ROTATE_REL turns
-// consistently finish moving well before/after this deadline once tested,
-// re-derive this from real timing instead of trusting the library's own
-// assumed rate.
-// ROTATE_DEG_PER_SEC RE-MEASURED 2026-07-30 from real --rotate-test data
-// (Alvik1, 4 consecutive runs, 12/12 turns, no hangs): final_error scaled
-// with commanded angle -- small turns (7-95deg) landed within 2.4-4.6deg,
-// but the large ~177-179deg turn landed at 7.3-7.6deg EVERY run, always
-// the worst of the three. ack_after for those large turns (2.62-3.03s,
-// mean 2.77s) matched the OLD 100deg/s+500ms-margin estimate almost
-// exactly (177.5/100 + 0.5 = 2.275s predicted vs. ~2.27s actual elapsed
-// before margin) -- so the timer fired exactly when it was told to, the
-// robot just hadn't finished rotating yet. Back-solving from the
-// consistent ~7.5deg shortfall on ~177.5deg turns implies a real rate
-// closer to ~90-96deg/s, not the library's assumed 100. Lowered to 85 for
-// margin (errs toward MORE wait time, not less -- a slightly-late timer
-// costs nothing but a fraction of a second; a slightly-early one is the
-// failure mode that produced the original 7.5deg errors).
-//
-// REVERTED to 100 same day: after lowering to 85, 3 separate test
-// invocations ALL hung completely (LED frozen, zero ROS traffic,
-// unresponsive to GET_STATUS) on the very first ROTATE_REL of the run,
-// at SMALL commanded angles (+0.9, -90.3, -2.6deg) -- nothing like the
-// large-angle-specific shortfall this change was meant to fix, and this
-// constant only INCREASES wait time as it's lowered (1000*|deg|/rate
-// grows as rate shrinks), so it should never make a hang MORE likely on
-// its own. Reverted to isolate the variable: this was the ONLY code
-// change between a confirmed 12/12-success streak and these 3 failures.
-// If hangs stop at 100, the real cause is still unidentified but at
-// least decoupled from this constant -- do not re-lower it without
-// re-testing 100 first and confirming the hangs are unrelated.
+// ROTATE_REL completion: is_target_reached() polling previously caused full
+// firmware hangs, while a blind duration could declare completion before a
+// long rotation physically finished. Keep alvik.rotate(..., false), but use
+// the independently refreshed onboard IMU to require a stable target before
+// braking and acknowledging completion. ROTATE_DEG_PER_SEC is now used only
+// to set a hard onboard-verification deadline; it never declares success.
 const float ROTATE_DEG_PER_SEC = 100.0f;
-const unsigned long ROTATE_REL_MARGIN_MS = 500; // generous fixed pad on top of the estimate
+// ROTATE_REL now completes on an IMU-confirmed target, not this estimate.
+// The estimate is retained only as a hard onboard-verification deadline if
+// the motor controller never reaches/stabilizes near the requested heading.
+const unsigned long ROTATE_REL_TARGET_TIMEOUT_MS = 2500;
+const unsigned long ROTATE_REL_MIN_BRAKE_DELAY_MS = 250;
+const unsigned long ROTATE_REL_TARGET_STABLE_MS = 120;
+const float ROTATE_REL_MAX_BRAKE_TOLERANCE_DEG = 8.0f;
+const float ROTATE_REL_STABLE_HEADING_TOLERANCE_DEG = 1.0f;
 const int MARKER_STABLE_SAMPLES = 3;
 // v2.2: 1500 -> 400 ms, tuned on the real table (2026-07-14): 400 stops the
 // robot (~4.3 cm blind travel) before the table edge at the one place a bad
@@ -230,11 +204,16 @@ const unsigned long MIN_DWELL_MS = 200;
 const unsigned long MAX_DWELL_MS = 30000;
 const unsigned long WORKSTATION_BLINK_MS = 250;
 
-// WHEEL_FOLLOW_MODE watchdog: brake if no fresh sub_wheel_cmd setpoint
-// arrives within this window. Well above one publish period even at 60 Hz
-// (~17 ms) so ordinary jitter never false-trips it, but still short enough
-// to catch a genuinely stalled controller or dropped link quickly.
-const unsigned long WHEEL_CMD_TIMEOUT_MS = 300;
+// WHEEL_FOLLOW_MODE watchdog has two stages. The first missing-command
+// threshold still applies an immediate physical brake, preserving the
+// original fail-safe response. A short best-effort DDS/WiFi interruption is
+// allowed to recover while the robot remains stopped; only a sustained gap
+// exits the mode and aborts the route. Real log evidence (run_1527.log): the
+// robot measured a 302 ms receive gap even though Python had published only
+// 20 ms earlier, proving the 300 ms terminal error could false-trip while the
+// controller itself was healthy.
+const unsigned long WHEEL_CMD_BRAKE_MS = 300;
+const unsigned long WHEEL_CMD_ABORT_MS = 1000;
 // Hard speed cap applied to whatever the off-board controller requests, so a
 // runaway PID (bad gains, bad yaw reading) can't command an unbounded speed.
 // Set to the robot's true mechanical max (~70 RPM per bench testing) --
@@ -278,14 +257,13 @@ enum AGVState {
  // 4-54deg with NO consistent direction or magnitude at ANY tested RPM
  // (10/15/20/60) -- not a tunable brake-lead problem, a fundamentally
  // unreliable control loop over WiFi+DDS. alvik.rotate() runs closed-loop
- // on Alvik's own motor-control MCU (separate UART protocol with its own
- // ack/feedback, is_target_reached()) with zero network round-trip in the
+ // on Alvik's own motor-control MCU (separate UART protocol) with zero
+ // network round-trip in the
  // rotation itself, which is what ROTATE_TO/updateTurn() and
  // WHEEL_FOLLOW_MODE's turn_to_heading() both lack. NOTE: completion is
- // detected via a millis() TIMER (ROTATE_DEG_PER_SEC, rotate_rel_done_ms),
- // NOT by polling is_target_reached() -- that was tried first and caused
- // real hardware hangs; see ROTATE_DEG_PER_SEC's comment and
- // STATE_ROTATE_REL in loop() for the full story.
+ // detected from a stable onboard IMU target, NOT by polling
+ // is_target_reached() -- that was tried first and caused real hardware
+ // hangs. The timer is now only a hard onboard-verification deadline.
  STATE_ROTATE_REL,
  STATE_ERROR
 };
@@ -311,20 +289,27 @@ float turn_start_yaw = 0.0f;
 // heading" is always fresh and comes from one place.
 float robot_heading_deg = 0.0f;
 // WHEEL_FOLLOW_MODE: last speeds received on sub_wheel_cmd, and when. No ack
-// protocol backs this stream, so a watchdog (WHEEL_CMD_TIMEOUT_MS, checked in
-// the state-machine case) brakes the robot if fresh setpoints stop arriving
+// protocol backs this stream, so the two-stage watchdog checked in the state
+// machine brakes first and terminates the mode if fresh setpoints stay absent
 // -- a stalled/crashed off-board controller or a dropped WiFi link must not
 // leave the robot spinning at its last commanded speed indefinitely.
 float wheel_cmd_left_rpm = 0.0f;
 float wheel_cmd_right_rpm = 0.0f;
 unsigned long wheel_cmd_last_ms = 0;
+bool wheel_cmd_watchdog_braked = false;
+unsigned long wheel_cmd_watchdog_max_gap_ms = 0;
 unsigned long line_lost_since_ms = 0;
 bool line_was_lost = false;
 unsigned long last_turn_control_ms = 0;
 unsigned long marker_ignore_until_ms = 0; // ignore color right after a command starts
 unsigned long advance_until_ms = 0; // keep advancing until this time after detecting a color
 unsigned long dwell_until_ms = 0; // wait at the workstation until this time
-unsigned long rotate_rel_done_ms = 0; // ROTATE_REL considered complete at this time (see STATE_ROTATE_REL)
+unsigned long rotate_rel_done_ms = 0; // onboard-verification deadline, never success
+unsigned long rotate_rel_min_brake_ms = 0;
+unsigned long rotate_rel_in_tolerance_since_ms = 0;
+float rotate_rel_target_yaw = 0.0f;
+float rotate_rel_brake_tolerance_deg = 1.0f;
+float rotate_rel_stable_heading = 0.0f;
 
 const unsigned long CMD_MARKER_IGNORE_MS = 700; // ms to ignore color after receiving a command
 
@@ -391,7 +376,9 @@ void publish_status(const char* txt) {
 // =============================================================================
 void publish_pose() {
  if (!ros_ready) return;
- if (millis() - last_pose_ms < POSE_PERIOD_MS) return;
+ unsigned long pose_period = (current_state == STATE_WHEEL_FOLLOW)
+   ? POSE_CONTROL_PERIOD_MS : POSE_PERIOD_MS;
+ if (millis() - last_pose_ms < pose_period) return;
  last_pose_ms = millis();
 
  float x, y, yaw;
@@ -886,17 +873,29 @@ void cmdCallback(const void* msgin) {
  // short version: it never reliably acked on real hardware, and the only
  // proven-working alvik.rotate() usage in this codebase (driveTo.ino)
  // never polls it either, always just waits a fixed duration instead.
- // rotate_rel_done_ms below is that same approach, non-blocking.
+ // Completion below is IMU-target-gated and non-blocking; its timer is only
+ // a hard onboard-verification deadline.
  float rel_deg = cmd.substring(11).toFloat();
  reset_marker_stability();
  marker_ignore_until_ms = millis() + getMarkerIgnoreMs();
  char rr_buf[32];
  snprintf(rr_buf, sizeof(rr_buf), "BUSY ROTATE_REL %.1f", rel_deg);
  publish_status(rr_buf);
- alvik.rotate(rel_deg, DEG, false);  // non-blocking call; completion is timed, not acked -- see below
+ update_robot_heading();
+ rotate_rel_target_yaw = normalizeYaw(robot_heading_deg + rel_deg);
+ // Small camera corrections need a correspondingly tight gate; a fixed
+ // broad tolerance would otherwise declare a 2-4 degree command complete
+ // before it moved. Full grid turns may use up to 8 degrees, leaving only a
+ // minor residual for the deliberate camera correction phase.
+ rotate_rel_brake_tolerance_deg = constrain(
+   0.25f * fabsf(rel_deg), 1.0f, ROTATE_REL_MAX_BRAKE_TOLERANCE_DEG);
+ rotate_rel_in_tolerance_since_ms = 0;
+ rotate_rel_stable_heading = robot_heading_deg;
+ alvik.rotate(rel_deg, DEG, false);  // non-blocking; completion is IMU-target-gated below
+ rotate_rel_min_brake_ms = millis() + ROTATE_REL_MIN_BRAKE_DELAY_MS;
  rotate_rel_done_ms = millis()
      + (unsigned long)(1000.0f * fabsf(rel_deg) / ROTATE_DEG_PER_SEC)
-     + ROTATE_REL_MARGIN_MS;
+     + ROTATE_REL_TARGET_TIMEOUT_MS;
  current_state = STATE_ROTATE_REL; is_busy = true;
 
  } else if (cmd == "DWELL" || cmd.startsWith("DWELL ")) {
@@ -921,11 +920,37 @@ void cmdCallback(const void* msgin) {
  alvik.brake();
  wheel_cmd_left_rpm = 0.0f; wheel_cmd_right_rpm = 0.0f;
  wheel_cmd_last_ms = millis();
+ wheel_cmd_watchdog_braked = false;
+ wheel_cmd_watchdog_max_gap_ms = 0;
  publish_status("BUSY WHEEL_FOLLOW_MODE");
  current_state = STATE_WHEEL_FOLLOW; is_busy = true;
 
  } else if (cmd == "STOP") {
+ // DO NOT try to cancel an in-flight rotate from here with
+ // alvik.rotate(0, DEG, false). That was tried 2026-08-25 (incident #7)
+ // and BENCH-MEASURED AS A CLEAR REGRESSION: --stop-interrupt-test went
+ // from 2/9 stopped cleanly (4-21deg overrun) to 0/9 (8-61deg overrun),
+ // Alvik1, same 9 trials. Two reasons, both now confirmed:
+ //
+ // 1. Arduino_Alvik::rotate() contains a blocking delay(200) BEFORE its
+ //    UART write (library source: semaphore -> delay(200) -> write ->
+ //    waiting_ack='R'). Calling it first therefore DELAYS THE BRAKE BY
+ //    200ms -- the exact opposite of what a stop needs. The two trials
+ //    that passed at baseline were the early ones (STOP ~0.23s in); with
+ //    the cancel they drifted 8.3 and 9.1deg, and ~200ms at ~100deg/s is
+ //    ~20deg, the right order of magnitude.
+ // 2. Mid/late trials degraded far MORE than that 200ms alone explains
+ //    (4-21deg -> 46-61deg), which says a zero-angle 'R' packet does not
+ //    cancel the co-processor's active maneuver at all -- it appears to
+ //    re-target or restart it.
+ //
+ // Any future cancel attempt must NOT route through alvik.rotate() (the
+ // delay(200) is unconditional and disqualifying for a stop path). See
+ // ROTATE_REL_HAZARD_2026-08-20.md for the full table and the remaining
+ // candidates.
  alvik.brake(); publish_status("STOPPED");
+ wheel_cmd_watchdog_braked = false;
+ wheel_cmd_watchdog_max_gap_ms = 0;
  blue_detection_armed = false; blue_ignore_until_ms = 0; blue_nonblue_count = 0;
  current_state = IDLE; is_busy = false;
 
@@ -1145,22 +1170,50 @@ void update_state_machine() {
  break;
 
  case STATE_ROTATE_REL:
- // Timed completion, NOT is_target_reached() polling -- CHANGED
- // 2026-07-30, same day, after is_target_reached() was tried first and
- // caused two full hardware hangs (LED frozen, ALL ROS traffic dead,
- // robot unresponsive to any command, required power-cycle both times)
- // even after removing a suspected alvik.brake()-race cause. See
- // ROTATE_DEG_PER_SEC's comment near the top of this file for the full
- // reasoning -- short version: is_target_reached() never reliably acked
- // rotate() on this hardware, and the only proven-working alvik.rotate()
- // usage anywhere in this codebase (driveTo.ino) never polls it either,
- // it always just waits a fixed duration. rotate_rel_done_ms (set in the
- // ROTATE_REL command handler) is that same proven approach, timed via
- // millis() instead of delay() so it stays non-blocking.
- if (millis() >= rotate_rel_done_ms) {
- publish_status("ROTATE_REL COMPLETE");
- publish_status("IDLE");
- current_state = IDLE; is_busy = false;
+ // Do not poll is_target_reached(): that ack path caused full firmware
+ // hangs on this hardware. Instead use the already-refreshed onboard IMU.
+ // Crucially, this is NOT the old blind timer brake that could fire while
+ // the maneuver was still active. Brake only after yaw has stayed within
+ // the angle-scaled target tolerance for ROTATE_REL_TARGET_STABLE_MS.
+ {
+   unsigned long now = millis();
+   float error = fabsf(yawError(rotate_rel_target_yaw, robot_heading_deg));
+   if (now >= rotate_rel_min_brake_ms
+       && error <= rotate_rel_brake_tolerance_deg) {
+     if (rotate_rel_in_tolerance_since_ms == 0) {
+       rotate_rel_in_tolerance_since_ms = now;
+       rotate_rel_stable_heading = robot_heading_deg;
+     } else if (fabsf(yawError(
+                  robot_heading_deg, rotate_rel_stable_heading))
+                > ROTATE_REL_STABLE_HEADING_TOLERANCE_DEG) {
+       // Inside the target band but still moving: restart the stationarity
+       // window instead of braking on a drive-through sample.
+       rotate_rel_in_tolerance_since_ms = now;
+       rotate_rel_stable_heading = robot_heading_deg;
+     } else if (now - rotate_rel_in_tolerance_since_ms
+                >= ROTATE_REL_TARGET_STABLE_MS) {
+       alvik.brake();
+       publish_status("ROTATE_REL COMPLETE");
+       publish_status("IDLE");
+       current_state = IDLE; is_busy = false;
+     }
+   } else {
+     rotate_rel_in_tolerance_since_ms = 0;
+   }
+
+  if (current_state == STATE_ROTATE_REL && now >= rotate_rel_done_ms) {
+    // Never report COMPLETE merely because a timer elapsed. Brake first,
+    // then report a provisional terminal state. Camera-capable controllers
+    // may accept it only after fresh, settled vision verifies their yaw
+    // tolerance; encoder-only control must abort because its sole onboard
+    // localization source did not confirm the target. This is deliberately
+    // not an ERROR: the fleet supervisor would exclude the robot before its
+    // navigation worker could perform that independent camera verification.
+    alvik.brake();
+    publish_status("ROTATE_REL BRAKED_UNCONFIRMED");
+     publish_status("IDLE");
+     current_state = IDLE; is_busy = false;
+   }
  }
  break;
 
@@ -1176,16 +1229,41 @@ void update_state_machine() {
  break;
 
  case STATE_WHEEL_FOLLOW:
- if (millis() - wheel_cmd_last_ms > WHEEL_CMD_TIMEOUT_MS) {
- // Watchdog: no fresh setpoint recently -- the off-board controller
- // stalled or the link dropped. Brake and drop out of the mode rather
- // than keep running the last speed indefinitely.
- alvik.brake();
- publish_status("ERROR WHEEL_CMD_TIMEOUT");
- publish_status("IDLE");
- current_state = IDLE; is_busy = false;
+ {
+ unsigned long wheel_cmd_gap_ms = millis() - wheel_cmd_last_ms;
+ if (wheel_cmd_gap_ms > WHEEL_CMD_BRAKE_MS) {
+ // Stage 1 always brakes at 300 ms, exactly as before. Remain in
+ // WHEEL_FOLLOW_MODE so a transient best-effort delivery stall can recover
+ // from a NEW command instead of permanently excluding a healthy robot.
+ if (!wheel_cmd_watchdog_braked) {
+   alvik.brake();
+   wheel_cmd_watchdog_braked = true;
+ }
+ if (wheel_cmd_gap_ms > wheel_cmd_watchdog_max_gap_ms) {
+   wheel_cmd_watchdog_max_gap_ms = wheel_cmd_gap_ms;
+ }
+
+ // Stage 2: a full second without a received setpoint is a sustained
+ // controller/link loss. The robot has already been physically braked since
+ // 300 ms; now terminate the mode and make the route abort explicitly.
+ if (wheel_cmd_gap_ms > WHEEL_CMD_ABORT_MS) {
+   snprintf(pub_buf, sizeof(pub_buf),
+            "ERROR WHEEL_CMD_TIMEOUT gap=%lums", wheel_cmd_gap_ms);
+   publish_status(pub_buf);
+   publish_status("IDLE");
+   current_state = IDLE; is_busy = false;
+ }
  } else {
+ if (wheel_cmd_watchdog_braked) {
+   snprintf(pub_buf, sizeof(pub_buf),
+            "WHEEL_CMD_STALL_RECOVERED gap=%lums",
+            wheel_cmd_watchdog_max_gap_ms);
+   publish_status(pub_buf);
+   wheel_cmd_watchdog_braked = false;
+   wheel_cmd_watchdog_max_gap_ms = 0;
+ }
  alvik.set_wheels_speed(wheel_cmd_left_rpm, wheel_cmd_right_rpm, RPM);
+ }
  }
  break;
 
@@ -1422,6 +1500,19 @@ void loop() {
  blue_detection_armed = false; blue_ignore_until_ms = 0; blue_nonblue_count = 0;
  current_state = STATE_ERROR;
  is_busy = false;
+ }
+
+ // WHEEL_FOLLOW safety hardening (2026-08-26, single-robot route failure):
+ // the first spin_some() above was followed by Alvik orientation + touch
+ // semaphore reads before the 300 ms wheel watchdog ran. If either read
+ // stalled temporarily, fresh best-effort wheel packets could already be
+ // queued while wheel_cmd_last_ms still looked expired; the state machine
+ // would brake before the next loop got a chance to consume them. Service
+ // the executor once more immediately before the watchdog. This does not
+ // weaken a real controller/link-loss stop: with no queued command the
+ // timestamp remains old and the same 300 ms check still fires.
+ if (ros_ready && current_state == STATE_WHEEL_FOLLOW) {
+ rclc_executor_spin_some(&executor, RCL_MS_TO_NS(0));
  }
 
  update_state_machine();

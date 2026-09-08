@@ -1,0 +1,165 @@
+/* Page 4 · Performance Metrics — styles. Extends the app's existing visual
+   language (panels, .stat cards, .side-tabs) rather than introducing a new
+   one; everything is scoped under #metrics-page. */
+
+#metrics-page .metrics-current-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+#metrics-page .metrics-current-head select {
+  width: auto;
+  max-width: 420px;
+  font-size: 12px;
+}
+
+.metrics-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  vertical-align: middle;
+  margin-left: 6px;
+}
+.metrics-badge.provisional { background: #fef3c7; color: #92400e; border: 1px solid #f59e0b; }
+.metrics-badge.final       { background: #dcfce7; color: #166534; border: 1px solid #22c55e; }
+.metrics-badge.running     { background: #dbeafe; color: #1e40af; border: 1px solid #3b82f6; }
+.metrics-badge.failed      { background: #fee2e2; color: #991b1b; border: 1px solid #ef4444; }
+.metrics-badge.aborted     { background: #f3e8ff; color: #6b21a8; border: 1px solid #a855f7; }
+
+.metrics-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+}
+.metrics-kpis .stat b { font-size: 20px; }
+.metrics-kpis .stat .kpi-sub {
+  display: block;
+  color: #94a3b8;
+  font-size: 10px;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.metrics-kpis .stat.kpi-bad b { color: #b42318; }
+.metrics-kpis .stat.kpi-good b { color: #15803d; }
+
+.metrics-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 8px 12px;
+}
+.metrics-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: #516070;
+  font-weight: 600;
+}
+.metrics-filters input, .metrics-filters select {
+  font-size: 12px;
+  padding: 5px 7px;
+}
+
+.metrics-export-link {
+  font-size: 12px;
+  font-weight: 600;
+  color: #2563eb;
+  align-self: center;
+}
+
+#metrics-tab-content { margin-top: 4px; }
+#metrics-tab-content h3 { margin: 14px 0 6px; font-size: 14px; }
+#metrics-tab-content h3:first-child { margin-top: 2px; }
+
+.metrics-table-wrap {
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+.metrics-table-wrap table { font-variant-numeric: tabular-nums; }
+.metrics-table-wrap th { cursor: pointer; user-select: none; }
+.metrics-table-wrap th.sorted-asc::after  { content: " ▲"; font-size: 9px; }
+.metrics-table-wrap th.sorted-desc::after { content: " ▼"; font-size: 9px; }
+.metrics-table-wrap td.num { text-align: right; }
+.metrics-table-wrap tr.run-row { cursor: pointer; }
+.metrics-table-wrap tr.run-row:hover td { background: #f1f5f9; }
+
+.metrics-value-missing { color: #b45309; font-style: italic; }
+.metrics-value-error   { color: #b42318; font-weight: 700; }
+
+.metrics-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+.metrics-chart-box {
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #fbfdff;
+}
+.metrics-chart-box h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: #334155;
+}
+.metrics-chart-box canvas {
+  width: 100%;
+  height: 160px;
+  display: block;
+}
+
+.metrics-def-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: #fbfdff;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.metrics-def-card b { font-size: 13px; }
+.metrics-def-card .def-key {
+  font-family: ui-monospace, Consolas, monospace;
+  color: #2563eb;
+  font-size: 11px;
+}
+.metrics-def-card .def-formula {
+  font-family: ui-monospace, Consolas, monospace;
+  background: #eef2f7;
+  border-radius: 4px;
+  padding: 4px 8px;
+  margin: 6px 0;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.metrics-def-card .def-meta { color: #64748b; font-size: 11px; }
+
+.metrics-dq-issue {
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.metrics-dq-ok {
+  border: 1px solid #bbf7d0;
+  background: #f0fdf4;
+  color: #166534;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.metrics-note {
+  font-size: 11px;
+  color: #94a3b8;
+  margin: 6px 0 0;
+}
