@@ -52,6 +52,7 @@ import statistics
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -325,6 +326,54 @@ def ask(url: str, model: str, prompt: str, image_b64: str | None,
         return None, time.monotonic() - t0, repr(exc)
 
 
+def parse_model_spec(spec: str, default_url: str) -> tuple[str, str]:
+    """"model" or "model@http://host:port" -> (model, url).
+
+    Models do not all live in one place. qwen3.5:4b runs on this laptop's own
+    Ollama; qwen3-vl:30b runs on one L40S of a Lambda box, reached through an
+    SSH tunnel on 127.0.0.1:21435 because port 11434 there is already taken
+    by somebody else's service. Two separate benchmark invocations cannot
+    establish that they saw the same samples, the same question caps, the
+    same repeats and the same prompts -- that is a comparison of two
+    experiments, not of two models. One invocation with per-model endpoints
+    is the only version where the numbers are directly comparable.
+
+    Ollama tags never contain "@", so the first one separates the two."""
+    if "@" not in spec:
+        return spec, default_url
+    model, _, url = spec.partition("@")
+    model, url = model.strip(), url.strip()
+    if not model or not url:
+        raise SystemExit(f"bad --models entry {spec!r}: expected "
+                         "MODEL or MODEL@http://host:port")
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+    return model, url
+
+
+def plan_runs(specs: list[str], default_url: str) -> list[tuple[str, str, str]]:
+    """[(label, model, url)], one per model to benchmark.
+
+    The label is what the report and the results JSON key on. It is the bare
+    model tag unless the same tag appears on more than one endpoint -- which
+    is a real experiment here, since asking whether the tunnel and the L40S
+    change anything about a model this laptop can also run is exactly the
+    kind of thing worth measuring -- in which case the host is appended so
+    the two do not collapse into one row."""
+    parsed = [parse_model_spec(sp, default_url) for sp in specs]
+    times_seen: dict[str, int] = {}
+    for model, _url in parsed:
+        times_seen[model] = times_seen.get(model, 0) + 1
+    runs = []
+    for model, url in parsed:
+        if times_seen[model] > 1:
+            host = urllib.parse.urlsplit(url).netloc or url
+            runs.append((f"{model}@{host}", model, url))
+        else:
+            runs.append((model, model, url))
+    return runs
+
+
 def check_models(url: str, models: list[str]) -> None:
     try:
         with urllib.request.urlopen(f"{url}/api/tags", timeout=10) as resp:
@@ -351,6 +400,15 @@ def report(results: dict) -> None:
     print()
     print("=" * 78)
     print(f"condition: {results.get('condition', 'state+image')}")
+    eps = results.get("endpoints") or {}
+    if len({str(v) for v in eps.values()}) > 1:
+        print("endpoints (per model; every other condition identical):")
+        for lbl, u in eps.items():
+            print(f"  {lbl:<24}{u}")
+    elif eps:
+        print(f"endpoint: {next(iter(eps.values()))}")
+    elif results.get("url"):
+        print(f"endpoint: {results['url']}")
     print(f"VLM comparison — {results['sample_count']} sample(s), "
           f"{results['repeats']} repeat(s), "
           f"{len(rows) // max(len(models), 1)} question-instances per model")
@@ -578,9 +636,15 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description="Score local VLMs on captured testbed frames.")
     ap.add_argument("--models", nargs="+",
-                    help="Ollama model tags, e.g. qwen3.5:4b minicpm-v4.5:8b")
+                    help="Ollama model tags. Append @URL to point one model "
+                         "at its own endpoint, e.g. qwen3.5:4b "
+                         "qwen3-vl:30b@http://127.0.0.1:21435 -- local and "
+                         "remote models then run in ONE invocation, which is "
+                         "the only way their numbers are comparable. Models "
+                         "with no @URL use --url.")
     ap.add_argument("--samples-dir", default=None)
-    ap.add_argument("--url", default=os.environ.get("OLLAMA_URL", DEFAULT_URL))
+    ap.add_argument("--url", default=os.environ.get("OLLAMA_URL", DEFAULT_URL),
+                    help="default endpoint for models given without @URL")
     ap.add_argument("--max-per-category", type=int, default=3,
                     help="cap orientation/spatial/relation questions per "
                          "sample (default 3). Counting, closest-pair and the "
@@ -629,7 +693,13 @@ def main() -> None:
         print(f"using {len(sample_ids)} of the available samples "
               "(evenly spaced)")
 
-    check_models(args.url, args.models)
+    runs = plan_runs(args.models, args.url)
+    # Each endpoint is asked only about the models it is supposed to be
+    # serving. Checking every model against every endpoint would fail the
+    # moment a model is deliberately only on one of them, which is the
+    # normal case here.
+    for endpoint in dict.fromkeys(url for _l, _m, url in runs):
+        check_models(endpoint, [m for _l, m, u in runs if u == endpoint])
 
     # Load every sample ONCE, then iterate MODEL-OUTERMOST.
     #
@@ -653,8 +723,8 @@ def main() -> None:
                        state_text(truth), image_b64))
     total = sum(len(q) for _s, q, _c, _i in loaded)
     print(f"{len(loaded)} sample(s), {total} question(s) each pass, "
-          f"{len(args.models)} model(s), {args.repeats} repeat(s) "
-          f"-> {total * len(args.models) * args.repeats} calls")
+          f"{len(runs)} model(s), {args.repeats} repeat(s) "
+          f"-> {total * len(runs) * args.repeats} calls")
 
     rows: list[dict] = []
     out = args.out or os.path.join(
@@ -665,7 +735,13 @@ def main() -> None:
         res = {
             "generated_utc": datetime.now(timezone.utc).isoformat(
                 timespec="seconds"),
-            "url": args.url, "models": args.models, "repeats": args.repeats,
+            "url": args.url,
+            "models": [lbl for lbl, _m, _u in runs],
+            # Which model answered from where. A 1.19s median means one thing
+            # on an L40S and another on an 8GB laptop GPU, so the endpoint
+            # belongs in the saved result rather than in someone's memory.
+            "endpoints": {lbl: u for lbl, _m, u in runs},
+            "repeats": args.repeats,
             "sample_count": len(loaded), "question_count": total,
             "condition": "state-only" if args.no_image else "state+image",
             "partial": partial,
@@ -677,8 +753,9 @@ def main() -> None:
         return res
 
     interrupted = False
-    for model in args.models:
-        print(f"\n{model}")
+    for label, model, url in runs:
+        print()
+        print(f"{label}   ->  {url}")
         if interrupted:
             break
         for sid, questions, context, image_b64 in loaded:
@@ -690,7 +767,7 @@ def main() -> None:
                               f"this robot testbed.\n{q['prompt']}")
                     try:
                         answer, secs, err = ask(
-                            args.url, model, prompt,
+                            url, model, prompt,
                             None if args.no_image else image_b64,
                             args.timeout)
                     except KeyboardInterrupt:
@@ -705,7 +782,8 @@ def main() -> None:
                         except Exception:
                             correct = False
                     rows.append({
-                        "sample": sid, "model": model,
+                        "sample": sid, "model": label,
+                        "endpoint": url,
                         "question_id": q["id"], "category": q["category"],
                         "prompt": q["prompt"],
                         "expected": q["expect"] if not isinstance(
