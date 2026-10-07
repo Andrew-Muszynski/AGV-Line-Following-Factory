@@ -126,14 +126,51 @@ def create_app(db_path: str | None = None) -> Flask:
     @app.route("/api/runs", methods=["POST"])
     def create_run():
         payload = request.get_json(force=True, silent=True) or {}
+        # Re-arming a mission must NOT strand the row created by the previous
+        # arm. If the caller names a run it already owns and that run never
+        # started and carries no events, rewrite it in place and hand back
+        # the same id. Anything else -- a started run, a run with telemetry,
+        # an unknown id -- falls through to a fresh row, so a genuinely new
+        # mission after a finished one still gets its own record.
+        reuse = str(payload.pop("reuse_run_id", "") or "")
+        if reuse:
+            prior = database.get_run(db(), reuse)
+            has_events = db().execute(
+                "SELECT 1 FROM events WHERE run_id = ? LIMIT 1",
+                (reuse,)).fetchone() is not None
+            if (prior is not None and prior["started_at_utc"] is None
+                    and prior["status"] == "created" and not has_events):
+                database.update_run(db(), reuse, payload)
+                return jsonify({"run_id": reuse, "reused": True}), 200
         run_id = database.create_run(db(), payload)
         return jsonify({"run_id": run_id}), 201
 
-    def _run_filters():
+    def _run_filters(executed_default=False):
         """WHERE clause + args from query params (shared by list/history/
-        export). All comparisons parameterized."""
+        export). All comparisons parameterized.
+
+        executed_default gates the EXECUTED-RUN RULE: a row counts as an
+        attempt only if it has a start timestamp and at least one event.
+        A run row is created when a mission is ARMED so the supervisor can be
+        handed a run_id, which means arming twice, or arming and walking
+        away, leaves a row that never corresponded to robots moving. As of
+        2026-09-22 the database held 50 rows of which 17 were of that kind,
+        three of them recorded as 'completed' with zero events, and a naive
+        aggregate over them silently returns NULL makespans.
+
+        The rule is applied to the ANALYSIS surfaces (history, export) and
+        deliberately NOT to /api/runs: the run selector has to show a run
+        that has just been armed and has not started yet, which is precisely
+        what this rule excludes. `outcome=include_nonexecuted` turns it off.
+        Nothing is ever deleted -- the rows stay, and the count of what was
+        hidden is reported alongside the results.
+        """
         q = request.args
         where, args = [], []
+        if executed_default and q.get("outcome") != "include_nonexecuted":
+            where.append("r.started_at_utc IS NOT NULL")
+            where.append("EXISTS (SELECT 1 FROM events e "
+                         "WHERE e.run_id = r.run_id)")
         simple = {
             "run_id": "r.run_id", "status": "r.status",
             "experimental_condition": "r.experimental_condition",
@@ -217,6 +254,18 @@ def create_app(db_path: str | None = None) -> Flask:
             patch.setdefault("started_at_utc", database.utc_now_iso())
         if patch.get("status") in ("completed", "failed", "aborted"):
             patch.setdefault("ended_at_utc", database.utc_now_iso())
+        # A row that never started cannot have finished. The browser's
+        # /fleet_status fallback fires on the supervisor reporting "finished"
+        # and used to stamp whichever run the session last created, which is
+        # how three zero-event rows came to be recorded as 'completed'.
+        if patch.get("status") in ("completed", "failed"):
+            row = database.get_run(db(), run_id)
+            if row is not None and row["started_at_utc"] is None \
+                    and patch.get("started_at_utc") is None:
+                return jsonify({
+                    "error": "run never started; refusing to mark it "
+                             f"{patch['status']}",
+                    "run_id": run_id}), 409
         try:
             database.update_run(db(), run_id, patch)
         except ValueError as exc:
@@ -225,10 +274,46 @@ def create_app(db_path: str | None = None) -> Flask:
 
     # ---- events ------------------------------------------------------------
 
+    TERMINAL_EVENTS = ("RUN_COMPLETED", "RUN_FAILED", "RUN_ABORTED")
+
+    def _autofinalize(run_id):
+        """Store final metric values for a run the supervisor just ended.
+
+        Finalization used to happen in exactly one place: the browser's
+        /fleet_status fallback, for the run THAT browser session created. Any
+        run that ended while page 4 was closed, or that was aborted, or whose
+        session had moved on, kept status='provisional' forever even with
+        every event present -- 18 of 33 executed runs as of 2026-09-22,
+        including the r4 reference run, which is why its makespan read as a
+        dash on a page that held all the data needed to compute it.
+
+        The supervisor is the authority on when a run ended, so the run's own
+        terminal event is the right trigger. Never overwrites: a run that
+        already has a final revision is left alone, and /recalculate remains
+        the only way to create another.
+        """
+        try:
+            if database.max_final_revision(db(), run_id) is not None:
+                return
+            run = database.get_run(db(), run_id)
+            if run is None or run["status"] in ("created", "running"):
+                return
+            values = metrics_engine.compute_run_metrics(db(), run_id)
+            for v in values:
+                if v["status"] == "ok":
+                    v["status"] = "final"
+            database.store_metric_values(db(), run_id, values, "final",
+                                         revision=0)
+        except Exception:                       # never break event ingest
+            app.logger.exception("auto-finalize failed for %s", run_id)
+
     def _ingest(run_id, events):
         if database.get_run(db(), run_id) is None:
             return jsonify({"error": "unknown run"}), 404
         result = database.ingest_events(db(), run_id, events)
+        if any(str(e.get("event_type")) in TERMINAL_EVENTS
+               for e in events if isinstance(e, dict)):
+            _autofinalize(run_id)
         code = 200 if not result["errors"] else 207
         return jsonify(result), code
 
@@ -413,8 +498,15 @@ def create_app(db_path: str | None = None) -> Flask:
 
     @app.route("/api/history")
     def history():
-        where, args = _run_filters()
+        where, args = _run_filters(executed_default=True)
         limit, offset = _paginate()
+        # What the rule removed, so the page can say so rather than just
+        # showing a shorter list.
+        w_all, a_all = _run_filters(executed_default=False)
+        n_all = db().execute(
+            f"SELECT COUNT(*) AS n FROM runs r{w_all}", a_all).fetchone()["n"]
+        n_exec = db().execute(
+            f"SELECT COUNT(*) AS n FROM runs r{where}", args).fetchone()["n"]
         keys = [k for k in
                 (request.args.get("metrics") or "").split(",") if k] \
             or DEFAULT_HISTORY_METRICS
@@ -422,7 +514,15 @@ def create_app(db_path: str | None = None) -> Flask:
             f"""SELECT r.run_id, r.created_at_utc, r.status,
                        r.experimental_condition, r.algorithm, r.drive_mode,
                        r.robot_count, r.job_count, r.workstation_count,
-                       r.process_sec, r.random_seed, r.planned_makespan_sec
+                       r.process_sec, r.random_seed, r.planned_makespan_sec,
+                       -- Wall-clock time the attempt actually ran. Defined
+                       -- for every started run, unlike makespan, which only
+                       -- exists once robots report completion -- so this is
+                       -- the column that separates a run that died at launch
+                       -- from one that died near the end.
+                       ROUND((julianday(r.ended_at_utc)
+                              - julianday(r.started_at_utc)) * 86400.0, 1)
+                           AS attempt_sec
                 FROM runs r{where}
                 ORDER BY r.created_at_utc DESC LIMIT ? OFFSET ?""",
             (*args, limit, offset)).fetchall()]
@@ -477,13 +577,34 @@ def create_app(db_path: str | None = None) -> Flask:
             aggregates[gkey] = per_metric
         return jsonify({"runs": runs, "metric_keys": keys,
                         "group_by": group_by, "aggregates": aggregates,
-                        "limit": limit, "offset": offset})
+                        "limit": limit, "offset": offset,
+                        "nonexecuted_hidden": max(0, n_all - n_exec)})
+
+    @app.route("/api/runs/facets")
+    def runs_facets():
+        """Distinct values of the free-text run columns, with counts.
+
+        These columns hold values nobody can be expected to retype -- an
+        algorithm reads "external (nearest_2026-09-09_20-53-58.json)" -- and
+        _run_filters() compares them with =, so a partial string silently
+        matches nothing. The filter UI offers these as dropdowns instead.
+        Unfiltered on purpose: the list must show what COULD be selected,
+        not what survives the selection already in force.
+        """
+        out = {}
+        for col in ("experimental_condition", "algorithm", "drive_mode"):
+            rows = db().execute(
+                f"""SELECT {col} AS v, COUNT(*) AS n FROM runs
+                    WHERE {col} IS NOT NULL AND {col} != ''
+                    GROUP BY {col} ORDER BY n DESC, v ASC""").fetchall()
+            out[col] = [{"value": r["v"], "count": r["n"]} for r in rows]
+        return jsonify(out)
 
     # ---- exports -----------------------------------------------------------
 
     @app.route("/api/export/runs.csv")
     def export_runs_csv():
-        where, args = _run_filters()
+        where, args = _run_filters(executed_default=True)
         runs = [dict(r) for r in db().execute(
             f"""SELECT r.* FROM runs r{where}
                 ORDER BY r.created_at_utc DESC""", args).fetchall()]
@@ -508,6 +629,79 @@ def create_app(db_path: str | None = None) -> Flask:
             buf.getvalue(), mimetype="text/csv",
             headers={"Content-Disposition":
                      "attachment; filename=agv_runs.csv"})
+
+    @app.route("/api/export/run/<run_id>.csv")
+    def export_run_csv(run_id):
+        """One run as CSV, in blank-line-separated blocks.
+
+        Blocks rather than one wide table because a run has four different
+        shapes of record (the run row, its computed metrics, per-robot and
+        per-job) and flattening them into shared columns makes all four
+        harder to read. The in-page viewer renders each block as its own
+        table; a spreadsheet opens it as one sheet with gaps, which is the
+        conventional reading of this layout.
+        """
+        run = database.get_run(db(), run_id)
+        if run is None:
+            return jsonify({"error": "unknown run"}), 404
+        buf = io.StringIO()
+        w = csv.writer(buf, lineterminator="\n")
+
+        w.writerow(["field", "value"])
+        run_keys = run.keys()
+        for k in ("run_id", "created_at_utc", "started_at_utc",
+                  "ended_at_utc", "status", "experimental_condition",
+                  "algorithm", "drive_mode", "robot_count", "job_count",
+                  "workstation_count", "process_sec", "capacity",
+                  "random_seed", "planned_makespan_sec", "notes"):
+            w.writerow([k, run[k] if k in run_keys else ""])
+
+        stored, _rev = _stored_final(run_id)
+        if stored is None:
+            stored = metrics_engine.compute_run_metrics(db(), run_id)
+        w.writerow([])
+        w.writerow(["metric", "value", "unit", "status"])
+        for v in (stored or []):
+            w.writerow([v.get("key", ""), v.get("value", ""),
+                        v.get("unit", ""), v.get("status", "")])
+
+        rcols = ["robot_id", "capacity", "start_battery_pct",
+                 "end_battery_pct", "completion_elapsed_ms", "terminal_x_m",
+                 "terminal_y_m", "terminal_yaw_deg", "status",
+                 "failure_reason"]
+        w.writerow([])
+        w.writerow(rcols)
+        for r in db().execute(
+                "SELECT * FROM run_robots WHERE run_id=? ORDER BY robot_id",
+                (run_id,)).fetchall():
+            w.writerow([r[c] for c in rcols])
+
+        jcols = ["job_id", "assigned_robot_id", "workstation_id",
+                 "release_elapsed_ms", "pickup_elapsed_ms",
+                 "delivery_elapsed_ms", "completion_elapsed_ms",
+                 "due_elapsed_ms", "status", "failure_reason"]
+        w.writerow([])
+        w.writerow(jcols)
+        for r in db().execute(
+                "SELECT * FROM jobs WHERE run_id=? ORDER BY job_id",
+                (run_id,)).fetchall():
+            w.writerow([r[c] for c in jcols])
+
+        # Every string the robots published, in order. This is the block a
+        # breakdown is read from: the firmware's own words, timestamped
+        # against the run, rather than whatever the supervisor chose to log.
+        w.writerow([])
+        w.writerow(["elapsed_ms", "robot_id", "status"])
+        for r in db().execute(
+                """SELECT elapsed_ms, robot_id, reason FROM events
+                   WHERE run_id = ? AND event_type = 'ROBOT_STATUS'
+                   ORDER BY seq""", (run_id,)).fetchall():
+            w.writerow([r["elapsed_ms"], r["robot_id"], r["reason"]])
+
+        return app.response_class(
+            buf.getvalue(), mimetype="text/csv",
+            headers={"Content-Disposition":
+                     f"inline; filename=run_{run_id[:8]}.csv"})
 
     @app.route("/api/export/run/<run_id>.json")
     def export_run_json(run_id):

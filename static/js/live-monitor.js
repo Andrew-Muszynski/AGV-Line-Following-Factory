@@ -1958,6 +1958,11 @@ async function supervisorSendMission() {
   const mission = {
     schedule: buildExportPayload(),
     commands: supervisorMissionCommands(),
+    // Names the run in the supervisor's transcript file, and matches what
+    // metricsCreateRunForMission() already reports as `algorithm` -- same
+    // source, so the .txt and the metrics row agree on what was run.
+    algorithm: (state.planSource ||
+      (document.getElementById("route-mode") || {}).value || "built-in"),
     drive_mode: state.driveMode,  // "color" | "vision" — see setDriveMode()
     // Turn+drive fusion request -- the supervisor forces this off for
     // missions with 2+ robots regardless of what's sent here (see

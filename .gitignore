@@ -2,15 +2,12 @@
 .claude/
 CLAUDE_FABLE5_KICKOFF_PROMPT.md
 
-# Optional AI/LLM advisor implementation and AI-specific operating notes
-fleet/LLM_DISPATCH_ADVISOR_DESIGN.md
-fleet/dispatch_advisor.py
-fleet/fleetSupervisor.py
+# AI-specific operating notes and the retired API backend. The supervisor,
+# the advisor and the local-Ollama backend were published on the
+# full-testbed-stack-2026-10 branch (2026-10-07) -- they are the running
+# system, so a reader cannot stand the testbed up without them.
 fleet/haiku_advisor.py
-fleet/ollama_advisor.py
 fleet/send_route.py
-fleet/test_dispatch_advisor.py
-fleet/test_ollama_advisor.py
 fleet/test_recovery.py
 TERMINALS_CHEATSHEET.md
 TESTBED_WORKFLOW.md

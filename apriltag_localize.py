@@ -468,20 +468,38 @@ WORKSTATION_WORLD_IN: dict[int, tuple[float, float]] = {
 # apriltag_localize.py still maps tags 1-6 only, so tag 7 publishes as
 # "tag7".
 #
-# NOTE both-robots-rotating clearance at the tightest pair is only +0.23in,
-# inside placement error. Sequenced (one-at-a-time) depot rotations are
-# fine; simultaneous adjacent ones are not.
+# NOTE on simultaneous adjacent depot rotations. The robot measures 5.625in
+# corner to corner (operator, 2026-09-30), so a rotating robot sweeps a
+# 5.625in circle. The tightest slot pitch after the 2026-09-30 re-measure is
+# 6.30in, leaving +0.675in when both neighbours rotate at once -- up from the
+# +0.23in this note used to claim, which was computed against an assumed 15cm
+# (5.906in) diagonal that the direct measurement has now replaced. Still
+# tight enough to sequence them if anything else is marginal, but no longer
+# negative-clearance.
 #
 # Regenerate with: calibrate_workstations.py --emit-python
 # (paste into BOTH this file and the other one -- they run on different
 # machines and cannot import each other.)
+# RE-MEASURED 2026-09-30 after the depot row was shifted. 42 vision samples
+# per robot with the fleet parked and stationary; every slot moved the same
+# way (y down 0.25-0.40in, mean -0.34; x within +/-0.20in), which is the
+# signature of a real shift rather than noise. Slot pitch went 6.31 -> 6.36in.
+#
+# TWO LIMITS ON THESE NUMBERS. The vision terminal prints to 0.1in, so the
+# resolution is +/-0.05in and averaging bought little (most robots read the
+# same value on all 42 samples). And they record where each robot CAME TO
+# REST, so any consistent parking bias is baked in -- which is what you want
+# for "drive here and stop", but is not the same as measuring the tape.
 DEPOT_SLOT_WORLD_IN: dict[str, tuple[float, float]] = {
-    "D1": (19.64, 10.86),  # Alvik1
-    "D2": (25.88, 11.04),  # Alvik2
-    "D3": (32.20, 11.08),  # Alvik3
-    "D4": (38.58, 11.15),  # Alvik4
-    "D5": (44.96, 11.20),  # Alvik5
-    "D6": (51.20, 11.19),  # Alvik6
+    "D1": (19.60, 10.58),  # Alvik1
+    "D2": (25.90, 10.70),  # Alvik2
+    "D3": (32.40, 10.70),  # Alvik3
+    "D4": (38.72, 10.90),  # Alvik4
+    "D5": (45.10, 10.80),  # Alvik5
+    "D6": (51.40, 10.80),  # Alvik6
+    # NOT re-measured 2026-09-30 -- there is no 7th robot to park on it, so
+    # this is still the 2026-08-26 figure and is ~0.34in stale in y if the
+    # whole row moved together. Re-measure before using D7.
     "D7": (57.34, 11.23),  # tag7
 }
 DEPOT_ENTRY_WORLD_IN: dict[str, tuple[float, float]] = {
@@ -2118,14 +2136,27 @@ class MjpegServer:
     Frames are pushed from the main loop; each connected client gets the
     latest frame as a multipart/x-mixed-replace stream."""
 
+    #: /stream stays at 960/q70 for bandwidth; /full.jpg is for machine
+    #: consumers that need the pose HUD text to survive compression.
+    FULL_JPEG_QUALITY = 95
+    #: How long a /full.jpg request keeps native frames retained.
+    FULL_RETAIN_SEC = 30.0
+
     def __init__(self, port: int):
         self._cond = threading.Condition()
         self._jpeg: bytes | None = None
+        self._full: np.ndarray | None = None
+        self._full_show_nodes = False
+        self._full_at = 0.0          # when _full was last replaced
+        self._full_wanted_at = 0.0
         self._seq = 0
         server = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802 - stdlib naming
+                if self.path.split("?")[0] == "/full.jpg":
+                    server._serve_full(self)
+                    return
                 if self.path not in ("/", "/stream"):
                     self.send_error(404)
                     return
@@ -2160,8 +2191,18 @@ class MjpegServer:
         threading.Thread(target=self._httpd.serve_forever, daemon=True).start()
         print(f"MJPEG preview stream: http://localhost:{port}/stream "
               "(solver HTML Live mode)")
+        print(f"Native-resolution still:  http://localhost:{port}/full.jpg "
+              "(vlm_capture.py --stream)")
 
-    def push(self, frame: np.ndarray) -> None:
+    def push(self, frame: np.ndarray, show_nodes: bool = False) -> None:
+        # Keep the native frame for /full.jpg, but only while somebody has
+        # asked for one in the last FULL_RETAIN_SEC. The copy is ~6MB and
+        # this runs on every frame, so a monitoring-only session must not
+        # pay for a feature it never uses.
+        full = None
+        if time.monotonic() - self._full_wanted_at < self.FULL_RETAIN_SEC:
+            full = frame.copy()
+
         # Downscale + recompress: the stream is a monitor view, not the
         # detector input — ~960px wide at q70 keeps it near 0.5 MB/s.
         if frame.shape[1] > 960:
@@ -2173,8 +2214,86 @@ class MjpegServer:
             return
         with self._cond:
             self._jpeg = buf.tobytes()
+            if full is not None:
+                self._full = full
+                # Record WHICH overlay state this retained frame was drawn
+                # in, so /full.jpg can state it rather than leaving the
+                # caller to infer it. On 2026-09-11 an RCBD block was
+                # captured with 'o' pressed mid-capture: the two frames
+                # landed in different states, the pose read-back was
+                # identical either way, and only a 85KB file-size jump gave
+                # it away. A treatment label that silently disagrees with
+                # the pixels is the worst possible failure for this
+                # experiment -- so the server says so outright.
+                self._full_show_nodes = bool(show_nodes)
+                self._full_at = time.monotonic()
             self._seq += 1
             self._cond.notify_all()
+
+    def _serve_full(self, handler) -> None:
+        """One frame at native resolution and high quality.
+
+        A single JPEG rather than a stream: callers want one frame per
+        sample, and a plain image needs no multipart parsing.
+
+        The first request usually arrives before any native frame has been
+        retained, since retention is demand-driven -- so it sets the flag and
+        waits for the next push rather than failing.
+        """
+        # Wait for a frame captured AFTER this request, not merely for one
+        # to exist.
+        #
+        # Retention is demand-driven and lapses FULL_RETAIN_SEC after the
+        # last request, which leaves a stale frame sitting in _full. The old
+        # test was "is _full None?", so a request arriving after a lapse got
+        # that stale frame instantly and only then restarted retention.
+        #
+        # Measured 2026-09-11: B03-overlay ran 64s after B03-raw finished,
+        # past the 30s window, and its first frame came back RAW -- the
+        # frame frozen at the moment retention expired -- while its second
+        # frame 2s later was correctly overlay. For an experiment whose
+        # treatment IS the overlay, silently serving the previous
+        # treatment's pixels is the worst failure available, and the pose
+        # read-back cannot show it because the poses are identical.
+        t_req = time.monotonic()
+        self._full_wanted_at = t_req
+        with self._cond:
+            self._cond.wait_for(
+                lambda: self._full is not None and self._full_at >= t_req,
+                timeout=5.0)
+            frame = self._full
+            show_nodes = self._full_show_nodes
+            fresh = self._full_at >= t_req
+        if frame is not None and not fresh:
+            handler.send_error(503, "no fresh frame within 5s; is the "
+                                    "frame source alive?")
+            return
+        if frame is None:
+            handler.send_error(503, "no frame retained yet; retry")
+            return
+        ok, buf = cv2.imencode(".jpg", frame,
+                               [cv2.IMWRITE_JPEG_QUALITY,
+                                self.FULL_JPEG_QUALITY])
+        if not ok:
+            handler.send_error(500, "encode failed")
+            return
+        payload = buf.tobytes()
+        try:
+            handler.send_response(200)
+            handler.send_header("Cache-Control", "no-cache, private")
+            handler.send_header("Content-Type", "image/jpeg")
+            handler.send_header("Content-Length", str(len(payload)))
+            handler.send_header("X-Frame-Width", str(frame.shape[1]))
+            handler.send_header("X-Frame-Height", str(frame.shape[0]))
+            # Whether the node/bay/depot overlay ('o') was drawn on THIS
+            # frame. The RCBD treats overlay-vs-no-overlay as the treatment,
+            # so a caller must never have to guess it from file size.
+            handler.send_header("X-Show-Nodes", "1" if show_nodes else "0")
+            handler.end_headers()
+            handler.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError,
+                ConnectionAbortedError):
+            pass
 
     def close(self) -> None:
         self._httpd.shutdown()
@@ -2931,7 +3050,7 @@ def main() -> None:
                              sticker_detections, show_stickers,
                              depot_overlay_pixels)
                 if streamer is not None and now - last_stream >= 0.1:  # ~10 fps
-                    streamer.push(frame)
+                    streamer.push(frame, show_nodes=show_nodes)
                     last_stream = now
                 if not args.no_preview:
                     _latest_frame_holder[0] = frame

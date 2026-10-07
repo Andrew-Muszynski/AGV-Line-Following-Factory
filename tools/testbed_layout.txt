@@ -1,0 +1,12 @@
+Testbed layout (inches, same frame as the robot poses above):
+- Grid nodes 1-64: an 8 by 8 lattice spaced 10in apart. Node 1 is the south-west corner. Numbering runs east along a row of 8, then continues on the next row to the north.
+    row y, south to north: 1-8 y=16.75 | 9-16 y=26.75 | 17-24 y=36.75 | 25-32 y=46.75 | 33-40 y=56.75 | 41-48 y=66.75 | 49-56 y=76.75 | 57-64 y=86.75
+    x by position in the row, west to east: 13.5, 23.5, 33.5, 43.5, 53.5, 63.5, 73.5, 83.5
+- Workstation bays 65-113: each sits at the center of a grid cell, 7 per row. A robot is AT a workstation when within 4in of a bay.
+    row y, south to north: 65-71 y=21.70 | 72-78 y=31.70 | 79-85 y=41.70 | 86-92 y=51.70 | 93-99 y=61.70 | 100-106 y=71.70 | 107-113 y=81.70
+    x by position in the row, west to east: 18.3, 28.3, 38.3, 48.3, 58.3, 68.3, 78.3
+- Workstation entry nodes: entry = bay + 49, sitting on the grid edge just outside its bay. A robot on an entry node is in the corridor, NOT at the workstation.
+- Depot slots, where robots park. A robot is IN THE DEPOT when within 3in of a slot.
+    D1:(19.6,10.9) D2:(25.9,11.0) D3:(32.2,11.1) D4:(38.6,11.2) D5:(45.0,11.2) D6:(51.2,11.2) D7:(57.3,11.2)
+- Depot entry nodes, the lane in front of the depot. A robot here is NOT in the depot.
+    DE1:(19.7,2.9) DE2:(25.9,3.1) DE3:(32.1,3.1) DE4:(38.6,3.2) DE5:(45.1,3.3) DE6:(51.5,3.4) DE7:(57.5,3.5)

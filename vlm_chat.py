@@ -38,7 +38,7 @@ that would make this untrustworthy, so it is ruled out in the prompt and
 surfaced in the UI.
 
 CONFIG (environment)
-    VLM_OLLAMA_URL   default http://192.168.0.162:11434
+    VLM_OLLAMA_URL   default http://127.0.0.1:11434
     VLM_MODEL        default qwen3.5:4b
     VLM_STREAM_URL   default http://127.0.0.1:8081/stream
 """
@@ -50,8 +50,13 @@ import os
 import time
 import urllib.request
 
-DEFAULT_OLLAMA_URL = "http://192.168.0.162:11434"
-DEFAULT_MODEL = "qwen3.5:4b"
+# Loopback: Ollama runs on this laptop, and a hard-coded LAN IP breaks on every
+# network change (see the note in tools/vlm_bench.py). VLM_OLLAMA_URL overrides.
+DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
+# gemma4:e2b-it-qat, not qwen3.5:4b (the default through 2026-09-23). Ask is
+# interactive, so first-token latency dominates the experience, and a cold
+# 4b load was long enough to read as a hang. Override with VLM_MODEL.
+DEFAULT_MODEL = "gemma4:e2b-it-qat"
 # Port 8081 matches apriltag_localize.py --stream and the URL the page
 # itself uses for #live-feed (see cameraStreamUrl() in solver.js).
 DEFAULT_STREAM_URL = "http://127.0.0.1:8081/stream"

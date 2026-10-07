@@ -152,6 +152,25 @@ class MetricsEmitter:
         except Exception:
             pass
 
+    def emit_depot_arrived_in(self, robot_id: str, x_in=None, y_in=None,
+                              yaw_deg=None) -> None:
+        """DEPOT_ARRIVED carrying the terminal pose.
+
+        The ingest side has always written run_robots.terminal_x_m/y_m/
+        yaw_deg from this event's x_m/y_m/yaw_deg fields, but the event was
+        emitted with only robot_id and elapsed_ms, so all three columns were
+        NULL on every row ever recorded (145 of 145 as of 2026-09-22) and the
+        Robots tab's "final yaw" had nothing to display. Same inch-to-meter
+        convention as emit_pose_in.
+        """
+        try:
+            self.emit("DEPOT_ARRIVED", robot_id=robot_id,
+                      x_m=None if x_in is None else float(x_in) * IN_TO_M,
+                      y_m=None if y_in is None else float(y_in) * IN_TO_M,
+                      yaw_deg=None if yaw_deg is None else float(yaw_deg))
+        except Exception:
+            pass
+
     def emit_pose_in(self, robot_id: str, x_in, y_in, yaw_deg=None,
                      battery_pct=None, pose_age_ms=None) -> None:
         """POSE_SAMPLE from testbed-inch coordinates (stored in meters)."""

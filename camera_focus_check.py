@@ -55,6 +55,7 @@ from __future__ import annotations
 import argparse
 import csv
 import time
+import urllib.request
 
 import cv2
 import numpy as np
@@ -125,15 +126,78 @@ def main() -> None:
                           "use sharpness while turning the focus ring at "
                           "the camera itself). Toggle live with the 'b' "
                           "key instead of restarting.")
+    ap.add_argument("--stream", default=None, metavar="URL",
+                    help="read frames from a running apriltag_localize "
+                         "instead of opening the camera, e.g. "
+                         "http://127.0.0.1:8081/full.jpg . Only one process "
+                         "can hold the camera, so this is the only way to "
+                         "check lighting WITHOUT stopping the bridge and "
+                         "losing the frozen homography mid-session. The "
+                         "frame is annotated, so numbers are comparable "
+                         "within a session but not against camera mode.")
     args = ap.parse_args()
 
-    cap = open_camera(args.camera, preferred_backend=args.backend)
-    if cap is None:
-        raise SystemExit(f"Could not open camera index {args.camera}")
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
-    print(f"Capture resolution: {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
-          f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}")
+    cap = None
+    if args.stream:
+        # Read the LIVE pipeline's frame instead of opening the camera.
+        #
+        # Only one process can hold the NexiGo on Windows, and during a
+        # capture session camera_bridge_windows.py owns it -- so the
+        # original camera path forces you to tear down the bridge and
+        # apriltag_localize just to look at a brightness number, which
+        # also loses the frozen homography. Pulling from
+        # apriltag_localize's own /full.jpg lets lighting be tuned while
+        # everything keeps running, which is the only way to tune it
+        # BETWEEN blocks of a capture session.
+        #
+        # Caveat worth knowing: /full.jpg is the ANNOTATED frame, so the
+        # HUD panel and the drawn boxes are inside the crop. Sharpness and
+        # exposure are still comparable frame-to-frame because the same
+        # annotation is present every time, but the absolute numbers are
+        # NOT comparable to the direct-camera mode. Pick one mode and stay
+        # in it for a session.
+        # Probe ONCE before opening a window. Without this a dead endpoint
+        # shows an empty window that hangs for the timeout on every loop
+        # with nothing on screen explaining why -- which is exactly what it
+        # did on 2026-09-11 when apriltag_localize simply was not running.
+        # Fail loudly here instead.
+        try:
+            with urllib.request.urlopen(args.stream, timeout=5) as _r:
+                _probe = _r.read()
+            if not _probe:
+                raise ValueError("endpoint returned no data")
+            _f = cv2.imdecode(np.frombuffer(_probe, dtype=np.uint8),
+                              cv2.IMREAD_COLOR)
+            if _f is None:
+                raise ValueError("endpoint returned something that is not "
+                                 "a JPEG")
+            print(f"Reading frames from {args.stream} "
+                  f"({_f.shape[1]}x{_f.shape[0]}, live pipeline, annotated)")
+        except Exception as exc:
+            raise SystemExit(chr(10).join([
+                f"cannot read {args.stream}",
+                f"  {type(exc).__name__}: {exc}",
+                "",
+                "Check, in this order:",
+                "  1. is apriltag_localize.py running with --stream?",
+                "       pgrep -af apriltag_localize",
+                "  2. is it listening?   ss -ltn | grep 8081",
+                "  3. bare --stream is port 8081, not 8090",
+                "  4. if apriltag_localize runs inside WSL its port lives in",
+                "     WSL's network namespace and Windows cannot reach it --",
+                "     run this inside WSL too, against 127.0.0.1",
+                "",
+                "Or drop --stream to read the camera directly, which needs",
+                "camera_bridge_windows.py stopped first.",
+            ]))
+    else:
+        cap = open_camera(args.camera, preferred_backend=args.backend)
+        if cap is None:
+            raise SystemExit(f"Could not open camera index {args.camera}")
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+        print(f"Capture resolution: {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
+              f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}")
     print("Turn the focus ring by hand and watch SHARPNESS for a peak.")
     print("Adjust room lighting and watch EXPOSURE mean (target ~90-160) "
           "and the clip%% on both ends (target low).")
@@ -155,15 +219,38 @@ def main() -> None:
         print(f"Logging one row/sec to {args.log}")
 
     peak_sharpness = 0.0
+    stream_fails = 0          # consecutive --stream read failures
     big_metric = args.big
     window = "Focus + Exposure Check"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
     print(f"Big readout: {big_metric} (press 'b' to switch)")
 
     while True:
-        ok, frame = cap.read()
-        if not ok:
-            continue
+        if cap is None:
+            try:
+                with urllib.request.urlopen(args.stream, timeout=5) as resp:
+                    blob = resp.read()
+                frame = cv2.imdecode(np.frombuffer(blob, dtype=np.uint8),
+                                     cv2.IMREAD_COLOR)
+                ok = frame is not None
+            except Exception:
+                ok, frame = False, None
+            if not ok:
+                # Say something. A silent retry loop behind a frozen window
+                # is indistinguishable from a hung program -- which is how
+                # this looked on 2026-09-11 before the startup probe existed.
+                stream_fails += 1
+                if stream_fails == 1 or stream_fails % 20 == 0:
+                    print(f"  stream read failed ({stream_fails}x) -- is "
+                          f"apriltag_localize still running and serving "
+                          f"--stream?")
+                time.sleep(0.3)
+                continue
+            stream_fails = 0
+        else:
+            ok, frame = cap.read()
+            if not ok:
+                continue
 
         crop, (cx0, cy0, cw, ch) = central_crop(frame, args.crop)
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)

@@ -62,7 +62,7 @@ const NS = "http://www.w3.org/2000/svg";
 const DEPOT_ENTRY_CLEARANCE_SEC = {
   // Alvik1-4: real hardware-measured depot-corridor clearance times (feeds
   // computeLaunchOffsets()'s collision-avoidance stagger -- see
-  // depotClearanceSec()/depotSegmentSec() below).
+  // depotClearanceSec() below; the per-hop times are DEPOT_MOVE_SEC).
   Alvik1: 14.7,
   Alvik2: 16.0,
   Alvik3: 18.1,
@@ -122,17 +122,29 @@ const AUTO_DECONFLICT_MAX_ITERATIONS = 260;
 const SOLVE_POLISH_BUDGET_MS = 1800;
 const REROUTE_BUDGET_MS = 1200;
 const PATH_MODES = ["vh", "hv", "via-bottom", "via-top", "via-left", "via-right"];
-// Reverted 2026-08-03: back to the Linux laptop (192.168.0.212) as the
-// rosbridge host, per the decision in memory: wsl2_microros_migration --
-// WSL2-hosted rosbridge showed a real, unresolved ~25s+ discovery-matching
-// delay after every robot power-cycle (vs. near-instant on the Linux
-// laptop previously), so the WSL2 migration is on hold pending further
-// investigation (see [[testbed_network_migration]]). 127.0.0.1 was the
-// WSL2-era default (this page opened as a native Windows browser file://
-// page, and Windows can't reliably reach its own WSL2-mirrored IP -- see
-// the old comment in git history if that's ever revisited). Override with
-// a query param if rosbridge ever runs elsewhere, e.g.
-//   agv_grid_workstation_solver.html?rosbridge=192.168.0.162
+// 2026-09-29: 127.0.0.1. The whole ROS stack (micro-ROS agent, rosbridge,
+// fleetSupervisor) now runs in WSL2 on the Windows laptop, so rosbridge is
+// co-located with whatever is showing this page.
+//
+// THIS IS THE LIVE COPY. app.py serves templates/index.html, which loads
+// this file -- editing agv_grid_workstation_solver.html (the standalone
+// file:// version) does NOT affect the page served on :8000. Both carry
+// their own ROSBRIDGE_URL; keep them in step.
+//
+// History, because this value has flipped three times:
+//   127.0.0.1      first WSL2 era
+//   192.168.0.212  reverted 2026-08-03 -- WSL2-hosted rosbridge appeared
+//                  to show a ~25s discovery-matching delay after every
+//                  robot power-cycle, so the migration was put on hold
+//   127.0.0.1      now. Re-tested 2026-09-29: it did NOT reproduce as a
+//                  standing cost -- it hit once just after the stack came
+//                  up and cleared on retry. A full route then ran with
+//                  every turn inside 2deg.
+//
+// Use 127.0.0.1 and NOT the machine's own LAN IP: Windows cannot reliably
+// reach its own WSL2-mirrored IP (a hairpin many Wi-Fi drivers drop), and
+// loopback sidesteps it. Override with a query param if it ever moves:
+//   ?rosbridge=192.168.0.212
 const ROSBRIDGE_URL = (() => {
   let v = new URLSearchParams(window.location.search).get("rosbridge");
   if (!v) return "ws://192.168.0.212:9090";
@@ -306,7 +318,7 @@ function layout() {
   const TARGET_CELL = 90;
   const gridColsSpan = Math.max(1, state.cols - 1);
   const gridRowsSpan = Math.max(1, state.rows - 1);
-  const depotSlotsSpan = DEPOT_SLOT_GRID_X0 + DEPOT_SLOT_PITCH * Math.max(0, state.agents - 1) + 0.5;
+  const depotSlotsSpan = depotLaneEastGrid(state.agents);
   const wSpanCells = Math.max(gridColsSpan, depotSlotsSpan);
   const w = Math.round(wSpanCells * TARGET_CELL + pad * 2);
   const h = Math.round(gridRowsSpan * TARGET_CELL + 230);
@@ -381,11 +393,30 @@ function pathLabel(pathPoint) {
 // the DE entries sit ON the lane (same y as node 0), directly below each slot,
 // giving clean right angles — no diagonals.
 const DEPOT_LANE_GRID_Y = -1.35;   // the horizontal lane (node 0's row)
-const DEPOT_SLOT_GRID_Y = -0.75;   // parking row, above the lane
+// SURVEYED, not modelled. Grid-cell coordinates derived from the measured
+// DEPOT_SLOT_WORLD_IN table in camera_grid_navigate.py, with node 1 at
+// (13.5, 16.75) in and a 10 in pitch. Re-surveyed 2026-09-30.
+//
+// REPLACES a uniform "x = 0.5 + 0.6 * i" model whose error grew with the
+// slot index -- 0.110 cells at D1 to 0.290 at D6 -- because the real slots
+// are not evenly pitched. Two consequences, both seen on the page: the
+// drawn boxes sat progressively left of the robots, and D6 vanished
+// entirely. The box is hidden when a robot is further from its slot than
+// 35% of a cell (so a robot out on a route does not also render parked),
+// and D6's combined x+y model error was 0.329 cells -- just inside that
+// threshold, so a correctly parked Alvik6 was read as "away".
+const DEPOT_SLOT_GRID = [
+  { x: 0.610, y: -0.617 },   // D1  (19.60, 10.58) in
+  { x: 1.240, y: -0.605 },   // D2  (25.90, 10.70) in
+  { x: 1.890, y: -0.605 },   // D3  (32.40, 10.70) in
+  { x: 2.522, y: -0.585 },   // D4  (38.72, 10.90) in
+  { x: 3.160, y: -0.595 },   // D5  (45.10, 10.80) in
+  { x: 3.790, y: -0.595 },   // D6  (51.40, 10.80) in
+  { x: 4.384, y: -0.552 },   // D7  (57.34, 11.23) in
+];
+const DEPOT_SLOT_GRID_Y = -0.75;   // nominal only; used past the table
 const DEPOT_ENTRY_GRID_Y = DEPOT_LANE_GRID_Y;  // DE points are ON the lane
 const DEPOT_NODE0_GRID = { x: 0, y: DEPOT_LANE_GRID_Y };
-const DEPOT_SLOT_GRID_X0 = 0.5;    // first slot's east offset from node 1
-const DEPOT_SLOT_PITCH = 0.6;      // spacing between stubs
 
 // The depot slot's grid position. Depot slots are fixed hardware -- always
 // the nominal, measured layout, never inferred from a live vision reading.
@@ -395,7 +426,18 @@ const DEPOT_SLOT_PITCH = 0.6;      // spacing between stubs
 // -- silently corrupted the whole depot layout more than once, with no
 // visible cause, since the depots never actually move. Removed entirely.)
 function depotSlotGrid(i) {
-  return { x: DEPOT_SLOT_GRID_X0 + DEPOT_SLOT_PITCH * i, y: DEPOT_SLOT_GRID_Y };
+  const s = DEPOT_SLOT_GRID[i];
+  if (s) return s;
+  // Past the surveyed table: extrapolate on the mean measured pitch rather
+  // than the old nominal, so an 8th slot lands near where it would really be.
+  const last = DEPOT_SLOT_GRID[DEPOT_SLOT_GRID.length - 1];
+  const pitch = (last.x - DEPOT_SLOT_GRID[0].x) / (DEPOT_SLOT_GRID.length - 1);
+  return { x: last.x + pitch * (i - DEPOT_SLOT_GRID.length + 1), y: last.y };
+}
+
+// East end of the drawn lane: half a cell past the last occupied slot.
+function depotLaneEastGrid(agents) {
+  return depotSlotGrid(Math.max(0, agents - 1)).x + 0.5;
 }
 
 function depotSlot(i) {
@@ -611,9 +653,26 @@ function depotClearanceSec(agent) {
   return DEPOT_ENTRY_CLEARANCE_SEC[agvName(agent)] || DEPOT_ENTRY_CLEARANCE_SEC.Alvik4;
 }
 
-function depotSegmentSec(agent) {
-  return depotClearanceSec(agent) / (agent + 2);
-}
+// Measured on hardware 2026-09-15 (runs_linux/fleet_log_20260915.txt, via
+// tools/launch_cascade.py): each leg's "driving from"/"brake fired" pair.
+// These are the SAME for every robot -- they are one lane hop, not a
+// property of which robot is doing it.
+//
+// REPLACES depotClearanceSec(agent)/(agent+2), which had no physical basis:
+// it amortised a whole-corridor clearance across a hop count and so produced
+// 7.35, 5.33, 4.53, 3.80, 3.40 and 3.13 s/hop -- every successive robot
+// FASTER than the one ahead of it. In the cascade that made followers close
+// on their leader by up to 2s per hop, which is what Plan & Simulate showed
+// on 2026-09-30. It also inflated the plan everywhere else: the planner
+// thought D# -> node 0 took 14.7-21.9s against a measured 6.3-15.7s.
+//
+// The staggered launch OFFSETS are unaffected -- computeLaunchOffsets() uses
+// depotClearanceSec() directly and is left exactly as it was.
+const DEPOT_MOVE_SEC = {
+  SLOT_TO_ENTRY: 2.22,   // D# -> DE#, south out of the parking slot
+  ENTRY_TO_ENTRY: 2.12,  // DE(n+1) -> DE(n), 1.74 driving + 0.38 settling
+  ENTRY_TO_NODE0: 1.82,  // DE1 -> node 0
+};
 
 function launchOrderForAgents(count) {
   const order = DEPOT_LAUNCH_ORDER.filter((agent) => agent < count);
@@ -673,20 +732,20 @@ function movementProfile(fromPoint, toPoint, agent) {
   const toKind = toPoint.kind;
   const fromLabel = pathLabel(fromPoint);
   const toLabel = pathLabel(toPoint);
-  const depotStep = depotSegmentSec(agent);
+
   const fromDepotSlot = String(fromLabel).startsWith("D") && !String(fromLabel).startsWith("DE");
   const toDepotSlot = String(toLabel).startsWith("D") && !String(toLabel).startsWith("DE");
   const fromDepotEntry = String(fromLabel).startsWith("DE");
   const toDepotEntry = String(toLabel).startsWith("DE");
 
   if (fromDepotSlot && toDepotEntry) {
-    return { seconds: depotStep, type: "DEPOT_SLOT_TO_ENTRY" };
+    return { seconds: DEPOT_MOVE_SEC.SLOT_TO_ENTRY, type: "DEPOT_SLOT_TO_ENTRY" };
   }
   if (fromDepotEntry && toDepotEntry) {
-    return { seconds: depotStep, type: "DEPOT_ENTRY_TO_ENTRY" };
+    return { seconds: DEPOT_MOVE_SEC.ENTRY_TO_ENTRY, type: "DEPOT_ENTRY_TO_ENTRY" };
   }
   if (fromDepotEntry && toLabel === 0) {
-    return { seconds: depotStep, type: "DEPOT_ENTRY_TO_NODE_0" };
+    return { seconds: DEPOT_MOVE_SEC.ENTRY_TO_NODE0, type: "DEPOT_ENTRY_TO_NODE_0" };
   }
   if (fromLabel === 0 && toLabel === 1) {
     return { seconds: MOVEMENT_SEC.BLUE_RED, type: "BLUE_TO_RED" };
@@ -695,10 +754,10 @@ function movementProfile(fromPoint, toPoint, agent) {
     return { seconds: MOVEMENT_SEC.BLUE_RED, type: "RED_TO_BLUE_RETURN" };
   }
   if (fromLabel === 0 && toDepotEntry) {
-    return { seconds: depotStep, type: "NODE_0_TO_DEPOT_ENTRY" };
+    return { seconds: DEPOT_MOVE_SEC.ENTRY_TO_NODE0, type: "NODE_0_TO_DEPOT_ENTRY" };  // same distance, reversed
   }
   if (fromDepotEntry && toDepotSlot) {
-    return { seconds: depotStep, type: "DEPOT_ENTRY_TO_SLOT" };
+    return { seconds: DEPOT_MOVE_SEC.SLOT_TO_ENTRY, type: "DEPOT_ENTRY_TO_SLOT" };  // same distance, reversed
   }
   if (fromKind === "grid" && toKind === "grid") {
     return { seconds: MOVEMENT_SEC.RED_RED, type: "RED_TO_RED" };
@@ -785,13 +844,120 @@ function applyRouteTiming(route) {
   return route;
 }
 
-function applyLaunchSchedule(routes) {
+// ---------------------------------------------------------------- launch
+// Depot hop times are measured and uniform -- see DEPOT_MOVE_SEC. The
+// cascade below does not depend on that: it gates against whatever segment
+// times the route actually has, so it stays correct if the model changes.
+
+function launchModeSetting() {
+  const el = document.getElementById("launch-mode");
+  return el && el.value === "cascade" ? "cascade" : "staggered";
+}
+
+// STAGGERED: hold each robot in its SLOT for a fixed offset, then run the
+// whole route. What the solver has always done -- but on
+// nearest_2026-09-09 it spent 307s of queueing, ~42% of the critical path,
+// with robots sitting still in their slots.
+function applyStaggeredSchedule(routes) {
   const offsets = computeLaunchOffsets(routes.length);
   for (const route of routes) {
     route.launchOffsetSec = offsets[route.agent] + (route.extraWaitSec || 0);
     applyRouteTiming(route);
   }
   return routes;
+}
+
+// CASCADE, as specified by the operator 2026-09-30:
+//
+//   1. all six move D# -> DE# and turn west at the same time -- distinct
+//      nodes, no contention, and the turn is paid in parallel;
+//   2. Alvik1 sets off; the other five stay put;
+//   3. when Alvik1 reaches node 0, Alvik2 is released to DE1;
+//      when Alvik2 reaches DE1, Alvik3 is released to DE2; and so on.
+//
+// The release condition is ARRIVAL, not departure: the robot ahead must have
+// finished its hop, not merely started moving away. Robots therefore enter
+// the grid strictly in order 1,2,3...
+//
+// WHY EVERY HOP IS GATED, not just the first. Delaying each robot once at
+// its entry node and letting it run is only correct if every robot covers a
+// lane hop in the same time. That is true of the MEASURED numbers, but it
+// was not true of the model this file used to carry (7.35 down to 3.13
+// s/hop, each robot faster than the one ahead), and a follower then closed
+// on its leader by up to 2s per hop. Gating every hop is correct either way.
+//
+// Gating on the route's OWN segment times rather than on the measured
+// constants keeps the plan self-consistent whatever that model says. If the
+// timing model is later corrected, this needs no change.
+function applyCascadeSchedule(routes) {
+  const ordered = routes.slice().sort((a, b) => a.agent - b.agent);
+  const isLane = (l) => /^DE\d+$/i.test(String(l)) || String(l) === "0";
+  let ahead = null;            // node label -> when the robot ahead ARRIVED
+
+  for (const route of ordered) {
+    // Nothing is held back in the slot. A manual per-robot delay is still
+    // honoured: that is the operator asking for it.
+    route.launchOffsetSec = route.extraWaitSec || 0;
+    const baseWaits = Object.assign({}, route.waitBeforeSec || {});
+
+    // Pass 1: natural timing, so the gate is computed against the same
+    // seconds the plan will actually use (turn penalties included).
+    route.waitBeforeSec = baseWaits;
+    applyRouteTiming(route);
+
+    const waits = Object.assign({}, baseWaits);
+    const mine = new Map();
+    let delay = 0;
+    for (const seg of route.segments || []) {
+      const target = String(seg.toNode);
+      const from = String(seg.fromNode);
+      // D# -> DE# IS NEVER GATED. All six make that move, and the turn that
+      // follows it, at the same time -- they are distinct nodes with no
+      // contention, and holding a robot in its slot is pure added wait.
+      // Gating started here by mistake (isLane(target) was true for DE#),
+      // which left the fleet queued in the depot instead of pre-staged in
+      // the lane. Caught in Plan & Simulate 2026-09-30.
+      if (!isLane(from)) continue;
+      let gate = 0;
+      if (ahead) {
+        // The node PAST this one: the robot ahead must have reached it.
+        const beyond = beyondInLane(route, seg.segmentIndex);
+        if (beyond !== null && ahead.has(beyond)) gate = ahead.get(beyond);
+      }
+      const start = seg.startSec + delay;
+      const extra = Math.max(0, gate - start);
+      if (extra > 0) {
+        waits[seg.segmentIndex] =
+          (Number(waits[seg.segmentIndex]) || 0) + extra;
+        delay += extra;
+      }
+      mine.set(target, seg.endSec + delay);
+      // Record the first node past the lane too -- the follower entering
+      // node 0 has to wait for the leader to LEAVE it, which is the same
+      // instant as the leader arriving at node 1.
+      if (!isLane(target)) break;
+    }
+
+    // Pass 2: re-time with the gates applied.
+    route.waitBeforeSec = waits;
+    applyRouteTiming(route);
+    ahead = mine;
+  }
+  return routes;
+}
+
+// The label one step further along this route than segment `idx`.
+function beyondInLane(route, idx) {
+  for (const seg of route.segments || []) {
+    if (seg.segmentIndex === idx + 1) return String(seg.toNode);
+  }
+  return null;
+}
+
+function applyLaunchSchedule(routes) {
+  return launchModeSetting() === "cascade"
+    ? applyCascadeSchedule(routes)
+    : applyStaggeredSchedule(routes);
 }
 
 function buildAgentRoute(
@@ -1854,8 +2020,7 @@ function drawGrid() {
   const node0Pt = visionGridToPoint(DEPOT_NODE0_GRID.x, DEPOT_NODE0_GRID.y);
   const node1Pt = visionGridToPoint(0, 0);
   const laneEastPt = visionGridToPoint(
-    DEPOT_SLOT_GRID_X0 + DEPOT_SLOT_PITCH * Math.max(0, state.agents - 1) + 0.5,
-    DEPOT_NODE0_GRID.y);
+    depotLaneEastGrid(state.agents), DEPOT_NODE0_GRID.y);
   svg.appendChild(el("text", { x: node0Pt.x + 18, y: node0Pt.y + 26, fill: "#334155", "font-size": 12, "font-weight": 700 }, "Depot lane south of grid"));
   // horizontal lane at node-0 level
   svg.appendChild(el("line", {
@@ -1918,7 +2083,11 @@ function drawGrid() {
 
   // Status-driven bay box coloring needs each bay's lifecycle status, so
   // compute it here (before the box loop) rather than later in drawGrid.
-  const bayTimesForBoxes = state.routes.length ? bayLifecycleTimes() : null;
+  // A launch replay is not a mission. The bays have no parts moving and
+  // no plan is executing, so their AWAIT/PROC/DONE lifecycle must not be
+  // driven off the replay clock as though one were.
+  const bayTimesForBoxes = (state.routes.length && !replayActive())
+    ? bayLifecycleTimes() : null;
   const statusClockForBoxes = statusClockSec();
 
   for (let r = 0; r < state.rows - 1; r++) {
@@ -1963,7 +2132,10 @@ function drawGrid() {
   }
 
   drawHeat();
-  drawRoutes();
+  // Planned route polylines belong to the imported plan, not to the
+  // recorded launch; drawing both at once implies the robots are
+  // following the plan, which during a replay they are not.
+  if (!replayActive()) drawRoutes();
 
   const bayTimes = bayTimesForBoxes;
   const statusClock = statusClockForBoxes;
@@ -2011,7 +2183,7 @@ function drawGrid() {
         handleGridNodeClick(r, c);
       });
       svg.appendChild(circle);
-      svg.appendChild(el("text", { x: p.x, y: p.y - 11, "text-anchor": "middle", fill: "#64748b", "font-size": 10 }, node));
+      svg.appendChild(el("text", { x: p.x - 11, y: p.y - 10, "text-anchor": "end", fill: "#64748b", "font-size": 10 }, node));
     }
   }
   const node0Redraw = visionGridToPoint(DEPOT_NODE0_GRID.x, DEPOT_NODE0_GRID.y);
@@ -2091,6 +2263,9 @@ function drawRoutes() {
 }
 
 function makespan(routes = state.routes) {
+  // A launch replay owns the clock while it is showing, so Play/Step/the
+  // scrub slider all run over the recorded window instead of the plan's.
+  if (routes === state.routes && replayActive()) return replayDuration();
   if (!routes.length) return 0;
   return Math.max(...routes.map((route) => route.durationSec || 0));
 }
@@ -2231,6 +2406,7 @@ function drawActiveEdgeConflicts() {
 }
 
 function drawSimulationAgents() {
+  if (replayActive()) { drawReplayAgents(); return; }
   if (!state.routes.length) return;
   const t = Math.min(state.timestep, makespan());
   for (const route of visibleRoutes()) {
@@ -2279,7 +2455,7 @@ function startPlaybackTimer() {
 }
 
 function togglePlayback() {
-  if (!state.routes.length) return;
+  if (!state.routes.length && !replayActive()) return;
   if (state.timer) {
     stopPlayback();
     return;
@@ -2289,7 +2465,7 @@ function togglePlayback() {
 }
 
 function stepRoute() {
-  if (!state.routes.length) return;
+  if (!state.routes.length && !replayActive()) return;
   if (state.timestep >= makespan()) state.timestep = 0;
   else state.timestep = Math.min(makespan(), state.timestep + 1);
   render();
@@ -2712,3 +2888,165 @@ function render() {
   renderConflictPane();
   renderRobotTopicPanel();
 }
+
+
+// ===========================================================================
+// Recorded depot-launch replay, drawn on THIS grid.
+//
+// Waypoints in static/data/launch_replay.json are [seconds, node-label], not
+// coordinates, so positions come from the solver's own specialPt()/pt() -- the
+// robots land exactly on the depot slots and lattice nodes the page already
+// draws, and there is no second coordinate system to drift.
+//
+// Built by tools/make_launch_replay.py; read that file's header for where
+// each arm's numbers come from and which parts are measured.
+// ===========================================================================
+
+const REPLAY = { data: null, on: { offsets: false, cascade: false } };
+const REPLAY_STYLE = {
+  offsets: { ring: "#b3471f", label: "fixed offsets" },
+  cascade: { ring: "#1f6f7a", label: "rolling cascade" },
+};
+
+function replayActive() {
+  return !!REPLAY.data && (REPLAY.on.offsets || REPLAY.on.cascade);
+}
+
+function replayArms() {
+  if (!REPLAY.data) return [];
+  return REPLAY.data.arms.filter((a) => REPLAY.on[a.id]);
+}
+
+function replayDuration() {
+  const arms = replayArms();
+  if (!arms.length) return 0;
+  return Math.ceil(Math.max(...arms.map((a) => a.end_s)));
+}
+
+function replayAgentIndex(name) {
+  const m = /(\d+)/.exec(name);
+  return m ? parseInt(m[1], 10) - 1 : 0;
+}
+
+// Node label -> screen point, using the page's own geometry.
+function replayNodePoint(label) {
+  const s = String(label);
+  if (s === "0") return specialPt("node0");
+  let m = /^D(\d+)$/.exec(s);
+  if (m) return specialPt(`depot-slot-${parseInt(m[1], 10) - 1}`);
+  m = /^DE(\d+)$/.exec(s);
+  if (m) return specialPt(`depot-entry-${parseInt(m[1], 10) - 1}`);
+  const n = parseInt(s, 10);
+  if (!Number.isFinite(n)) return specialPt("node0");
+  const idx = n - 1;
+  return pt(state.rows - 1 - Math.floor(idx / state.cols), idx % state.cols);
+}
+
+function replayPosAt(wps, t) {
+  if (!wps || !wps.length) return null;
+  if (t <= wps[0][0]) return replayNodePoint(wps[0][1]);
+  const last = wps[wps.length - 1];
+  if (t >= last[0]) return replayNodePoint(last[1]);
+  let lo = 0;
+  let hi = wps.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (wps[mid][0] <= t) lo = mid; else hi = mid;
+  }
+  const a = replayNodePoint(wps[lo][1]);
+  const b = replayNodePoint(wps[hi][1]);
+  const span = wps[hi][0] - wps[lo][0];
+  const f = span > 1e-6 ? (t - wps[lo][0]) / span : 0;
+  return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+}
+
+function drawReplayAgents() {
+  const arms = replayArms();
+  const t = Math.min(state.timestep, replayDuration());
+  arms.forEach((arm, ai) => {
+    const style = REPLAY_STYLE[arm.id];
+    let onGrid = 0;
+    for (const [name, wps] of Object.entries(arm.robots)) {
+      const p = replayPosAt(wps, t);
+      if (!p) continue;
+      const agent = replayAgentIndex(name);
+      const color = palette[agent % palette.length];
+      const entered = arm.entry_s[name] !== undefined && t >= arm.entry_s[name];
+      if (entered) onGrid += 1;
+      // Two arms can occupy the same node at the same instant; nudge the
+      // second one so neither is hidden underneath the other.
+      const dx = arms.length > 1 ? (ai === 0 ? -9 : 9) : 0;
+      svg.appendChild(el("circle", {
+        cx: p.x + dx, cy: p.y, r: 12,
+        fill: color, "fill-opacity": entered ? 1 : 0.45,
+        stroke: style.ring, "stroke-width": 3,
+      }));
+      svg.appendChild(el("text", {
+        x: p.x + dx, y: p.y + 4, "text-anchor": "middle",
+        fill: "#fff", "font-size": 11, "font-weight": 700,
+      }, `A${agent + 1}`));
+    }
+    const g = layout();
+    const y = g.top - 34 + ai * 17;
+    svg.appendChild(el("text", {
+      x: g.left, y, fill: style.ring, "font-size": 12, "font-weight": 700,
+    }, `${style.label}: ${onGrid}/6 on the grid`
+       + `  \u00b7  last onto node 0 at ${arm.last_entry_s.toFixed(1)}s`));
+  });
+}
+
+function replaySyncButtons() {
+  for (const b of document.querySelectorAll(".replay-arm")) {
+    b.classList.toggle("active", !!REPLAY.on[b.dataset.arm]);
+  }
+  const note = document.getElementById("replay-note");
+  if (note) {
+    const arms = replayArms();
+    note.textContent = arms.length
+      ? arms.map((a) => `${REPLAY_STYLE[a.id].label}: ${a.source}`).join("   |   ")
+      : "Same route both times \u2014 only the release schedule differs.";
+  }
+}
+
+async function replayEnsureData() {
+  if (REPLAY.data) return true;
+  try {
+    const res = await fetch("/static/data/launch_replay.json");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    REPLAY.data = await res.json();
+    return true;
+  } catch (err) {
+    const note = document.getElementById("replay-note");
+    if (note) {
+      note.textContent = "Could not load the replay data — run "
+        + `tools/make_launch_replay.py. (${err.message})`;
+    }
+    return false;
+  }
+}
+
+function replayInitUI() {
+  const box = document.getElementById("replay-open");
+  const row = document.getElementById("replay-arms");
+  if (!box || !row) return;
+  box.addEventListener("click", async () => {
+    const shown = row.style.display !== "none";
+    row.style.display = shown ? "none" : "inline-flex";
+    box.setAttribute("aria-expanded", shown ? "false" : "true");
+    if (!shown) { await replayEnsureData(); replaySyncButtons(); }
+  });
+  for (const b of document.querySelectorAll(".replay-arm")) {
+    b.addEventListener("click", async () => {
+      if (!(await replayEnsureData())) return;
+      const id = b.dataset.arm;
+      REPLAY.on[id] = !REPLAY.on[id];
+      stopPlayback();
+      state.timestep = 0;
+      replaySyncButtons();
+      render();
+    });
+  }
+  replaySyncButtons();
+}
+
+document.addEventListener("DOMContentLoaded", replayInitUI);

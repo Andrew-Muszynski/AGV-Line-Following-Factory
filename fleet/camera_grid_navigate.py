@@ -75,6 +75,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import threading
 import time
 from typing import Callable
 
@@ -95,6 +97,20 @@ from localization_modes import (
 )
 
 CONTROL_HZ = 50.0
+# Measured 2026-09-24, tools/turn_rpm_sweep.py, all six robots: the wheel-speed
+# rotation law is linear at 1.80 deg/s per commanded RPM from 3 to 35 RPM,
+# easing to ~1.75 at 70. Used only to size the staged turn's no-progress
+# allowance, never to predict a position.
+DEG_PER_SEC_PER_RPM = 1.80
+
+# Onboard pose reset verification. A genuine reset lands the carrier's pose
+# exactly on zero, so these are loose enough only for sensor noise while a
+# stale pre-reset reading (tens of inches, see reset_onboard_pose) fails them
+# by a wide margin.
+POSE_RESET_TOL_IN = 2.0
+POSE_RESET_TOL_DEG = 5.0
+POSE_RESET_VERIFY_SEC = 1.5
+POSE_RESET_ATTEMPTS = 3
 # Raised from 30 2026-07-28: alvik.brake() is confirmed instant/unconditional
 # in firmware (AGV_Factory_camera_correction.ino STOP handler, no queueing).
 # The only real lag between the robot crossing brake_lead_in and STOP being
@@ -264,20 +280,38 @@ TABLE_BOUNDS_MARGIN_IN = 6.0
 # apriltag_localize.py still maps tags 1-6 only, so tag 7 publishes as
 # "tag7".
 #
-# NOTE both-robots-rotating clearance at the tightest pair is only +0.23in,
-# inside placement error. Sequenced (one-at-a-time) depot rotations are
-# fine; simultaneous adjacent ones are not.
+# NOTE on simultaneous adjacent depot rotations. The robot measures 5.625in
+# corner to corner (operator, 2026-09-30), so a rotating robot sweeps a
+# 5.625in circle. The tightest slot pitch after the 2026-09-30 re-measure is
+# 6.30in, leaving +0.675in when both neighbours rotate at once -- up from the
+# +0.23in this note used to claim, which was computed against an assumed 15cm
+# (5.906in) diagonal that the direct measurement has now replaced. Still
+# tight enough to sequence them if anything else is marginal, but no longer
+# negative-clearance.
 #
 # Regenerate with: calibrate_workstations.py --emit-python
 # (paste into BOTH this file and the other one -- they run on different
 # machines and cannot import each other.)
+# RE-MEASURED 2026-09-30 after the depot row was shifted. 42 vision samples
+# per robot with the fleet parked and stationary; every slot moved the same
+# way (y down 0.25-0.40in, mean -0.34; x within +/-0.20in), which is the
+# signature of a real shift rather than noise. Slot pitch went 6.31 -> 6.36in.
+#
+# TWO LIMITS ON THESE NUMBERS. The vision terminal prints to 0.1in, so the
+# resolution is +/-0.05in and averaging bought little (most robots read the
+# same value on all 42 samples). And they record where each robot CAME TO
+# REST, so any consistent parking bias is baked in -- which is what you want
+# for "drive here and stop", but is not the same as measuring the tape.
 DEPOT_SLOT_WORLD_IN: dict[str, tuple[float, float]] = {
-    "D1": (19.64, 10.86),  # Alvik1
-    "D2": (25.88, 11.04),  # Alvik2
-    "D3": (32.20, 11.08),  # Alvik3
-    "D4": (38.58, 11.15),  # Alvik4
-    "D5": (44.96, 11.20),  # Alvik5
-    "D6": (51.20, 11.19),  # Alvik6
+    "D1": (19.60, 10.58),  # Alvik1
+    "D2": (25.90, 10.70),  # Alvik2
+    "D3": (32.40, 10.70),  # Alvik3
+    "D4": (38.72, 10.90),  # Alvik4
+    "D5": (45.10, 10.80),  # Alvik5
+    "D6": (51.40, 10.80),  # Alvik6
+    # NOT re-measured 2026-09-30 -- there is no 7th robot to park on it, so
+    # this is still the 2026-08-26 figure and is ~0.34in stale in y if the
+    # whole row moved together. Re-measure before using D7.
     "D7": (57.34, 11.23),  # tag7
 }
 DEPOT_ENTRY_WORLD_IN: dict[str, tuple[float, float]] = {
@@ -361,6 +395,68 @@ def node_to_world(n: int | str, rows: int, cols: int) -> tuple[float, float]:
     x = GRID_NODE1_WORLD_IN[0] + grid_x * GRID_PITCH_IN
     y = GRID_NODE1_WORLD_IN[1] + grid_y * GRID_PITCH_IN
     return x, y
+
+
+#: Why a leg or turn failed, as a short stable token.
+#:
+#: WHY (operator request, 2026-09-30). Every one of these used to surface as
+#: the same "vision leg failed (drive_leg failed on leg A->B)" event, so the
+#: Decision Log and the metrics DB could say how MANY legs failed but never
+#: WHY. One evening produced five distinct causes under that one label and
+#: the only way to tell them apart was to read the supervisor log by hand.
+#:
+#: Keep these stable -- they are written into metrics rows.
+FAIL_STALLED_IDLE    = "STALLED_IDLE"     # stopped short, left WHEEL_FOLLOW
+FAIL_STALLED_DRIVING = "STALLED_DRIVING"  # still in WHEEL_FOLLOW, not moving
+FAIL_MODE_ACK_LOST   = "MODE_ACK_LOST"    # WHEEL_FOLLOW_MODE never acked
+FAIL_SETTLE_FAILED   = "SETTLE_FAILED"    # heading never reached tolerance
+FAIL_SETTLE_DIVERGED = "SETTLE_DIVERGED"  # crawl drove the robot AWAY
+FAIL_VISION_LOST     = "VISION_LOST"      # no usable pose
+FAIL_ROBOT_ERROR     = "ROBOT_ERROR"      # firmware reported an ERROR
+FAIL_DWELL           = "DWELL_FAILED"
+FAIL_UNKNOWN         = "UNKNOWN"
+
+
+def settle_floor_update(prev_err, err, stiction_rpm, last_pass_rpm,
+                        rpm_step, rpm_max, moved_eps):
+    """How the settle crawl floor should change after one pass.
+
+    Returns (new_floor, action) where action is "stuck", "overshoot" or
+    "ok". Pure, and module level, so the three cases can be tested without
+    a live node -- the same reason collision_verdict() lives out here.
+
+    THE BUG THIS FIXES (hardware, Alvik1 2026-09-30). The old test was
+    `abs(prev_err) - abs(err) < moved_eps`, i.e. the change in the
+    MAGNITUDE of the error. That is not how far the robot turned, and the
+    two differ whenever a pass crosses the target: going -2.86 -> +10.54deg
+    is 13.4deg of real rotation, but the magnitude test reads -7.68 and
+    concludes the robot did not move -- answering by RAISING the crawl.
+    Observed live:
+
+        -2.86  -> +10.54deg   "did not move" -> raised to 8 RPM
+        +10.54 -> -23.37deg   "did not move" -> raised to 12 RPM
+
+    Each escalation made the next overshoot bigger. Stiction and overshoot
+    need OPPOSITE responses and both were getting more power.
+
+    Actual rotation is abs(err - prev_err). Stiction is that being near
+    zero. An overshoot is crossing the target and landing FURTHER out than
+    it started, which means the crawl is too fast for an error this size --
+    so the floor comes back down instead of staying spuriously raised.
+
+    Note a pass that crosses the target and lands CLOSER is a normal,
+    converging bounce: it is left alone deliberately.
+    """
+    if prev_err is None:
+        return stiction_rpm, "ok"
+    turned = abs(err - prev_err)
+    if turned < moved_eps:
+        return (min(rpm_max, max(last_pass_rpm, stiction_rpm) + rpm_step),
+                "stuck")
+    crossed = (err >= 0.0) != (prev_err >= 0.0)
+    if crossed and abs(err) > abs(prev_err):
+        return max(0.0, stiction_rpm - rpm_step), "overshoot"
+    return stiction_rpm, "ok"
 
 
 def is_workstation_node(n: int | str, rows: int, cols: int) -> bool:
@@ -465,6 +561,15 @@ class CameraGridNavigator(Node):
         # unaffected by any other node/thread's spinning.
         self._executor = SingleThreadedExecutor()
         self._executor.add_node(self)
+        self._spin_thread: threading.Thread | None = None
+        self._spin_stop: threading.Event | None = None
+        self._background_spin = False
+        #: callback counters, so starvation is measurable rather than
+        #: inferred from a robot that drove off course
+        self.vision_msgs = 0
+        self.odom_msgs = 0
+        self.vision_max_age = 0.0
+        self.odom_max_age = 0.0
 
         qos_status = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         qos_best_effort = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
@@ -508,6 +613,10 @@ class CameraGridNavigator(Node):
             String, f"{robot}_pose", self._on_odom_pose, qos_best_effort)
 
         self.last_status = ""
+        # Set by fail(); read by the supervisor's VisionLegWorker so
+        # the reason reaches the event and the metrics row instead of
+        # being flattened into one generic 'vision leg failed'.
+        self.last_failure: str | None = None
         self.mode_ack_seen = False
         self.dwell_done_seen = False
         self.errored = False
@@ -557,10 +666,81 @@ class CameraGridNavigator(Node):
         # while a robot legitimately waits on another robot's reservation.
         self.last_wheel_cmd_at: float | None = None
 
+        # Command acknowledgement. {robot}_cmd is published BEST_EFFORT while
+        # {robot}_status is RELIABLE, so loss is one-directional: a command
+        # can vanish on the way out, but the firmware's BUSY reply cannot
+        # vanish on the way back. Absence of BUSY is therefore strong
+        # evidence the command never arrived -- which is what makes a resend
+        # safe rather than a double-rotation risk.
+        self.cmd_ack_seen = False
+        self.cmd_ack_at: float | None = None
+        self.cmd_ack_text = ""
+        #: filled in by every acknowledged command, for the caller's log
+        self.last_cmd_transaction: dict = {}
+        #: diagnostic record of the most recent rotation, read by callers
+        self.last_rotation: dict = {}
+
+    def start_background_spin(self) -> None:
+        """Service this node's callbacks from a dedicated thread.
+
+        WHY
+        ---
+        Without it, callbacks are only processed when a motion primitive
+        happens to call _spin_once(), and SingleThreadedExecutor.spin_once()
+        handles ONE ready callback per call. Vision arrives at ~60Hz,
+        odometry and status on top; a control loop that spins once per
+        iteration cannot drain that, so the queues back up and every pose the
+        controller reads is old.
+
+        Alone there is enough CPU to keep up and it never shows. With six
+        navigators on one laptop it does: measured 2026-09-15, Alvik3 got
+        NO vision samples at all for 1.5s and both it and Alvik4 lost
+        localization on their first leg. In camera_assist a lost camera does
+        not stop the robot -- control_pose() keeps returning odometry with a
+        correction that has stopped being updated -- so both drove an arc on
+        drifting dead reckoning and collided.
+
+        OPT-IN on purpose. fleetSupervisor.py shares this class, and
+        switching its threading model is not something to do in the same
+        change that fixes a collision. Callers that do not start the
+        background spinner behave exactly as before.
+        """
+        if self._spin_thread is not None:
+            return
+        self._spin_stop = threading.Event()
+
+        def _loop() -> None:
+            while not self._spin_stop.is_set():
+                try:
+                    self._executor.spin_once(timeout_sec=0.05)
+                except Exception:
+                    return
+
+        self._background_spin = True
+        self._spin_thread = threading.Thread(
+            target=_loop, name=f"spin-{self.robot}", daemon=True)
+        self._spin_thread.start()
+
+    def stop_background_spin(self) -> None:
+        if self._spin_thread is None:
+            return
+        self._spin_stop.set()
+        self._spin_thread.join(timeout=1.0)
+        self._spin_thread = None
+        self._background_spin = False
+
     def _spin_once(self, timeout_sec: float) -> None:
+        # With a background spinner the executor is already being drained
+        # continuously and must NOT be spun from here too -- an executor
+        # cannot be spun from two threads. Yield instead, so existing
+        # wait loops keep their pacing and simply read fresher state.
+        if self._background_spin:
+            time.sleep(min(max(timeout_sec, 0.002), 0.02))
+            return
         self._executor.spin_once(timeout_sec=timeout_sec)
 
     def destroy_node(self) -> None:
+        self.stop_background_spin()
         # Own executor must release this node before the base class destroys
         # it, or the executor is left holding a dangling reference.
         try:
@@ -576,6 +756,19 @@ class CameraGridNavigator(Node):
         self.last_status = text
         if self.args.verbose:
             self.get_logger().info(f"  [status] {text}")
+        elif ("ROTATE_REL DIAG" in text
+              or text == "ROTATE_REL BRAKED_UNCONFIRMED"):
+            # Raw status strings are otherwise printed only under
+            # --verbose, which the fleet path hardcodes to False
+            # (fleetSupervisor.py, the args Namespace). A normal run's log
+            # therefore could not carry the rotation fault's evidence at
+            # all: grepping base_0922_1344.log -- a run where the fault
+            # demonstrably fired -- found zero BRAKED_UNCONFIRMED
+            # (2026-09-22). Logged unconditionally for the same reason as
+            # the WHEEL_CMD_TIMEOUT block below: it is the direct
+            # measurement of the failure being root-caused, and an
+            # unobservable failure cannot be confirmed fixed.
+            self.get_logger().warning(f"  [status] {text}")
         if text.startswith("ERROR"):
             self.errored = True
             self.error_text = text
@@ -594,8 +787,16 @@ class CameraGridNavigator(Node):
                     f"[DIAG] WHEEL_CMD_TIMEOUT: {gap_str} since this side's "
                     f"last send_wheel() call (firmware brake threshold is "
                     "300ms; terminal timeout is 1000ms)")
-        elif text.startswith("BUSY WHEEL_FOLLOW_MODE"):
-            self.mode_ack_seen = True
+        elif text.startswith("BUSY"):
+            # Any BUSY is the firmware saying it accepted the command it is
+            # now executing. Tracked for every command, not just the wheel
+            # mode handshake, so send_cmd_acked() can tell "not delivered"
+            # from "delivered and running".
+            self.cmd_ack_seen = True
+            self.cmd_ack_at = time.monotonic()
+            self.cmd_ack_text = text
+            if text.startswith("BUSY WHEEL_FOLLOW_MODE"):
+                self.mode_ack_seen = True
         elif text == "DWELL COMPLETE":
             self.dwell_done_seen = True
         elif text == "ROTATE_REL COMPLETE":
@@ -622,6 +823,10 @@ class CameraGridNavigator(Node):
         except (ValueError, KeyError, TypeError):
             return
         now = time.monotonic()
+        self.vision_msgs += 1
+        if self.last_pose is not None:
+            self.vision_max_age = max(self.vision_max_age,
+                                      now - self.last_pose.t)
         prev = self.last_pose
         if prev is not None and now - prev.t < VISION_STALE_SEC:
             elapsed = now - prev.t
@@ -681,6 +886,11 @@ class CameraGridNavigator(Node):
         link (no camera/rosbridge round-trip), and turn_to_heading_rotate_
         rel() only ever reads the single latest value right before a turn,
         never integrates it over time the way drive_leg() does with vision."""
+        now_cb = time.monotonic()
+        self.odom_msgs += 1
+        if self.last_odom_pose is not None:
+            self.odom_max_age = max(self.odom_max_age,
+                                    now_cb - self.last_odom_pose.t)
         try:
             d = json.loads(msg.data)
             x_in = float(d["x"]) / 2.54
@@ -749,6 +959,20 @@ class CameraGridNavigator(Node):
             f"localization={self.localization_mode}: odometry anchored raw "
             f"({raw.x:.2f},{raw.y:.2f},{raw.yaw:+.1f}) to world "
             f"({world_x_in:.2f},{world_y_in:.2f},{world_yaw_deg:+.1f})")
+        # A caller that just ran reset_onboard_pose() should be anchoring a
+        # raw pose near the origin. Far from it means the reset was
+        # acknowledged but did not take, and every position this robot
+        # reports for the rest of the route is built on that. Silent until
+        # 2026-09-15, when a robot anchored at raw (-27.32,-21.89,-186.6),
+        # appeared to overshoot every node by ~1.3in, and was misdiagnosed
+        # as having a long stopping distance.
+        if abs(raw.x) > 6.0 or abs(raw.y) > 6.0 or abs(raw.yaw) > 30.0:
+            self.get_logger().warning(
+                f"anchor raw pose is far from zero "
+                f"({raw.x:.1f},{raw.y:.1f},{raw.yaw:+.1f}) -- onboard pose "
+                "reset did not take. Positions will be consistent but the "
+                "odometry carries stale accumulated state; power-cycle this "
+                "robot if it behaves oddly.")
         return True
 
     def _odom_world_pose(self) -> Pose | None:
@@ -819,31 +1043,186 @@ class CameraGridNavigator(Node):
         (stale until a fresh _on_odom_pose() sample arrives post-reset) --
         caller should resync_yaw_offset() again once vision confirms the
         robot is stationary after this returns."""
-        self.pose_reset_seen = False
-        self.send_cmd("RESET_POSE")
-        t0 = time.monotonic()
-        while rclpy.ok() and time.monotonic() - t0 < timeout_sec:
-            self._spin_once(0.1)
-            if self.pose_reset_seen:
-                break
-        else:
-            self.get_logger().error(
-                f"{leg_label}: no POSE_RESET ack within {timeout_sec:.1f}s -- aborting")
-            return False
-        self.yaw_offset = None
-        self.last_odom_yaw = None
-        self.last_odom_pose = None
-        self.odom_anchor = None
-        self.odom_correction_x_in = 0.0
-        self.odom_correction_y_in = 0.0
-        self.odom_correction_yaw_deg = 0.0
-        return True
+        # VERIFY THE OUTCOME, NOT THE ACK (2026-09-25).
+        #
+        # POSE_RESET means only that the ESP32 wrote the 'Z' packet:
+        # Arduino_Alvik::reset_pose() takes the semaphore, writes, and
+        # returns -- fire and forget, with nothing from the motor MCU saying
+        # it applied. publish_pose() then reports a CACHED read of the
+        # carrier's last 'z' packet, so the first pose message after the ack
+        # can still carry pre-reset values. wait_for_fresh_odom() returns on
+        # the ARRIVAL of any non-stale sample and never looks at what is in
+        # it, so a stale one satisfied it.
+        #
+        # Symptom this caused, intermittently, on 2026-09-24:
+        #   anchor raw pose is far from zero (28.9,-20.7,-0.9)
+        #     -- onboard pose reset did not take
+        # and the run continued on an odometry origin carrying the PREVIOUS
+        # route's accumulation. The code's own advice at that point is to
+        # power-cycle the robot, which is exactly the manual intervention an
+        # unattended multi-run session cannot afford.
+        #
+        # So: re-issue until the reported pose actually reads near zero.
+        for attempt in range(1, POSE_RESET_ATTEMPTS + 1):
+            self.pose_reset_seen = False
+            self.send_cmd("RESET_POSE")
+            t0 = time.monotonic()
+            while rclpy.ok() and time.monotonic() - t0 < timeout_sec:
+                self._spin_once(0.1)
+                if self.pose_reset_seen:
+                    break
+            else:
+                self.get_logger().error(
+                    f"{leg_label}: no POSE_RESET ack within "
+                    f"{timeout_sec:.1f}s -- aborting")
+                return False
+
+            self.yaw_offset = None
+            self.last_odom_yaw = None
+            self.last_odom_pose = None
+            self.odom_anchor = None
+            self.odom_correction_x_in = 0.0
+            self.odom_correction_y_in = 0.0
+            self.odom_correction_yaw_deg = 0.0
+
+            # Now wait for a sample that is BOTH fresh and actually zeroed.
+            t1 = time.monotonic()
+            applied = None
+            while rclpy.ok() and time.monotonic() - t1 < POSE_RESET_VERIFY_SEC:
+                self._spin_once(0.05)
+                raw = self.fresh_odom_pose()
+                if raw is None:
+                    continue
+                if (abs(raw.x) <= POSE_RESET_TOL_IN
+                        and abs(raw.y) <= POSE_RESET_TOL_IN
+                        and abs(normalize_deg(raw.yaw)) <= POSE_RESET_TOL_DEG):
+                    applied = raw
+                    break
+            if applied is not None:
+                if attempt > 1:
+                    self.get_logger().info(
+                        f"{leg_label}: onboard pose reset took on attempt "
+                        f"{attempt}")
+                return True
+            last = self.fresh_odom_pose()
+            self.get_logger().warning(
+                f"{leg_label}: onboard pose reset did not take on attempt "
+                f"{attempt}/{POSE_RESET_ATTEMPTS}"
+                + (f" (raw still {last.x:.1f},{last.y:.1f},{last.yaw:+.1f})"
+                   if last is not None else " (no fresh odom)"))
+
+        self.get_logger().error(
+            f"{leg_label}: onboard pose reset never took after "
+            f"{POSE_RESET_ATTEMPTS} attempts -- the motor MCU is not applying "
+            "the 'Z' packet; this robot needs a power cycle")
+        return False
 
     # -- lifecycle ----------------------------------------------------
     def send_cmd(self, cmd: str) -> None:
         msg = String()
         msg.data = cmd
         self.cmd_pub.publish(msg)
+
+    #: A rotation smaller than this on BOTH sensors counts as "never moved".
+    #: Well above stationary pose noise (the yaw spread of a parked robot in
+    #: workstation_calibration.json is ~0.15deg) and far below any real turn
+    #: this code commands.
+    ROTATION_MOTION_DEG = 3.0
+
+    def _rotation_motion_seen(self, cam_before, odom_before) -> bool:
+        """Did the robot physically rotate at all since the command went out?
+
+        Both sensors are consulted because they fail differently: the camera
+        can drop frames, odometry can be anchored wrong. Either one showing
+        real movement means the turn happened and merely fell short, which is
+        an ordinary correction. Only agreement that nothing moved -- with
+        fresh readings from both -- is a no-motion event.
+        """
+        cam_now = self.fresh_pose()
+        odom_now = self.fresh_odom_pose()
+        moved = False
+        if cam_before is not None and cam_now is not None:
+            moved = moved or abs(normalize_deg(cam_now.yaw - cam_before))                 > self.ROTATION_MOTION_DEG
+        if odom_before is not None and odom_now is not None:
+            moved = moved or abs(normalize_deg(odom_now.yaw - odom_before))                 > self.ROTATION_MOTION_DEG
+        if cam_now is None and odom_now is None:
+            return True          # cannot tell; do not claim no-motion
+        self.last_rotation.update({
+            "cam_yaw_after": None if cam_now is None else round(cam_now.yaw, 2),
+            "odom_yaw_after": None if odom_now is None else round(odom_now.yaw, 2),
+            "cam_age_ms": None if cam_now is None else
+                          round((time.monotonic() - cam_now.t) * 1000),
+            "odom_age_ms": None if odom_now is None else
+                           round((time.monotonic() - odom_now.t) * 1000),
+            "physical_motion_detected": moved,
+        })
+        return moved
+
+    def send_cmd_acked(self, cmd: str, ack_timeout_sec: float = 1.5,
+                       attempts: int = 3,
+                       already_done=None) -> dict:
+        """Publish a command and confirm the firmware accepted it.
+
+        WHY THIS EXISTS
+        ---------------
+        {robot}_cmd is BEST_EFFORT. A dropped command produces no error
+        anywhere: the robot simply never moves, the caller waits out its
+        timeout, and the camera correctly reports the robot exactly where it
+        started. Measured 2026-09-15 on the launch cascade -- Alvik4 ran its
+        whole route alone without a single miss, then intermittently failed
+        rotations at different nodes with 3 and 6 navigators active, twice in
+        a row on the same turn. That is packet loss under load, not
+        calibration, and no amount of retuning the turn finds it.
+
+        send_route.py has always done this handshake for every command it
+        sends; the navigator's ROTATE_REL path never did.
+
+        Resending is safe because loss is one-directional -- see cmd_ack_seen
+        in __init__. If BUSY has not arrived, the command almost certainly
+        did not either, so a resend cannot double-execute.
+
+        already_done: optional predicate. A command that completes faster
+        than its own BUSY reaches us is not un-acknowledged, so this stops
+        the wait early rather than resending on top of a finished command.
+        """
+        self.cmd_ack_seen = False
+        self.cmd_ack_at = None
+        self.cmd_ack_text = ""
+        t_send = time.monotonic()
+        sends = 0
+        for attempt in range(1, attempts + 1):
+            self.send_cmd(cmd)
+            sends = attempt
+            deadline = time.monotonic() + ack_timeout_sec
+            while time.monotonic() < deadline:
+                self._spin_once(0.02)
+                if self.cmd_ack_seen or self.errored:
+                    break
+                if already_done is not None and already_done():
+                    break
+            if self.cmd_ack_seen or self.errored or (
+                    already_done is not None and already_done()):
+                break
+            if attempt < attempts:
+                self.get_logger().warning(
+                    f"no BUSY ack for {cmd!r} within {ack_timeout_sec:.1f}s "
+                    f"(attempt {attempt}/{attempts}) -- resending; the "
+                    "command publisher is BEST_EFFORT and this one was "
+                    "almost certainly dropped")
+        txn = {
+            "command": cmd,
+            "sends": sends,
+            "acked": bool(self.cmd_ack_seen),
+            "ack_text": self.cmd_ack_text,
+            "ack_latency_ms": (None if self.cmd_ack_at is None
+                               else round((self.cmd_ack_at - t_send) * 1000)),
+        }
+        self.last_cmd_transaction = txn
+        if not txn["acked"] and not self.errored:
+            self.get_logger().error(
+                f"{cmd!r} never acknowledged after {sends} send(s) -- the "
+                "firmware did not accept it")
+        return txn
 
     def send_wheel(self, left_rpm: float, right_rpm: float) -> None:
         msg = String()
@@ -1053,6 +1432,37 @@ class CameraGridNavigator(Node):
             self.get_logger().info("  [rearm] WHEEL_FOLLOW_MODE sent, polling for ack...")
         t0 = time.monotonic()
         while rclpy.ok() and time.monotonic() - t0 < timeout_sec:
+            # FEED THE WATCHDOG WHILE WAITING, not just once on ack.
+            #
+            # The hold below used to be sent only after mode_ack_seen. But the
+            # firmware starts wheel_cmd_last_ms when it PROCESSES
+            # WHEEL_FOLLOW_MODE, so a slow ack round-trip leaves it braking at
+            # 300ms and erroring at 1000ms while this loop is still waiting --
+            # exactly what the paragraph above predicts, and what happened on
+            # 2026-09-29: Alvik1 logged "did not ack WHEEL_FOLLOW_MODE before
+            # settle" with 1705ms since its last send_wheel(), and the robot
+            # had already reported ERROR WHEEL_CMD_TIMEOUT gap=1001ms.
+            #
+            # A wheel_cmd sent before the mode takes effect is discarded by
+            # the firmware (wheelCmdCallback returns unless current_state ==
+            # STATE_WHEEL_FOLLOW), so this is free when the ack is quick and
+            # is the whole difference when it is not.
+            #
+            # RATE-LIMITED, and that matters. The first version of this sent a
+            # hold on every _spin_once(0.1), i.e. ~10Hz for as long as the ack
+            # took. That is worst possible timing: a slow ack means the link
+            # is already congested, and answering by publishing MORE feeds the
+            # congestion that is delaying the ack. On 2026-09-29 five robots
+            # then reported WHEEL_CMD_TIMEOUT gap=1001ms in the same second
+            # while this side showed only 4-6ms since its last send -- the
+            # commands were going out and not arriving. Feed the watchdog only
+            # as often as the watchdog needs: 150ms is half the 300ms brake
+            # window, so one dropped packet is still covered.
+            # last_wheel_cmd_at is None until the first send_wheel() of this
+            # node's life -- NOT 0.0 -- so it has to be checked explicitly.
+            _last_cmd = self.last_wheel_cmd_at
+            if _last_cmd is None or (time.monotonic() - _last_cmd) >= 0.15:
+                self.send_wheel(0.0, 0.0)
             self._spin_once(0.1)
             if self.mode_ack_seen:
                 if self.args.verbose:
@@ -1509,7 +1919,14 @@ class CameraGridNavigator(Node):
                 t_progress0 = loop_t0
             elif loop_t0 - t_progress0 > no_progress_timeout_sec:
                 self.send_cmd("STOP")
-                self.get_logger().error(
+                # IDLE means the robot left WHEEL_FOLLOW and stopped driving;
+                # BUSY means it is still in the mode and simply not moving --
+                # blocked, or held by the collision guard. One message, two
+                # completely different faults, so classify on the status.
+                self.fail(
+                    FAIL_STALLED_IDLE
+                    if "IDLE" in str(self.last_status).upper()
+                    else FAIL_STALLED_DRIVING,
                     f"{leg_label}: no progress for {no_progress_timeout_sec:.0f}s "
                     f"(stuck at {dist_to_target:.2f}in from target, last "
                     f"status '{self.last_status}') -- STOP sent, aborting")
@@ -2641,7 +3058,7 @@ class CameraGridNavigator(Node):
         # a ROTATE_REL follows, instead of sitting armed in
         # STATE_WHEEL_FOLLOW while that decision is made.
         if not self.enter_wheel_follow_mode():
-            self.get_logger().error(
+            self.fail(FAIL_MODE_ACK_LOST,
                 f"{leg_label}: did not ack WHEEL_FOLLOW_MODE -- aborting route")
             return False
 
@@ -2680,7 +3097,7 @@ class CameraGridNavigator(Node):
                 # STOP blind for up to 1.5s (strictly stronger than one
                 # send), and verifies stationarity if vision returns.
                 self.stop_and_verify(leg_label, timeout_sec=1.5)
-                self.get_logger().error(
+                self.fail(FAIL_VISION_LOST,
                     f"{leg_label}: {self.localization_source_label()} lost -- "
                     "STOP sent, aborting route")
                 return False
@@ -2693,7 +3110,14 @@ class CameraGridNavigator(Node):
                 best_dist = dist_to_target
                 t_progress0 = loop_t0
             elif loop_t0 - t_progress0 > no_progress_timeout_sec:
-                self.get_logger().error(
+                # IDLE means the robot left WHEEL_FOLLOW and stopped driving;
+                # BUSY means it is still in the mode and simply not moving --
+                # blocked, or held by the collision guard. One message, two
+                # completely different faults, so classify on the status.
+                self.fail(
+                    FAIL_STALLED_IDLE
+                    if "IDLE" in str(self.last_status).upper()
+                    else FAIL_STALLED_DRIVING,
                     f"{leg_label}: no progress for {no_progress_timeout_sec:.0f}s "
                     f"(stuck at {dist_to_target:.2f}in from target, last "
                     f"status '{self.last_status}') -- aborting route")
@@ -2767,8 +3191,400 @@ class CameraGridNavigator(Node):
         return False
 
     # -- one turn-in-place: pivot to a new absolute heading ---------------
-    def turn_to_heading_rotate_rel(self, target_heading_deg: float, leg_label: str) -> bool:
-        """Added 2026-08-13, per explicit user direction after a bench
+    def mean_yaw_error(self, target_heading_deg: float, samples: int,
+                       timeout_sec: float = 1.0) -> float | None:
+        """Circular mean heading error over `samples` DISTINCT vision frames.
+
+        One frame carries enough noise to pass a 2deg gate while the true
+        heading is outside it -- a 2000-case sweep of settle_heading() put the
+        worst true error at 2.48deg against a 2.00deg gate for exactly this
+        reason. Averaging distinct frames is what makes the gate mean what it
+        says. Circular (sin/cos) rather than arithmetic, so it stays correct
+        when the error is near +/-180 and individual samples straddle the wrap.
+        """
+        g_noise_warn = lambda: getattr(self.args, "settle_noise_warn_deg", 0.75)
+        sx = sy = 0.0
+        n = 0
+        last_t = None
+        t0 = time.monotonic()
+        while n < samples and time.monotonic() - t0 < timeout_sec:
+            self._spin_once(0.0)
+            pose = self.fresh_pose()
+            if pose is None:
+                return None
+            if last_t is not None and pose.t == last_t:
+                time.sleep(0.005)
+                continue
+            last_t = pose.t
+            e = math.radians(yaw_error_deg(target_heading_deg, pose.yaw))
+            sx += math.cos(e)
+            sy += math.sin(e)
+            n += 1
+        if n == 0:
+            return None
+        # Circular spread of the samples. The tolerance guarantee holds while
+        # the vision yaw noise is under ~0.5deg sigma; past that the gate can
+        # pass a heading that is really outside tolerance, so say so loudly
+        # rather than quietly miss the spec.
+        # R is floored off zero: math.log(0) raises, and a resultant of exactly
+        # zero is reachable (samples 180deg apart) -- a crash here would take
+        # down a turn in the live path over a diagnostic.
+        resultant = min(1.0, max(1e-9, math.hypot(sx, sy) / n))
+        spread = math.degrees(math.sqrt(-2.0 * math.log(resultant)))
+        if spread > g_noise_warn():
+            self.get_logger().warning(
+                f"vision yaw noise {spread:.2f}deg sigma over {n} frames -- "
+                "above the level a 2deg heading gate can be trusted at; "
+                "check tag visibility/lighting before believing the settle")
+        return math.degrees(math.atan2(sy, sx))
+
+    def fail(self, reason: str, message: str) -> None:
+        """Log an error and record WHY, in one call.
+
+        Split logging from classification and they drift: the message gets
+        reworded, the reason keeps the old meaning, and the metrics quietly
+        count the wrong thing. One call, one place."""
+        self.last_failure = reason
+        self.get_logger().error(f"[{reason}] {message}")
+
+    def settle_heading(self, target_heading_deg: float, leg_label: str,
+                       tol_deg: float) -> bool:
+        """Close the last few degrees from a STANDSTILL until the heading is
+        actually inside tol_deg, or fail saying how far off it stopped.
+
+        WHY THIS EXISTS
+        ---------------
+        A large turn cannot be made accurate by tuning how it decelerates, and
+        two days were spent proving that the hard way. 1156 turns of
+        runs_linux/supervisor_live.log, split by whether the turn ever reached
+        70 RPM:
+
+            under 45deg (never leaves the crawl)   0% over 5deg, worst 6.8
+            over 65deg (uses 70 RPM)              19% over 5deg, worst 19.1
+
+        The robot is accurate when, and only when, it arrives at the target
+        slowly from rest. A big turn arrives carrying speed it cannot shed in
+        the angle it has left, and where it stops is then luck. Replacing the
+        speed ladder with a proportional taper did not fix that and made it
+        worse: on 2026-09-25 every robot finished its ~180deg depot square-up
+        11-16deg off.
+
+        So the turn is split in two. The coarse turn gets close fast and is
+        ALLOWED to be sloppy. This then closes the gap in the one regime that
+        measures accurate -- a slow crawl from a standstill -- re-measuring
+        between passes and repeating until the heading is inside tolerance.
+
+        Each pass stops `settle_lead_deg` short, which is the measured coast
+        after a STOP from the crawl (1.6-1.9deg at 6 RPM), so a pass lands ON
+        the target rather than past it. A pass that does not move the robot at
+        all raises the crawl speed for the next one to break stiction, and
+        drops straight back to the accurate speed once it moves -- the lead
+        scales with the speed so the fast pass does not overshoot either.
+
+        It is a no-op when the coarse turn already landed inside tolerance,
+        which at intersection tolerance is most of the time, so it costs
+        nothing where it is not needed.
+        """
+        g = lambda n, d: getattr(self.args, n, d)
+        base_rpm = g("settle_rpm", 6.0)
+        min_rpm = g("settle_rpm_min", 4.0)
+        rpm_step = g("settle_rpm_step", 4.0)
+        rpm_max = g("settle_rpm_max", 18.0)
+        base_lead = g("settle_lead_deg", 4.0)
+        max_passes = int(g("settle_max_passes", 4))
+        pass_timeout = g("settle_pass_timeout_sec", 4.0)
+        no_progress = g("settle_no_progress_sec", 0.8)
+        progress_deg = g("settle_progress_deg", 0.5)
+        moved_eps = g("settle_moved_eps_deg", 0.3)
+        samples = int(g("settle_samples", 9))
+        # The TARGET and the FAILURE threshold are not the same number, and
+        # conflating them aborted a whole fleet run on 2026-09-28. tol_deg is
+        # what the settle aims for (2deg at workstations and depots).
+        # hard_fail is where the heading becomes a physical hazard -- the
+        # 5deg bay-collision threshold. Between them the leg continues with a
+        # loud warning, because a robot parked 2.5deg off is not worth failing
+        # a leg over: a failed leg means a retry, then exclusion, then the
+        # mission aborts. Every failure in that run was a workstation arrival
+        # (nodes 69, 73, 78, 81) that missed 2deg and took the whole run down.
+        hard_fail = max(tol_deg, g("settle_hard_fail_deg", 5.0))
+        period = 1.0 / CONTROL_HZ
+
+        # Gate TIGHTER than the tolerance by the measurement uncertainty, so
+        # passing it means the TRUE heading is inside tolerance and not merely
+        # that one noisy average said so. Averaging alone was not enough: a
+        # 20000-case sweep still let 35 through, at up to 2.39deg true against
+        # a 2.00deg gate.
+        gate = max(0.5, tol_deg - g("settle_margin_deg", 0.6))
+
+        # Escalation floor, raised only when a pass provably fails to move the
+        # robot. Judged BETWEEN passes on the averaged measurement, never on
+        # the single frames inside a pass: at 0.25deg of vision noise a single
+        # frame fakes the "progress" the in-pass guard looks for, so an earlier
+        # version of this method never detected stiction at all and crawled at
+        # 6 RPM through all four passes against a robot that needed 10.
+        stiction_rpm = 0.0
+        last_pass_rpm = min_rpm
+        prev_err = None
+
+        for attempt in range(max_passes + 1):
+            err = self.mean_yaw_error(target_heading_deg, samples)
+            if err is None:
+                self.get_logger().error(
+                    f"{leg_label}: no fresh vision to verify heading -- "
+                    "cannot confirm the robot is pointing where it should")
+                return False
+
+            # Crossing the target is a BOUNCE, not divergence: the pass
+            # could not travel less than its own stopping distance, so it went
+            # through and out the other side. Only a growing error that keeps
+            # the SAME sign means the robot is being driven away from where it
+            # should be. Treating a bounce as divergence aborted legs that
+            # were inside tolerance, with a message blaming the wheel sign.
+            same_side = (prev_err is not None
+                         and (err >= 0.0) == (prev_err >= 0.0))
+            if (prev_err is not None and same_side
+                    and abs(err) > abs(prev_err) + moved_eps):
+                # Getting WORSE is not stiction, and must not be treated as it:
+                # raising the crawl would drive the robot further away, faster,
+                # every pass. Only an inverted sign convention or a wheel
+                # turning the wrong way does this, and both want a human.
+                self.send_wheel(0.0, 0.0)
+                self.stop_and_verify(leg_label, timeout_sec=1.5)
+                self.fail(FAIL_SETTLE_DIVERGED,
+                    f"{leg_label}: SETTLE DIVERGED -- {prev_err:+.2f} -> "
+                    f"{err:+.2f}deg off {target_heading_deg:.0f}. The crawl is "
+                    "turning the robot AWAY from the target; check the wheel "
+                    "sign convention and the drivetrain before running again")
+                return False
+            # A pass that failed to improve a heading ALREADY inside
+            # tolerance is where to stop trying. Retrying does not converge:
+            # when the error is only a little above the crawl's own coast the
+            # robot cannot travel that little, so it lands on the other side
+            # at a similar magnitude and bounces. Hardware, Alvik1 2026-09-28:
+            # +1.91 -> -1.99deg, which was accepted only because the stiction
+            # escalation happened to widen the lead first. Four of those and
+            # the leg fails on a heading that was in spec the whole time.
+            if (prev_err is not None
+                    and abs(prev_err) - abs(err) < moved_eps
+                    and abs(err) <= tol_deg):
+                self.get_logger().info(
+                    f"{leg_label}: {err:+.2f}deg off {target_heading_deg:.0f} "
+                    f"-- a pass from {prev_err:+.2f}deg did not improve on it "
+                    f"and this is inside the {tol_deg:.1f}deg tolerance; "
+                    "accepting rather than bouncing")
+                return True
+            # Still outside tolerance. Whether that is stiction or an
+            # overshoot decides which way the crawl floor moves -- see
+            # settle_floor_update() for the 2026-09-30 divergence this
+            # replaces.
+            stiction_rpm, _settle_action = settle_floor_update(
+                prev_err, err, stiction_rpm, last_pass_rpm,
+                rpm_step, rpm_max, moved_eps)
+            if _settle_action == "stuck":
+                self.get_logger().warning(
+                    f"{leg_label}: settle pass did not move the robot "
+                    f"({prev_err:+.2f} -> {err:+.2f}deg, turned "
+                    f"{abs(err - prev_err):.2f}deg) -- raising the crawl "
+                    f"to {stiction_rpm:.0f} RPM")
+            elif _settle_action == "overshoot":
+                self.get_logger().warning(
+                    f"{leg_label}: settle pass OVERSHOT the target "
+                    f"({prev_err:+.2f} -> {err:+.2f}deg, turned "
+                    f"{abs(err - prev_err):.2f}deg) -- crawl floor down to "
+                    f"{stiction_rpm:.0f} RPM, not up")
+
+            if abs(err) <= gate:
+                if attempt:
+                    self.get_logger().info(
+                        f"{leg_label}: settled {err:+.2f}deg off "
+                        f"{target_heading_deg:.0f} (gate {gate:.2f}, tol "
+                        f"{tol_deg:.1f}) after {attempt} pass(es)")
+                return True
+
+            # Speed for this pass, chosen so the coast is about half the error
+            # and the pass lands near zero. A crawl cannot correct an error
+            # SMALLER than its own coast -- it would stop before it moved -- so
+            # a small residual needs a slower crawl, not the same one. Without
+            # this, an error between the gate and the coast was uncorrectable,
+            # and raising the speed on retry made the coast bigger still: four
+            # no-op passes and a failed leg on a robot that was already inside
+            # tolerance.
+            rpm = max(min_rpm,
+                      min(base_rpm, base_rpm * abs(err) / (2.0 * base_lead)))
+            rpm = max(rpm, stiction_rpm)
+            lead = base_lead * (rpm / base_rpm)
+
+            if abs(err) <= lead:
+                # Below what the crawl available here can correct. Inside
+                # tolerance it is accepted and said out loud; outside it the
+                # leg fails, because that is a real limit of the hardware and
+                # not something to paper over.
+                if abs(err) <= tol_deg:
+                    self.get_logger().warning(
+                        f"{leg_label}: {err:+.2f}deg off "
+                        f"{target_heading_deg:.0f} -- inside the "
+                        f"{tol_deg:.1f}deg tolerance but below the "
+                        f"{lead:.2f}deg a {rpm:.1f} RPM crawl can correct, "
+                        "accepting")
+                    return True
+                self.send_wheel(0.0, 0.0)
+                self.stop_and_verify(leg_label, timeout_sec=1.5)
+                if abs(err) <= hard_fail:
+                    self.get_logger().warning(
+                        f"{leg_label}: OUT OF TOLERANCE {err:+.2f}deg off "
+                        f"{target_heading_deg:.0f} -- past the {tol_deg:.1f}deg "
+                        f"target but inside the {hard_fail:.1f}deg collision "
+                        f"threshold, and below the {lead:.2f}deg the slowest "
+                        "crawl can correct. Continuing.")
+                    return True
+                self.fail(FAIL_SETTLE_FAILED,
+                    f"{leg_label}: SETTLE FAILED -- {err:+.2f}deg off "
+                    f"{target_heading_deg:.0f}, past the {hard_fail:.1f}deg "
+                    f"collision threshold and below the {lead:.2f}deg the "
+                    "slowest crawl available can correct")
+                return False
+
+            if attempt >= max_passes:
+                self.send_wheel(0.0, 0.0)
+                self.stop_and_verify(leg_label, timeout_sec=1.5)
+                if abs(err) <= hard_fail:
+                    self.get_logger().warning(
+                        f"{leg_label}: OUT OF TOLERANCE {err:+.2f}deg off "
+                        f"{target_heading_deg:.0f} after {max_passes} passes "
+                        f"-- past the {tol_deg:.1f}deg target but inside the "
+                        f"{hard_fail:.1f}deg collision threshold. Continuing.")
+                    return True
+                self.fail(FAIL_SETTLE_FAILED,
+                    f"{leg_label}: SETTLE FAILED -- {err:+.2f}deg off "
+                    f"{target_heading_deg:.0f} after {max_passes} passes, "
+                    f"past the {hard_fail:.1f}deg collision threshold")
+                return False
+
+            self.get_logger().info(
+                f"{leg_label}: settle pass {attempt + 1}/{max_passes}: "
+                f"{err:+.2f}deg off, crawling {rpm:.1f} RPM to within "
+                f"{lead:.2f}deg")
+            if not self.enter_wheel_follow_mode():
+                self.fail(FAIL_MODE_ACK_LOST,
+                    f"{leg_label}: did not ack WHEEL_FOLLOW_MODE before settle")
+                return False
+
+            prev_err = err
+            last_pass_rpm = rpm
+            t0 = time.monotonic()
+            best, last_gain = abs(err), t0
+            err_at_break = None
+            while rclpy.ok() and time.monotonic() - t0 < pass_timeout:
+                loop_t0 = time.monotonic()
+                self._spin_once(0.0)
+                if self.errored:
+                    self.get_logger().error(
+                        f"{leg_label}: robot reported {self.error_text} "
+                        "during settle")
+                    self.send_wheel(0.0, 0.0)
+                    self.stop_and_verify(leg_label, timeout_sec=1.5)
+                    return False
+                pose = self.fresh_pose()
+                if pose is None:
+                    break
+                e = yaw_error_deg(target_heading_deg, pose.yaw)
+                err_at_break = e
+                if abs(e) <= lead:
+                    break
+                # progress_deg, not a fraction of a degree: the threshold has
+                # to clear the noise on a single frame or the guard never
+                # fires and a stuck pass burns its whole timeout.
+                if abs(e) < best - progress_deg:
+                    best, last_gain = abs(e), loop_t0
+                elif loop_t0 - last_gain > no_progress:
+                    break        # stuck, or overshot: end the pass, remeasure
+                # Sign convention MEASURED 2026-09-24, same as the staged turn:
+                # positive LEFT wheel RPM produces a NEGATIVE yaw change.
+                if e > 0.0:
+                    self.send_wheel(-rpm, rpm)
+                else:
+                    self.send_wheel(rpm, -rpm)
+                time.sleep(max(0.0, period - (time.monotonic() - loop_t0)))
+
+            self.send_wheel(0.0, 0.0)
+            self.stop_and_verify(leg_label, timeout_sec=1.5)
+            # COAST INSTRUMENTATION. settle_lead_deg is meant to equal how far
+            # the robot travels after the stop is commanded, so that a pass
+            # lands on the target instead of past it. The 1.75deg in use is an
+            # estimate carried over from a different measurement, and on
+            # 2026-09-28 a pass went +1.91 -> -1.99deg, which only happens if
+            # the real figure is roughly twice that. Rather than re-guess the
+            # constant, every pass now reports what it actually was, so it can
+            # be calibrated from a real run. Cheap: one pose read, no motion.
+            settled = self.fresh_pose()
+            if settled is not None and err_at_break is not None:
+                coast = abs(yaw_error_deg(target_heading_deg, settled.yaw)
+                            - err_at_break)
+                self.get_logger().info(
+                    f"{leg_label}:   COAST {coast:.2f}deg after stop at "
+                    f"{rpm:.1f} RPM (lead in use {lead:.2f}deg)")
+            # The turn invalidated the odometry offset drive_leg() steers on.
+            self.resync_yaw_offset()
+        return False
+
+    def turn_to_heading_rotate_rel(self, target_heading_deg: float,
+                                   leg_label: str,
+                                   tol_deg: float | None = None) -> bool:
+        """Coarse turn, then settle_heading() until the result is inside
+        tolerance. tol_deg defaults to --turn-tol-deg; workstation and depot
+        arrivals pass the tight one, because those are the orientations that
+        cause collisions when they are wrong."""
+        if not self._turn_to_heading_core(target_heading_deg, leg_label):
+            return False
+        tol = self.args.turn_tol_deg if tol_deg is None else tol_deg
+        return self.settle_heading(target_heading_deg, leg_label, tol)
+
+    def _turn_to_heading_core(self, target_heading_deg: float, leg_label: str) -> bool:
+        """TURN METHOD SWITCH (2026-09-24) -- see the dispatch at the top of
+        the body, then the original docstring below.
+
+        THE TWO MOVEMENT METHODS ARE MUTUALLY DESTRUCTIVE AT THE CARRIER.
+        Arduino_AlvikCarrier's firmware handles a wheel-speed packet as:
+
+            case 'J':
+              alvik.disableKinematicsMovement();   // kills MOVEMENT_ROTATE
+              alvik.disablePositionControl();
+              alvik.setRpm(left, right);
+
+        so ANY wheel-speed write cancels an in-flight alvik.rotate(). Drive
+        legs stream wheel speeds (STATE_WHEEL_FOLLOW, which the firmware
+        describes as "busy/never-idle by design -- there is no 'done' for a
+        streamed mode"); turns use alvik.rotate(). Every observed no-motion
+        failure -- 2026-09-22 Alvik1, 2026-09-24 Alvik1 and Alvik4 -- is the
+        FIRST rotation after a drive leg, i.e. the seam between the two.
+
+        Supporting evidence, all negative for every other candidate: the
+        chassis never twitches (visually confirmed), the ESP32<->carrier link
+        is alive throughout (qstall 12-33ms, istall 4-7ms), the same command
+        succeeds by hand seconds later on the same robot in the same failed
+        state, and the fault has NEVER appeared in 1,354 isolated rotations
+        above 5deg (2026-09-23 stress run) or 96 more in the 2026-09-24 gain
+        sweep -- neither of which drives.
+
+        Selecting "wheel" makes the whole route use ONE control paradigm:
+        turn_to_heading()'s tapered wheel-speed law, the method this testbed
+        used before 2026-08-13 and the one the user's earlier robots held to
+        0.1deg. alvik.rotate() is then never called, so there is no
+        MOVEMENT_ROTATE for a 'J' packet to cancel.
+
+        The cost is real and is why rotate_rel was chosen in the first place:
+        the wheel law closes its loop in this node over WiFi/DDS rather than
+        on the motor MCU, measured at 3.4-5.7s per 90deg against 1.0-1.7s.
+        Slower-and-completes beats faster-and-strands-a-robot-per-run, but
+        this stays a switch rather than a replacement so it can be reverted
+        in one environment variable if the failure turns out to be elsewhere.
+
+        Set AGV_TURN_METHOD=wheel (fleet-wide, from the supervisor's own
+        launch line, no supervisor code change) or pass --turn-method wheel.
+
+        --- original docstring follows ---
+
+        Added 2026-08-13, per explicit user direction after a bench
         comparison (TurnSpeedBenchAlvik6.ino, Alvik6) showed alvik.rotate()
         settling in ~1.0-1.7s at ~1-3deg accuracy, vs. turn_to_heading()'s
         wheel-streaming taper at 3.4-5.7s / ~2.8-2.9deg for the same 90deg
@@ -2821,6 +3637,16 @@ class CameraGridNavigator(Node):
         (2.33deg) and speed (1.28s), so it bought nothing over odom alone
         and was not adopted -- see yaw_stress_rotation()'s docstring for
         all three modes if this needs re-litigating."""
+        # One control paradigm for the whole route, or none. Environment
+        # first so the fleet can be switched from the supervisor's launch
+        # line without touching fleetSupervisor.py, which reaches this method
+        # through four separate call sites of its own.
+        method = (os.environ.get("AGV_TURN_METHOD")
+                  or getattr(self.args, "turn_method", "rotate_rel"))
+        if method == "staged":
+            return self.turn_to_heading_staged(target_heading_deg, leg_label)
+        if method == "wheel":
+            return self.turn_to_heading(target_heading_deg, leg_label)
         start_pose = self.control_pose()
         if start_pose is None:
             self.get_logger().error(
@@ -3086,7 +3912,41 @@ class CameraGridNavigator(Node):
         self.rotate_camera_confirmed_pose = None
         self.errored = False
         self.error_text = ""
-        self.send_cmd(f"ROTATE_REL {rel_deg:.2f}")
+
+        # Heading before the command, from both sensors independently, so a
+        # failure can be classified as "never started" rather than guessed
+        # at. Recorded even when everything works -- it is the only way to
+        # tell a dropped command from a turn that ran and undershot.
+        _p0 = self.fresh_pose()
+        _o0 = self.fresh_odom_pose()
+        cam_yaw_before = None if _p0 is None else _p0.yaw
+        odom_yaw_before = None if _o0 is None else _o0.yaw
+
+        txn = self.send_cmd_acked(
+            f"ROTATE_REL {rel_deg:.2f}",
+            already_done=lambda: (self.rotate_rel_done_seen
+                                  or self.rotate_rel_unconfirmed_seen))
+        self.last_rotation = {
+            "leg": leg_label, "rel_deg": round(rel_deg, 2),
+            "target_heading": target_heading_deg,
+            "cam_yaw_before": cam_yaw_before,
+            "odom_yaw_before": odom_yaw_before,
+            "sends": txn["sends"], "acked": txn["acked"],
+            "ack_latency_ms": txn["ack_latency_ms"],
+            "result": None,
+        }
+        if not txn["acked"] and not (self.rotate_rel_done_seen
+                                     or self.rotate_rel_unconfirmed_seen):
+            # Waiting out a 16s deadline for a command the firmware never
+            # received wastes the whole leg and then invites a corrective
+            # rotation on top of an unknown state. Fail immediately instead.
+            self.last_rotation["result"] = "COMMAND_NOT_ACKNOWLEDGED"
+            self.get_logger().error(
+                f"{leg_label}: ROTATE_REL {rel_deg:+.2f} never acknowledged "
+                f"after {txn['sends']} send(s) -- aborting rather than "
+                "waiting out the deadline on a command that was not received")
+            self.stop_and_verify(leg_label)
+            return False
         timeout_sec = max(5.0, abs(rel_deg) * 0.15 + 3.0)
 
         cam_ok = (target_heading_deg is not None
@@ -3109,13 +3969,52 @@ class CameraGridNavigator(Node):
                     cam_window = [(t, y) for (t, y) in cam_window
                                   if t >= cutoff]
                     err = yaw_error_deg(target_heading_deg, p.yaw)
-                    if (abs(err) <= self.args.turn_tol_deg
-                            and len(cam_window) >= 3
-                            and cam_window[-1][0] - cam_window[0][0]
-                                >= 0.8 * CAM_STABLE_SEC):
-                        deltas = [normalize_deg(y - cam_window[0][1])
-                                  for _t, y in cam_window]
-                        if max(deltas) - min(deltas) <= CAM_STABLE_TOL_DEG:
+                    settled = (len(cam_window) >= 3
+                               and cam_window[-1][0] - cam_window[0][0]
+                                   >= 0.8 * CAM_STABLE_SEC
+                               and (lambda d: max(d) - min(d)
+                                    <= CAM_STABLE_TOL_DEG)(
+                                   [normalize_deg(y - cam_window[0][1])
+                                    for _t, y in cam_window]))
+                    turned_by = (
+                        None if cam_yaw_before is None else
+                        abs(normalize_deg(p.yaw - cam_yaw_before)))
+                    if (settled and abs(err) > self.args.turn_tol_deg
+                            and turned_by is not None
+                            and turned_by >= self.ROTATION_MOTION_DEG):
+                        # Settled, outside tolerance, AND demonstrably moved:
+                        # the rotation physically finished and missed, so
+                        # waiting out the firmware deadline adds nothing --
+                        # the camera has already made the measurement the
+                        # correction will be computed from. Measured
+                        # 2026-09-15: a turn 4.57deg off cost 4.74s against a
+                        # normal 1.5s, nearly all of it idling.
+                        #
+                        # THE MOVEMENT CHECK IS LOAD BEARING. Without it this
+                        # fires on a robot that has not started turning yet:
+                        # the co-processor takes 150-250ms to take over, and
+                        # before it does the camera sees a perfectly settled
+                        # robot at its ORIGINAL heading -- which is outside
+                        # tolerance by exactly the angle we just asked for.
+                        # Observed 2026-09-15 on a 15.74deg turn: "settled
+                        # -16.09deg off after 0.53s", twice, then abort. The
+                        # original code was immune only because it required
+                        # the error to be WITHIN tolerance, which a
+                        # not-yet-started turn never is. This is the same
+                        # hazard cam_min_wait_sec was written for.
+                        #
+                        # NOT a tolerance change: the turn is still judged
+                        # wrong and still corrected.
+                        self.last_rotation["result"] = "TURN_UNDERSHOOT"
+                        self.get_logger().info(
+                            f"{leg_label}: rotation settled {err:+.2f}deg off "
+                            f"(tolerance {self.args.turn_tol_deg:.1f}) after "
+                            f"{time.monotonic() - t0:.2f}s, having turned "
+                            f"{turned_by:.1f}deg -- correcting now rather "
+                            "than waiting for the firmware deadline")
+                        return True
+                    if abs(err) <= self.args.turn_tol_deg and settled:
+                        if True:
                             self.rotate_camera_confirmed_pose = p
                             self.get_logger().info(
                                 f"{leg_label}: camera confirmed target early "
@@ -3127,9 +4026,30 @@ class CameraGridNavigator(Node):
             if self.rotate_rel_done_seen:
                 return True
             if self.rotate_rel_unconfirmed_seen:
-                self.get_logger().warning(
-                    f"{leg_label}: firmware hard deadline reached after it "
-                    "braked; requiring settled camera verification")
+                moved = self._rotation_motion_seen(cam_yaw_before,
+                                                   odom_yaw_before)
+                self.last_rotation["result"] = (
+                    "TURN_UNDERSHOOT" if moved else "NO_MOTION")
+                if not moved:
+                    # Both sensors say the robot is exactly where it started.
+                    # Since 2026-09-15 this should be rare: it used to mean a
+                    # dropped command, and those are now caught by the BUSY
+                    # handshake above. If it still happens the command WAS
+                    # accepted and the robot did not move, which is
+                    # mechanical, not a comms problem -- say so.
+                    self.get_logger().error(
+                        f"{leg_label}: ROTATE_REL was acknowledged but "
+                        "NEITHER camera nor odometry saw any rotation -- "
+                        "not a dropped command, and NOT the drive train: "
+                        "on 2026-09-22 a firmware-side retry over the same "
+                        "link moved nothing while the onboard IMU was frozen "
+                        "bit-exactly, i.e. the ESP32<->motor-MCU UART was "
+                        "dead both ways. Read the ROTATE_REL DIAG line above "
+                        "-- link-stall names this directly")
+                else:
+                    self.get_logger().warning(
+                        f"{leg_label}: firmware hard deadline reached after "
+                        "it braked; requiring settled camera verification")
                 return True
             if self.errored:
                 self.get_logger().error(
@@ -3143,6 +4063,7 @@ class CameraGridNavigator(Node):
                 # firmware was not reproduced in 9 deliberate bench trials.
                 self.stop_and_verify(leg_label)
                 return False
+        self.last_rotation["result"] = "FIRMWARE_TIMEOUT"
         self.get_logger().error(
             f"{leg_label}: no ROTATE_REL COMPLETE within "
             f"{timeout_sec:.1f}s -- aborting route")
@@ -3151,6 +4072,349 @@ class CameraGridNavigator(Node):
         # Alvik4 off-table, was this precise signature).
         self.stop_and_verify(leg_label)
         return False
+
+    def turn_to_heading_staged(self, target_heading_deg: float,
+                               leg_label: str) -> bool:
+        """Three-speed turn: fast bulk, slow approach, slow-crawl finish.
+
+        Measured on all six robots 2026-09-24 (FINDINGS_ROTATION_2026-09-24.md,
+        tools/turn_two_stage_test.py). Replaces BOTH earlier laws:
+
+            worst error   original taper 6-9deg   ->  1.35deg
+            90deg turn    3.4-5.7s                ->  ~1.3s
+            180deg turn   --                      ->  2.02s
+
+        which is also faster than alvik.rotate() was (1.0-1.7s per 90deg on the
+        2026-08-13 bench) at better accuracy, and without the no-motion failure
+        that came with it -- see the turn-method switch in
+        turn_to_heading_rotate_rel() for why mixing the two methods is unsafe.
+
+        WHY THREE STAGES AND WHY THESE NUMBERS
+          * 70 RPM is the firmware's WHEEL_FOLLOW_MAX_RPM, the real ceiling.
+          * HANDOFF1 is a MINIMUM ANGLE, never a fraction of the turn. Coast
+            from 70 RPM is 21-24deg, so a "last 25%" rule leaves only 11deg on
+            a 45deg turn and the robot blows straight through the target.
+            Sweeping 40/50/60 gave indistinguishable accuracy (1.13/1.11/1.19
+            mean) while 40 was fastest, and the overshoot sign flips from + to
+            - between 40 and 50, so the optimum sits right at 40.
+          * HANDOFF2 buys the accuracy. Overshoot at the second handoff is
+            almost pure bias -- the robot still carrying 25 RPM into the stop
+            threshold -- so it is the SCATTER that decides. Residual worst case
+            after correcting the bias: 2.55 / 2.29 / 2.06 / 1.35 / 3.76 deg at
+            H2 = 4 / 6 / 8 / 12 / 16. 12 is the smallest that holds 2deg on
+            every robot, and costs only 0.25s of crawl.
+          * LEAD is the measured stop distance at that entry speed, not the
+            6 RPM coast (1.6-1.9deg) -- the robot is still decelerating when it
+            crosses the threshold.
+
+        Running this everywhere rather than only at workstations is deliberate:
+        it costs 0.23s per turn over the two-stage version, which is under 5s
+        across a whole mission, and it removes a node-class mechanism instead
+        of adding one. Workstation docking needs +/-178deg and misalignment
+        beyond +/-5deg is what causes bay collisions; 1.35deg worst case clears
+        that by a wide margin at intersections too.
+        """
+        # CLOSES ON VISION, NOT control_pose(). In camera_assist,
+        # control_pose() returns _odom_world_pose(), i.e. the onboard _pose
+        # topic at POSE_PERIOD_MS = 300ms -- about 3.3Hz. Every constant in
+        # this method was measured against /<robot>_vision_pose at ~50Hz, and
+        # the two are not interchangeable: at 70 RPM the robot covers 37.8deg
+        # between odometry updates, so a 2.71deg lead is not merely tight, it
+        # is unreachable. Hardware, 2026-09-24: driven off control_pose() the
+        # first turn overshot by 16.82deg and the third aborted at 18.3deg
+        # remaining because 15 straight control ticks saw an identical pose.
+        # Odometry is the right source for drive_leg(), where vision can be
+        # occluded by the robot's own body; a stationary in-place turn is
+        # exactly where vision is most reliable.
+        pose = self.fresh_pose()
+        if pose is None:
+            self.get_logger().error(
+                f"{leg_label}: no fresh vision -- aborting route")
+            return False
+        error = yaw_error_deg(target_heading_deg, pose.yaw)
+        if abs(error) <= self.args.turn_tol_deg:
+            self.get_logger().info(
+                f"{leg_label}: already within {self.args.turn_tol_deg:.1f} deg "
+                f"of target heading {target_heading_deg:.0f}, skipping turn")
+            return True
+
+        # Same reasoning as turn_to_heading(): arm streaming only once a real
+        # turn is needed, or the 300 ms watchdog starts for a skipped turn.
+        if not self.enter_wheel_follow_mode():
+            self.fail(FAIL_MODE_ACK_LOST,
+                f"{leg_label}: did not ack WHEEL_FOLLOW_MODE before turn")
+            return False
+
+        # getattr with defaults on purpose: fleetSupervisor.py builds its own
+        # argparse.Namespace for this class (see RobotChannel), so any new
+        # parameter is absent there until that Namespace is updated too. A
+        # missing tuning knob must not turn into an AttributeError mid-turn.
+        g = lambda n, d: getattr(self.args, n, d)
+        fast = g("staged_fast_rpm", 70.0)
+        slow = g("staged_slow_rpm", 25.0)
+        final = g("staged_final_rpm", 6.0)
+        h1 = g("staged_handoff1_deg", 40.0)
+        h2 = g("staged_handoff2_deg", 12.0)
+        lead = g("staged_lead_deg", 2.71)
+        # 2026-09-25, FINDINGS_TURN_2026-09-25.md, 1156 turns of
+        # runs_linux/supervisor_live.log. The three-speed ladder above does not
+        # execute on any turn that reaches 70 RPM: the 25 RPM stage achieves a
+        # median 141deg/s against 45 commanded (up to 407) because h1-h2 is a
+        # 20deg window crossed in one control tick, and the 6 RPM stage
+        # achieves 38.7deg/s against 10.8 because it is the robot coasting down
+        # from 70, not crawling. Turns that never leave the 6 RPM stage are
+        # excellent -- 1 of 311 over 5deg -- and turns that use 70 RPM are over
+        # 5deg 19% of the time, worst 19.1deg, ALL logged as success. So the
+        # ladder is replaced on the approach by a continuous taper: commanded
+        # speed proportional to the angle still to go, floored above the motor
+        # deadband and capped at fast, so the robot never carries more speed
+        # than it can shed in the angle it has left.
+        #
+        # kp = commanded RPM per degree still to go, so full speed is held down
+        # to fast/kp degrees and the robot decays exponentially from there.
+        #
+        # 0.8 holds 70 RPM to 87.5deg remaining and gives 8 RPM at 10deg. It is
+        # chosen against the one hard physical constraint in the log: the robot
+        # needs ~36deg to shed 70 RPM, so ANY profile still at 70 RPM at 45deg
+        # out is gambling -- that is precisely what the h1=65/h2=45 ladder does,
+        # and why Alvik5 and Alvik6 finish over 5deg out on 41% and 50% of
+        # their large turns. Being slow near the target is what makes a turn
+        # accurate, and the log agrees: turns that never leave the 6 RPM crawl
+        # are over 5deg once in 311.
+        #
+        # This costs time and the trade is deliberate. Estimated from the decay
+        # constant against the measured durations: ~+0.8s on a 90deg turn
+        # (1.73s median today) and ~+1.0s on a 180 (2.18s today). Turns under
+        # 45deg get slightly FASTER, because today they crawl the whole way at
+        # a flat 6 RPM. Raising kp buys speed back and spends accuracy; 1.2 is
+        # about the point where 10deg remaining is commanded fast enough that
+        # the robot can no longer stop inside the lead. Sweep it with
+        # tools/turn_two_stage_test.py before moving it.
+        #
+        # Setting it to 0 restores the original h1/h2 ladder verbatim for A/B,
+        # which is why that path is kept below.
+        approach_kp = g("staged_approach_kp", 0.0)
+        # Stall escape. The guard below used to fail the whole leg when the
+        # robot parked short of the target; 10 of the 12 vision leg failures in
+        # that log are exactly that, every one on a turn of 88deg or more. 6 RPM
+        # from rest does move the robot (311/311 turns, 3.5deg/s), so a stopped
+        # robot at 6 RPM needs more command, not a route abort.
+        kick_step = g("staged_kick_rpm", 6.0)
+        kick_max = int(g("staged_kick_max", 3))
+        # Once a kick establishes that this robot needs more command to move,
+        # that is remembered as a FLOOR for the rest of the turn rather than
+        # withdrawn. Stiction is a property of the drivetrain, not of the
+        # moment: a boost that is dropped as soon as the robot twitches lets it
+        # re-stick immediately, which burns the whole kick budget rediscovering
+        # the same fact. Found in a control-flow replay, not on hardware.
+        #
+        # A robot running on a stiction floor cannot be placed as precisely as
+        # one that is not, so a turn that ends stuck is accepted -- with a
+        # warning -- only while it is inside the bay-collision threshold.
+        # Outside it, the leg still fails, because that is a real fault and
+        # finishing the turn would be the dangerous answer.
+        stall_accept = g("staged_stall_accept_deg", 5.0)
+
+        law = (f"taper kp={approach_kp:.2f} floor {final:.0f} cap {fast:.0f} RPM"
+               if approach_kp > 0.0
+               else f"ladder {fast:.0f}/{slow:.0f}/{final:.0f} RPM")
+        self.get_logger().info(
+            f"{leg_label}: staged turn from {pose.yaw:+.1f} to "
+            f"{target_heading_deg:.0f} deg ({error:+.1f}deg, {law})")
+
+        period = 1.0 / CONTROL_HZ
+        t_start = time.monotonic()
+        timeout_sec = g("staged_timeout_sec", 15.0)
+        deadline = t_start + timeout_sec
+        # Divergence guard: a stuck wheel or an inverted sign shows up as the
+        # error refusing to shrink, and without this the robot spins until the
+        # timeout. 2026-09-24: this caught Alvik1 failing to move on 37 of 72
+        # turns in 0.6s each, instead of 25s each.
+        worst = None
+        stalled_since = None
+        spd_prev = g("staged_slow_rpm", 25.0)
+        last_pose_t = None
+        # Loop-rate instrumentation. Every constant in this method was
+        # measured with a tight roslibpy loop that did nothing but publish;
+        # this loop also runs _spin_once() and logging inside rclpy. If the
+        # achieved rate is well under CONTROL_HZ the thresholds get crossed in
+        # one stride and the tuning does not apply -- and a gap over the
+        # firmware's WHEEL_CMD_BRAKE_MS (300 ms) makes the robot brake itself
+        # mid-turn, which reads as a stall.
+        ticks = 0
+        max_gap = 0.0
+        prev_tick = None
+        # Stall-escape state. kick_floor is a minimum commanded speed learned
+        # during this turn and held until it ends.
+        kick_floor = 0.0
+        kicks = 0
+        # Achieved rate over the last 10deg. This is the number that was
+        # missing when the failure was diagnosed from the log -- the completion
+        # line reported loop rate and tick gap but nothing about how fast the
+        # robot was actually turning at the end, which is where it goes wrong.
+        t_last10 = None
+        err_last10 = None
+        t_break = err_break = 0.0
+        spd_logged = None
+        while rclpy.ok():
+            loop_t0 = time.monotonic()
+            if prev_tick is not None:
+                max_gap = max(max_gap, loop_t0 - prev_tick)
+            prev_tick = loop_t0
+            ticks += 1
+            self._spin_once(0.0)
+
+            if self.errored:
+                self.get_logger().error(
+                    f"{leg_label}: robot reported {self.error_text} -- "
+                    "aborting route")
+                return False
+
+            pose = self.fresh_pose()
+            if pose is None:
+                # Matches turn_to_heading()/drive_leg(): send_wheel(0,0) is not
+                # a confirmed-safe stop, so use a verified STOP and abort.
+                self.stop_and_verify(leg_label, timeout_sec=1.5)
+                self.get_logger().error(
+                    f"{leg_label}: lost vision mid-turn -- aborting route")
+                return False
+
+            error = yaw_error_deg(target_heading_deg, pose.yaw)
+            if abs(error) <= lead:
+                t_break, err_break = loop_t0, abs(error)
+                break
+
+            # Only a tick carrying a NEW pose can testify about progress.
+            # Counting repeats of the same sample makes the guard a function
+            # of the control rate rather than of the robot, and it fired on a
+            # healthy turn for exactly that reason on 2026-09-24.
+            fresh_sample = (last_pose_t is None or pose.t != last_pose_t)
+            last_pose_t = pose.t
+            # Time-based, not tick-based. 12 ticks at the observed 36Hz is
+            # 0.33s, which at the 6 RPM crawl is 3.6deg of expected travel --
+            # less than a stiction break and motor ramp. On 2026-09-24 that
+            # aborted a healthy +8.7deg turn before it had started moving.
+            # The allowance is what the CURRENT speed should cover in
+            # STAGED_NO_PROGRESS_SEC, floored so the crawl always gets a
+            # fair chance.
+            if abs(error) <= 10.0 and t_last10 is None:
+                t_last10, err_last10 = loop_t0, abs(error)
+            if worst is None or abs(error) < worst - 0.2:
+                worst, stalled_since = abs(error), None
+            elif fresh_sample:
+                if stalled_since is None:
+                    stalled_since = loop_t0
+                allow = max(g("staged_no_progress_sec", 1.2),
+                            3.0 / max(1.0, spd_prev * DEG_PER_SEC_PER_RPM))
+                if loop_t0 - stalled_since >= allow:
+                    # Stuck short of the target. Ramp the command and re-arm
+                    # rather than failing the leg: the robot is stationary, in
+                    # position, with a live pose feed, and the only thing wrong
+                    # is that the commanded speed is not breaking it loose.
+                    # Bounded by kick_max so a genuinely dead wheel still
+                    # aborts instead of grinding until the timeout.
+                    if kicks < kick_max:
+                        kicks += 1
+                        kick_floor = final + kicks * kick_step
+                        worst, stalled_since = abs(error), None
+                        self.get_logger().warning(
+                            f"{leg_label}:   stalled {allow:.2f}s at "
+                            f"{abs(error):.1f}deg remaining -- kick {kicks}/"
+                            f"{kick_max}, floor {kick_floor:.0f} RPM")
+                        # Fall through, so the raised command goes out on this
+                        # tick rather than after another full control period.
+                    elif abs(error) <= stall_accept:
+                        self.get_logger().warning(
+                            f"{leg_label}: stuck at {abs(error):.1f}deg after "
+                            f"{kicks} kick(s) -- accepting, outside the "
+                            f"{lead:.2f}deg lead but inside the "
+                            f"{stall_accept:.1f}deg collision threshold. THIS "
+                            "ROBOT NEEDS A DRIVETRAIN CHECK.")
+                        t_break, err_break = loop_t0, abs(error)
+                        break
+                    else:
+                        self.send_wheel(0.0, 0.0)
+                        self.stop_and_verify(leg_label, timeout_sec=1.5)
+                        self.get_logger().error(
+                            f"{leg_label}: staged turn made no progress for "
+                            f"{loop_t0 - stalled_since:.2f}s at "
+                            f"{abs(error):.1f}deg remaining after {kicks} "
+                            "kick(s) -- aborting rather than spin out the "
+                            "timeout [loop "
+                            f"{ticks / max(1e-6, time.monotonic() - t_start):.1f}Hz, "
+                            f"worst gap {max_gap * 1000:.0f}ms"
+                            + (" -- OVER THE 300ms FIRMWARE BRAKE WATCHDOG"
+                               if max_gap > 0.300 else "") + "]")
+                        return False
+
+            if time.monotonic() > deadline:
+                self.send_wheel(0.0, 0.0)
+                self.stop_and_verify(leg_label, timeout_sec=1.5)
+                self.get_logger().error(
+                    f"{leg_label}: staged turn exceeded "
+                    f"{timeout_sec:.1f}s with {error:+.1f}deg "
+                    "remaining -- aborting route")
+                return False
+
+            if approach_kp > 0.0:
+                spd = max(final, min(fast, approach_kp * abs(error)))
+            else:
+                spd = (fast if abs(error) > h1
+                       else final if abs(error) <= h2
+                       else slow)
+            spd = min(fast, max(spd, kick_floor))
+            # The taper changes speed every tick, so log on 10 RPM crossings
+            # instead of on every change. Same wording and fields as the ladder
+            # used, so the log stays parseable by the same tooling.
+            band = int(spd // 10)
+            if band != spd_logged:
+                self.get_logger().info(
+                    f"{leg_label}:   {spd_prev:.0f}->{spd:.0f} RPM at "
+                    f"{abs(error):.1f}deg remaining "
+                    f"(t+{loop_t0 - t_start:.2f}s)")
+                spd_logged = band
+            spd_prev = spd
+            # Sign convention MEASURED 2026-09-24: a positive LEFT wheel RPM
+            # produces a NEGATIVE yaw change on every robot, so a positive
+            # error (needs yaw to increase) drives left negative. Same as
+            # turn_to_heading()'s. Inverting it turns the loop into a runaway.
+            if error > 0.0:
+                self.send_wheel(-spd, spd)
+            else:
+                self.send_wheel(spd, -spd)
+
+            time.sleep(max(0.0, period - (time.monotonic() - loop_t0)))
+
+        self.send_wheel(0.0, 0.0)
+        self.stop_and_verify(leg_label, timeout_sec=1.5)
+        # drive_leg() steers on odometry in camera_assist, so the offset this
+        # turn just invalidated has to be re-anchored before it runs. The robot
+        # is verified stationary here, which is resync_yaw_offset()'s own
+        # documented precondition.
+        self.resync_yaw_offset()
+        settled = self.fresh_pose()
+        final_err = (yaw_error_deg(target_heading_deg, settled.yaw)
+                     if settled is not None else float("nan"))
+        # Achieved rate over the final 10deg, against what the taper commanded
+        # there. On 2026-09-25 this ran at 38.7deg/s while 6 RPM (10.8deg/s) was
+        # commanded, i.e. the robot was coasting, and that is the whole defect.
+        # If it stops matching the command again, this is the field that says so.
+        approach = ""
+        if t_last10 is not None and t_break - t_last10 > 0.05:
+            cmd = (max(final, approach_kp * (10.0 + lead) / 2.0)
+                   if approach_kp > 0.0 else final)
+            approach = (f", final10 "
+                        f"{(err_last10 - err_break) / (t_break - t_last10):.1f}deg/s"
+                        f" vs {cmd * DEG_PER_SEC_PER_RPM:.1f} commanded")
+        self.get_logger().info(
+            f"{leg_label}: staged turn complete, {final_err:+.2f}deg off "
+            f"target {target_heading_deg:.0f} "
+            f"[loop {ticks / max(1e-6, time.monotonic() - t_start):.1f}Hz "
+            f"target {CONTROL_HZ:.0f}, worst gap {max_gap * 1000:.0f}ms"
+            + (f", {kicks} kick(s)" if kicks else "") + approach
+            + (" -- OVER THE 300ms FIRMWARE BRAKE WATCHDOG"
+               if max_gap > 0.300 else "") + "]")
+        return True
 
     def turn_to_heading(self, target_heading_deg: float, leg_label: str) -> bool:
         """REVERTED 2026-07-31 to the tapered proportional-speed law -- the
@@ -3199,7 +4463,7 @@ class CameraGridNavigator(Node):
         # start the 300 ms watchdog for a skipped turn and then leave it
         # unfed during the supervisor's next scheduling wait.
         if not self.enter_wheel_follow_mode():
-            self.get_logger().error(
+            self.fail(FAIL_MODE_ACK_LOST,
                 f"{leg_label}: did not ack WHEEL_FOLLOW_MODE before turn")
             return False
 
@@ -3225,7 +4489,7 @@ class CameraGridNavigator(Node):
                 # use a verified/re-sent STOP (blind while vision is out)
                 # and abort.
                 self.stop_and_verify(leg_label, timeout_sec=1.5)
-                self.get_logger().error(
+                self.fail(FAIL_VISION_LOST,
                     f"{leg_label}: {self.localization_source_label()} lost -- "
                     "STOP sent, aborting route")
                 return False
@@ -3661,8 +4925,18 @@ class CameraGridNavigator(Node):
                 # steering). Use the fast onboard alvik.rotate() primitive;
                 # camera/camera-assist modes retain one minor correction.
                 leg_heading = heading_between(px, py, tx, ty)
+                # A workstation or depot arrival is where a wrong heading
+                # becomes a collision, so it is held to --final-yaw-tol-deg
+                # rather than the looser transit tolerance.
+                arrival_tol = (self.args.final_yaw_tol_deg
+                               if (is_workstation_node(n, self.args.rows,
+                                                       self.args.cols)
+                                   or str(n) in DEPOT_SLOT_WORLD_IN)
+                               else None)
                 if not self.turn_to_heading_rotate_rel(
-                        leg_heading, f"square up at node{n} to {leg_heading:.0f} deg"):
+                        leg_heading,
+                        f"square up at node{n} to {leg_heading:.0f} deg",
+                        tol_deg=arrival_tol):
                     return
                 # Explicit standalone rotation (--rotate-at), applied BEFORE
                 # any automatic turn toward the next route leg, so a request
@@ -3670,7 +4944,8 @@ class CameraGridNavigator(Node):
                 # at arrival, regardless of whether more legs follow.
                 if n in rotate_at:
                     if not self.turn_to_heading_rotate_rel(
-                            rotate_at[n], f"rotate at node{n} (requested)"):
+                            rotate_at[n], f"rotate at node{n} (requested)",
+                            tol_deg=self.args.final_yaw_tol_deg):
                         return
                 # DWELL (service pause) AFTER any requested rotation, matching
                 # the solver's own ordering (ROTATE_180 then DWELL when
@@ -3692,10 +4967,24 @@ class CameraGridNavigator(Node):
         except KeyboardInterrupt:
             pass
         finally:
-            self.send_cmd("STOP")
-            for _ in range(5):
-                self._spin_once(0.05)
-            self.get_logger().info("STOP sent, exiting.")
+            # VERIFIED stop, not a fire-and-forget one. 2026-09-28, hardware:
+            # a route aborted on a failed settle, logged "STOP sent, exiting"
+            # 38ms later, and left the robot rotating slowly on the table with
+            # no process left to command it. stop_and_verify() re-sends STOP
+            # until vision confirms the robot is actually stationary, and says
+            # so loudly when it cannot.
+            if self.stop_and_verify("route exit", timeout_sec=3.0):
+                self.get_logger().info("stop verified, exiting.")
+            else:
+                self.send_cmd("STOP")
+                for _ in range(5):
+                    self._spin_once(0.05)
+                self.get_logger().error(
+                    "ROBOT NOT CONFIRMED STATIONARY ON EXIT -- STOP re-sent, "
+                    "but check the robot physically before leaving it")
+
+
+CAL = 'Calibrated on hardware 2026-09-24, Alvik4, six sweep runs over the route 1,9,10,11,19,27 (see FINDINGS_ROTATION_2026-09-24.md).'
 
 
 def main() -> None:
@@ -3744,7 +5033,166 @@ def main() -> None:
     # on 2-robot hardware testing (some turns clean, others 60+deg
     # overshoot needing a slow re-approach). See turn_to_heading()'s own
     # docstring for the full history.
-    ap.add_argument("--turn-tol-deg", type=float, default=1.0,
+    ap.add_argument("--staged-fast-rpm", type=float, default=70.0,
+                    help="stage 1 speed; firmware WHEEL_FOLLOW_MAX_RPM is 70")
+    ap.add_argument("--staged-slow-rpm", type=float, default=25.0)
+    ap.add_argument("--staged-final-rpm", type=float, default=6.0,
+                    help="crawl speed for the last few degrees: 0.22deg of "
+                         "travel per camera frame and the tightest coast "
+                         "repeatability measured (sd 0.12-0.34deg)")
+    ap.add_argument("--staged-handoff1-deg", type=float, default=65.0,
+                    help="deg remaining at which to drop from fast to slow. A "
+                         "MINIMUM ANGLE, not a fraction -- coast from 70 RPM "
+                         "is 21-24deg. " + CAL + " 50 gave 6.3-7.0deg error on "
+                         "a 90deg turn, 60 gave 2.0-2.2, 65 gave 1.0-1.9; 70 "
+                         "was both slower (2.55s vs 1.90s) and less "
+                         "consistent, so the optimum is at 65.")
+    ap.add_argument("--staged-handoff2-deg", type=float, default=45.0,
+                    help="deg remaining at which to drop to the crawl. NOT "
+                         "45deg of crawling -- it is 45deg of DECELERATING, "
+                         "which is why it is accurate without being slow. " +
+                         CAL + " 25/30/35/40/45 gave worst-case 5.7/2.9/3.5/"
+                         "1.9/1.65deg. The earlier harness value of 12 failed "
+                         "outright in production: the robot arrives at the "
+                         "handoff still carrying speed and 12deg is not enough "
+                         "room to bleed it off.")
+    ap.add_argument("--staged-lead-deg", type=float, default=2.71,
+                    help="deg remaining at which to stop")
+    ap.add_argument("--staged-approach-kp", type=float, default=0.0,
+                    help="RPM of commanded turn speed per degree still to go, "
+                         "floored at --staged-final-rpm and capped at "
+                         "--staged-fast-rpm. Replaces the handoff1/handoff2 "
+                         "ladder, which 1156 turns of supervisor_live.log "
+                         "showed does not execute: the 25 RPM stage achieved a "
+                         "median 141deg/s against 45 commanded and the 6 RPM "
+                         "stage 38.7 against 10.8, because both are the robot "
+                         "coasting down from 70 rather than tracking. 0.8 "
+                         "holds full speed to 87.5deg remaining and gives 8 "
+                         "RPM at 10deg; the robot needs ~36deg to shed 70 RPM, "
+                         "so anything still at full speed by 45deg out is "
+                         "gambling. Higher is faster and less accurate. SET TO "
+                         "0 to restore the ladder exactly, for A/B. See "
+                         "FINDINGS_TURN_2026-09-25.md.")
+    ap.add_argument("--staged-kick-rpm", type=float, default=6.0,
+                    help="RPM added per stall-escape attempt. A robot parked "
+                         "short of target with a live pose feed needs more "
+                         "command, not a route abort -- 10 of the 12 vision "
+                         "leg failures on 2026-09-25 were exactly that.")
+    ap.add_argument("--staged-kick-max", type=int, default=3,
+                    help="stall-escape attempts before the turn really does "
+                         "abort, so a dead wheel still fails instead of "
+                         "grinding until --staged-timeout-sec. Each kick "
+                         "raises the learned floor by --staged-kick-rpm and "
+                         "costs up to --staged-no-progress-sec.")
+    ap.add_argument("--staged-stall-accept-deg", type=float, default=5.0,
+                    help="a turn that is still stuck after every kick is "
+                         "ACCEPTED, with a warning, if it is inside this "
+                         "many degrees, and fails the leg otherwise. Default "
+                         "is the bay-collision threshold: recover the mission "
+                         "where the heading is still safe, refuse where it is "
+                         "not.")
+    ap.add_argument("--final-yaw-tol-deg", type=float, default=2.0,
+                    help="heading tolerance enforced at WORKSTATION and DEPOT "
+                         "arrivals, where the orientation is what stops the "
+                         "robot colliding with its neighbour. Ordinary "
+                         "intersection turns use --turn-tol-deg. Held by "
+                         "settle_heading(), which re-approaches from a "
+                         "standstill until the measured heading is actually "
+                         "inside it and fails the leg if it cannot be.")
+    ap.add_argument("--settle-rpm", type=float, default=6.0,
+                    help="crawl speed for the final approach. 6 RPM from rest "
+                         "measures 3.5deg/s and, over 311 such turns, put not "
+                         "one of them over 5deg.")
+    ap.add_argument("--settle-lead-deg", type=float, default=4.0,
+                    help="how far short of target a settle pass stops: the "
+                         "measured travel after a STOP is commanded, so a "
+                         "pass lands ON target rather than past it. Scales "
+                         "with --settle-rpm. 4.0 is MEASURED -- 99 real "
+                         "settle passes across all six robots, 2026-09-28/29: "
+                         "median 4.02deg at 6 RPM, p90 4.74, max 5.38. The "
+                         "previous 1.75 was inherited from a different "
+                         "measurement and was 2.3x too small, so 95 of those "
+                         "99 passes overshot the target.")
+    ap.add_argument("--settle-rpm-step", type=float, default=4.0,
+                    help="added to the crawl after a pass that did not move "
+                         "the robot at all, to break stiction. Dropped back "
+                         "to --settle-rpm as soon as it moves.")
+    ap.add_argument("--settle-rpm-min", type=float, default=4.0,
+                    help="slowest crawl. A crawl cannot correct an error "
+                         "smaller than its own coast, so a small residual is "
+                         "closed with a SLOWER crawl rather than the same "
+                         "one; this is the floor on that. 6.0 MEASURED on "
+                         "Alvik1 2026-09-28: 3.7 RPM moved the robot, 2.0 and "
+                         "2.3 RPM did not move it at all. A floor a robot cannot "
+                         "move at wastes a pass and fires the stiction "
+                         "escalation for nothing; swept against stiffness, "
+                         "6.0 is the best choice for any robot needing up to "
+                         "~5.5 RPM to break loose.")
+    ap.add_argument("--settle-rpm-max", type=float, default=18.0)
+    ap.add_argument("--settle-progress-deg", type=float, default=0.5,
+                    help="improvement that counts as movement INSIDE a settle "
+                         "pass. Must clear single-frame vision noise or a "
+                         "stuck pass never ends early.")
+    ap.add_argument("--settle-moved-eps-deg", type=float, default=0.3,
+                    help="improvement BETWEEN passes, on the averaged "
+                         "measurement, below which the previous pass is "
+                         "judged not to have moved the robot and the crawl "
+                         "is raised to break stiction.")
+    ap.add_argument("--settle-max-passes", type=int, default=4,
+                    help="settle passes before the leg is failed outright. "
+                         "Failing is deliberate: silently accepting a "
+                         "workstation heading outside tolerance is the bug "
+                         "this exists to stop.")
+    ap.add_argument("--settle-hard-fail-deg", type=float, default=5.0,
+                    help="heading error at which the LEG actually fails, as "
+                         "opposed to --final-yaw-tol-deg which is what the "
+                         "settle aims for. Default is the bay-collision "
+                         "threshold. Between the two the leg continues with "
+                         "an OUT OF TOLERANCE warning: failing a leg costs a "
+                         "retry, then exclusion, then the mission, which is "
+                         "not a trade worth making over a couple of degrees.")
+    ap.add_argument("--settle-noise-warn-deg", type=float, default=0.5,
+                    help="vision yaw noise (sigma, over the averaged frames) "
+                         "above which the heading gate is warned about: the "
+                         "2deg guarantee is verified up to this level: 4500 runs of the shipped settle loop are clean at 0.5 sigma and start leaking at 0.75.")
+    ap.add_argument("--settle-margin-deg", type=float, default=0.6,
+                    help="how far inside --final-yaw-tol-deg the settle gate "
+                         "sits, covering the uncertainty of the averaged "
+                         "vision measurement so that passing the gate means "
+                         "the TRUE heading is inside tolerance.")
+    ap.add_argument("--settle-samples", type=int, default=9,
+                    help="distinct vision frames averaged before deciding the "
+                         "heading is inside tolerance. One frame's noise can "
+                         "pass a 2deg gate at 2.5deg true error.")
+    ap.add_argument("--settle-pass-timeout-sec", type=float, default=4.0)
+    ap.add_argument("--settle-no-progress-sec", type=float, default=0.8)
+    ap.add_argument("--staged-timeout-sec", type=float, default=15.0)
+    ap.add_argument("--staged-no-progress-sec", type=float, default=1.2,
+                    help="seconds without the error shrinking before aborting "
+                         "a staged turn. Time-based rather than tick-based: a "
+                         "fixed tick count is a function of the loop rate, and "
+                         "at the 6 RPM crawl 12 ticks was 0.33s -- shorter "
+                         "than a stiction break.")
+    ap.add_argument("--turn-method",
+                    choices=["rotate_rel", "wheel", "staged"],
+                    default="staged",
+                    help="which control law executes a turn. rotate_rel "
+                         "(default) uses alvik.rotate() on the motor MCU: "
+                         "fast, but a wheel-speed packet from a drive leg "
+                         "cancels it at the carrier ('J' calls "
+                         "disableKinematicsMovement()), which is the "
+                         "suspected no-motion fault. wheel uses "
+                         "turn_to_heading()'s tapered law so the whole route "
+                         "stays in one paradigm and alvik.rotate() is never "
+                         "called -- slower (3.4-5.7s vs 1.0-1.7s per 90deg). "
+                         "staged (DEFAULT since 2026-09-24) is the same "
+                         "wheel-speed paradigm in three speeds (70/25/6 RPM): "
+                         "1.35deg worst case and ~1.3s per 90deg, beating both "
+                         "of the others on accuracy AND speed -- see "
+                         "turn_to_heading_staged() and "
+                         "FINDINGS_ROTATION_2026-09-24.md. "
+                         "AGV_TURN_METHOD overrides this fleet-wide.")
+    ap.add_argument("--turn-tol-deg", type=float, default=2.0,
                      help="consider a turn complete within this many degrees "
                           "of the target heading (default 1.0 -- bench-"
                           "verified 2026-07-27 with turn-min/max-speed "
@@ -3852,9 +5300,25 @@ def main() -> None:
                           "color-sensor firmware's demonstrated hard-stop-"
                           "capable cruise speed and the --stop-test-rpm "
                           "default used to measure --brake-lead-in below.")
-    ap.add_argument("--brake-lead-in", type=float, default=1.9,
+    ap.add_argument("--brake-lead-in", type=float, default=1.38,
                      help="fire a hard STOP once within this many inches of "
-                          "the target (default 1.9). RE-MEASURED 2026-07-28 "
+                          "the target. RE-MEASURED 2026-09-25 with a 5-leg "
+                          "--stop-test at cruise 60 RPM: brake tripped at "
+                          "1.78in mean (commanded 1.90 -- the check is "
+                          "discrete, so it fires ~0.12in late), slide "
+                          "1.26in mean (1.21-1.31), landing 0.52in SHORT "
+                          "every leg (0.44-0.61). New value is old minus that "
+                          "shortfall, 1.90-0.52, which also absorbs the fire "
+                          "lag -- setting it to the slide alone would "
+                          "overshoot by 0.12in. Three changes since the 1.9 "
+                          "calibration all shorten the slide: the pose topic "
+                          "went 50ms->20ms during drives (less detection lag, "
+                          "so the brake trips nearer the true point), battery "
+                          "is now 70-79% rather than 85-95% (coast goes as "
+                          "v^2), and kp_yaw went 0.6->1.75 (more steering "
+                          "differential, more scrub). RE-MEASURE with "
+                          "--stop-test after any of those move again. "
+                          "SUPERSEDED HISTORY: 1.9 was RE-MEASURED 2026-07-28 "
                           "(same day, later) after a TcpFrameSource.read() "
                           "fix (apriltag_localize.py) eliminated a vision-"
                           "pipeline stale-frame backlog -- the earlier 3.7in "
@@ -3870,9 +5334,32 @@ def main() -> None:
                           "--cruise-rpm is changed from 60, or the vision "
                           "pipeline changes again, RE-MEASURE with "
                           "--stop-test before trusting this default.")
-    ap.add_argument("--kp-yaw", type=float, default=0.6,
+    ap.add_argument("--kp-yaw", type=float, default=1.625,
                      help="proportional gain: wheel-speed turn adjustment per "
-                          "degree of heading error toward the live target")
+                          "degree of heading error toward the live target. "
+                          "Raised 0.6->1.75 on 2026-09-24, then 1.625 on "
+                          "2026-09-25. Measured cross-track on single grid "
+                          "legs (tools/drive_straightness.py, Alvik4, route "
+                          "1,9,10,11,19,27): 1.4 -> 0.165in (n=1), 1.625 -> "
+                          "0.122in (n=5), 1.75 -> 0.124in (n=3). 1.625 and "
+                          "1.75 are the same number measured twice; both sit "
+                          "at the ~0.12in floor where vision noise dominates, "
+                          "so anywhere in 1.4-1.75 performs identically and "
+                          "the gain has stopped being the limiting factor. "
+                          "Compare only legs of similar length -- the summary "
+                          "line mixes single and merged legs, and a merged "
+                          "leg has a longer chord and so more deviation. "
+                          "ORIGINAL RATIONALE: raised from 0.6 after measuring "
+                          "cross-track deviation directly "
+                          "(tools/drive_straightness.py). drive_leg() steers "
+                          "at the target NODE with no cross-track term, so a "
+                          "robot that enters a leg mis-aimed drives the error "
+                          "out as a bow off the tape -- a HIGHER gain removes "
+                          "it sooner. Note max_turn_adjust (10) saturates at "
+                          "kp*error >= 10, i.e. about 5.7deg of error at this "
+                          "gain, so past ~1.75 the clamp binds rather than the "
+                          "gain; more authority than that needs "
+                          "--cruise-rpm 50 --max-turn-adjust 20.")
     ap.add_argument("--max-turn-adjust", type=float, default=10.0,
                      help="clamp on the heading-correction wheel-speed "
                           "differential added on top of drive speed, RPM. "

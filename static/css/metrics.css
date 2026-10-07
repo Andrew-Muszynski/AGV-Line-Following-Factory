@@ -58,10 +58,17 @@
   font-size: 11px;
   color: #516070;
   font-weight: 600;
+  /* Without this a grid item takes its intrinsic content width as its
+     minimum, so one long <option> (an algorithm name carries the plan's
+     filename) widens the whole track and pushes the grid past the card. */
+  min-width: 0;
 }
 .metrics-filters input, .metrics-filters select {
   font-size: 12px;
   padding: 5px 7px;
+  width: 100%;
+  min-width: 0;
+  text-overflow: ellipsis;
 }
 
 .metrics-export-link {
@@ -82,7 +89,49 @@
   border-radius: 6px;
 }
 .metrics-table-wrap table { font-variant-numeric: tabular-nums; }
-.metrics-table-wrap th { cursor: pointer; user-select: none; }
+.metrics-table-wrap th {
+  cursor: pointer;
+  user-select: none;
+  text-align: center;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+.metrics-table-wrap td.center { text-align: center; }
+/* Detail tables (robots, jobs) centre their cells so the values sit under
+   the centred headers. The run-history table keeps its numerics
+   right-aligned on purpose -- those columns are scanned to compare
+   magnitudes, which right alignment plus tabular figures is for. */
+.metrics-table-wrap td.mid { text-align: center; }
+/* A faint vertical rule between columns: with several short values in wide
+   columns, alignment alone still leaves the eye guessing which column a
+   value belongs to. */
+.metrics-table-wrap th + th,
+.metrics-table-wrap td + td { border-left: 1px solid #eef2f7; }
+/* The algorithm string carries the plan filename and is the widest thing in
+   the table by far; clip it and keep the full value in the tooltip so the
+   columns that are actually scanned stay close together. */
+.metrics-table-wrap td.algo {
+  max-width: 230px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Complete vs incomplete has to read without parsing the word, since that is
+   the comparison this table exists for. */
+.run-status {
+  display: inline-block;
+  min-width: 74px;
+  padding: 1px 8px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+.run-status-completed { background: #dcfce7; color: #166534; }
+.run-status-aborted   { background: #fef3c7; color: #92400e; }
+.run-status-failed    { background: #fee2e2; color: #991b1b; }
+.run-status-running   { background: #dbeafe; color: #1e40af; }
+.run-status-created   { background: #e2e8f0; color: #475569; }
 .metrics-table-wrap th.sorted-asc::after  { content: " ▲"; font-size: 9px; }
 .metrics-table-wrap th.sorted-desc::after { content: " ▼"; font-size: 9px; }
 .metrics-table-wrap td.num { text-align: right; }
@@ -162,4 +211,19 @@
   font-size: 11px;
   color: #94a3b8;
   margin: 6px 0 0;
+}
+
+/* Launch comparison replay (Plan & Simulate). The canvas is one element with
+   both panels drawn on it so captureStream() records a single file. */
+#lr-canvas {
+  width: 100%;
+  height: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #fff;
+}
+#lr-record.recording {
+  background: #c0392b;
+  border-color: #c0392b;
+  color: #fff;
 }

@@ -20,6 +20,15 @@ document.getElementById("sup-start").addEventListener("click", () => {
     }
   }
 });
+// Active proof of life. Passive listening cannot tell "idle and healthy"
+// from "micro-ROS session died": the firmware publishes status only on
+// events, and a stale session leaves the topics registered with nothing
+// behind them -- `ros2 topic info` still shows a publisher while nothing is
+// ever sent. GET_STATUS forces a reply, so silence after a ping means that
+// robot needs a POWER CYCLE rather than more waiting.
+document.getElementById("sup-ping").addEventListener("click", () => {
+  supPublish("fleet_control", "PING");
+});
 document.getElementById("sup-abort").addEventListener("click", () => {
   if (supPublish("fleet_control", "ABORT")) {
     state.missionStartMs = 0;

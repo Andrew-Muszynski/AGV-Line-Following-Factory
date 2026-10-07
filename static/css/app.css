@@ -163,22 +163,18 @@
     position: relative;
   }
   #map-key {
-    position: absolute;
-    top: 16px;
-    left: 16px;
-    z-index: 5;
-    background: rgba(255, 255, 255, 0.92);
-    border: 1px solid #d8deea;
+    position: static;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
     border-radius: 8px;
-    padding: 8px 10px;
-    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+    padding: 6px 10px;
+    margin-bottom: 8px;
     font-size: 11px;
     color: #475569;
-    display: grid;
-    grid-template-columns: auto auto;
-    gap: 4px 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
     pointer-events: none;
-    max-width: 260px;
   }
   #map-key .mk-item {
     display: flex;
@@ -324,13 +320,19 @@
     font-weight: 600;
   }
   .sim-controls {
-    display: grid;
-    grid-template-columns: auto auto 1fr auto;
+    display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     align-items: center;
     margin-top: 10px;
   }
+  .sim-controls select {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 72px;
+  }
   .sim-controls input[type=range] {
+    flex: 1 1 220px;
     padding: 0;
   }
   #timeline-toggles {
@@ -549,6 +551,63 @@
     padding: 14px 16px;
     border-bottom: 1px solid #e2e8f0;
   }
+  .modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 12px 16px;
+    border-top: 1px solid #e2e8f0;
+  }
+  .modal-x {
+    font-size: 18px;
+    line-height: 1;
+    padding: 4px 10px;
+  }
+  /* The selected run stays visibly marked while the page is read, so a row
+     can be found again after scrolling through the tabs below it. */
+  tr.run-row {
+    cursor: pointer;
+  }
+  tr.run-row.selected > td {
+    background: #dbeafe;
+    font-weight: 600;
+  }
+  tr.run-row.selected > td:first-child {
+    box-shadow: inset 3px 0 0 0 #2563eb;
+  }
+  .metrics-filter-count {
+    display: inline-block;
+    min-width: 16px;
+    margin-left: 6px;
+    padding: 0 5px;
+    border-radius: 9px;
+    background: #2563eb;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    text-align: center;
+  }
+  .csv-block-title {
+    margin: 14px 0 4px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #475569;
+  }
+  .csv-block-title:first-child {
+    margin-top: 0;
+  }
+  .csv-raw {
+    margin: 0;
+    padding: 12px;
+    background: #0f172a;
+    color: #e2e8f0;
+    border-radius: 6px;
+    font-size: 12px;
+    white-space: pre;
+    overflow: auto;
+  }
   .modal-body {
     overflow: auto;
     padding: 16px;
@@ -761,3 +820,20 @@
     border-radius: 6px;
   }
   .vlm-actions { display: flex; gap: 6px; }
+
+  .replay-box {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin-top: 8px;
+  }
+  .replay-arm.active {
+    background: #1f6f7a;
+    border-color: #1f6f7a;
+    color: #fff;
+  }
+  .replay-arm[data-arm="offsets"].active {
+    background: #b3471f;
+    border-color: #b3471f;
+  }

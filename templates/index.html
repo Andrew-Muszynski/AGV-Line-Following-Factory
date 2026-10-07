@@ -70,6 +70,12 @@
           <option value="ext:brkga">vrp_rpd: BRKGA</option>
         </select>
       </label>
+      <label class="field">Launch mode
+        <select id="launch-mode">
+          <option value="staggered">Staggered: hold in the slot</option>
+          <option value="cascade">Cascade: pre-stage in the lane</option>
+        </select>
+      </label>
       <label class="field">VRP-RPD pickups (return processed parts)
         <input id="rpd-mode" type="checkbox">
       </label>
@@ -119,8 +125,18 @@
         <option value="5">5x</option>
         <option value="10">10x</option>
       </select>
-      <input id="timestep-slider" type="range" min="0" max="0" value="0" style="display:none;">
+      <input id="timestep-slider" type="range" min="0" max="0" value="0"
+             title="Scrub the simulation clock">
       <span id="sim-time" class="muted">t=0 / 0</span>
+    </div>
+    <div class="v-plan replay-box">
+      <button class="secondary" id="replay-open" aria-expanded="false"
+              title="Overlay a recorded depot launch on this grid">Launch replay</button>
+      <span id="replay-arms" style="display:none; gap:6px; align-items:center;">
+        <button class="secondary replay-arm" data-arm="offsets">Fixed offsets</button>
+        <button class="secondary replay-arm" data-arm="cascade">Rolling cascade</button>
+        <span id="replay-note" class="muted" style="font-size:11px;"></span>
+      </span>
     </div>
     <div id="timeline-toggles" class="v-plan"></div>
     <div class="v-plan" style="position:relative;">
@@ -180,6 +196,7 @@
         <button class="secondary" id="sup-send">Send mission</button>
         <button class="secondary" id="sup-start">Start</button>
         <button class="secondary" id="sup-abort">Abort</button>
+        <button class="secondary" id="sup-ping" title="Ask every robot to answer with GET_STATUS. A robot that stays silent has a dead micro-ROS session and needs a power cycle -- a green LED only means it reached an agent once.">Ping robots</button>
         <span id="sup-status" class="mode-status muted">no mission sent</span>
       </div>
       <p class="muted" style="margin:0;">Preferred path: hand the mission to the fleet supervisor on the
@@ -297,11 +314,12 @@
         <div id="metrics-kpi-cards" class="metrics-kpis"></div>
       </div>
       <div class="panel">
-        <h2>Run Filters</h2>
-        <div id="metrics-filters" class="metrics-filters"></div>
+        <h2>Run History</h2>
         <div class="actions">
+          <button class="secondary" id="metrics-open-filters">Filters</button>
           <button id="metrics-apply-filters">Apply filters</button>
           <button class="secondary" id="metrics-clear-filters">Clear</button>
+          <button class="secondary" id="metrics-view-runs-csv">View CSV</button>
           <a class="metrics-export-link" id="metrics-export-csv" href="/api/export/runs.csv" download>Export runs CSV</a>
         </div>
         <div id="metrics-history"></div>
@@ -313,6 +331,42 @@
     </div>
   </section>
 </main>
+
+<div id="metrics-filter-modal" class="modal" aria-hidden="true">
+  <div class="modal-card">
+    <div class="modal-header">
+      <div>
+        <h2 style="margin:0;">Run Filters</h2>
+        <p style="margin:3px 0 0;">Filters stay applied after this window is closed. Click outside the window, or press Esc, to dismiss it.</p>
+      </div>
+      <button class="secondary modal-x" id="metrics-close-filters" aria-label="Close filters" title="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div id="metrics-filters" class="metrics-filters"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="secondary" id="metrics-clear-filters-modal">Clear</button>
+      <button id="metrics-apply-filters-modal">Apply filters</button>
+    </div>
+  </div>
+</div>
+
+<div id="metrics-csv-modal" class="modal" aria-hidden="true">
+  <div class="modal-card">
+    <div class="modal-header">
+      <div>
+        <h2 style="margin:0;" id="metrics-csv-title">CSV</h2>
+        <p style="margin:3px 0 0;" id="metrics-csv-sub"></p>
+      </div>
+      <div class="actions" style="margin:0;">
+        <button class="secondary" id="metrics-csv-toggle">Raw text</button>
+        <a class="metrics-export-link" id="metrics-csv-download" href="#" download>Download</a>
+        <button class="secondary modal-x" id="metrics-csv-close" aria-label="Close CSV" title="Close">&times;</button>
+      </div>
+    </div>
+    <div id="metrics-csv-body" class="modal-body"></div>
+  </div>
+</div>
 
 <div id="route-modal" class="modal" aria-hidden="true">
   <div class="modal-card">

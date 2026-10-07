@@ -22,7 +22,14 @@ const METRICS_SUPERVISOR_URL = (() => {
   let v = new URLSearchParams(window.location.search).get("metrics");
   if (!v) {
     const host = ["localhost", "127.0.0.1"].includes(window.location.hostname)
-      ? "192.168.0.162"  // this Windows laptop's LAN address
+      // This Windows laptop LAN address. 192.168.0.162 in the lab.
+      // It CHANGES whenever the laptop moves network (it has been
+      // 192.168.12.134 and 172.20.25.38 on other subnets), and a stale
+      // value here fails SILENTLY -- on 2026-09-15 it pointed at a
+      // disconnected adapter and 461 metrics events were dropped with no
+      // error on the page. Confirm with `ipconfig`, or sidestep it
+      // entirely with ?metrics=host:port.
+      ? "192.168.0.162"
       : window.location.hostname;
     return `http://${host}:${window.location.port || 8000}`;
   }
@@ -182,15 +189,52 @@ function metricsInit() {
   document.getElementById("metrics-mark-finished").addEventListener("click", metricsMarkStuckRunFinished);
   document.getElementById("metrics-run-select").addEventListener("change", (ev) => {
     _mSelectedRunId = ev.target.value || null;
+    metricsMarkSelectedRow();
     metricsLoadSelectedRun();
   });
-  document.getElementById("metrics-apply-filters").addEventListener("click", () => metricsLoadHistory());
-  document.getElementById("metrics-clear-filters").addEventListener("click", () => {
+
+  const applyFilters = (close) => {
+    if (close) metricsCloseModal("metrics-filter-modal");
+    metricsLoadHistory();
+  };
+  const clearFilters = (close) => {
     for (const input of document.querySelectorAll("#metrics-filters input")) input.value = "";
     for (const sel of document.querySelectorAll("#metrics-filters select")) sel.selectedIndex = 0;
-    metricsLoadHistory();
+    applyFilters(close);
+  };
+  document.getElementById("metrics-apply-filters").addEventListener("click", () => applyFilters(false));
+  document.getElementById("metrics-clear-filters").addEventListener("click", () => clearFilters(false));
+  document.getElementById("metrics-apply-filters-modal").addEventListener("click", () => applyFilters(true));
+  document.getElementById("metrics-clear-filters-modal").addEventListener("click", () => clearFilters(true));
+  document.getElementById("metrics-open-filters").addEventListener("click", () => metricsOpenModal("metrics-filter-modal"));
+  document.getElementById("metrics-close-filters").addEventListener("click", () => metricsCloseModal("metrics-filter-modal"));
+  document.getElementById("metrics-csv-close").addEventListener("click", () => metricsCloseModal("metrics-csv-modal"));
+  document.getElementById("metrics-view-runs-csv").addEventListener("click", () => {
+    const href = document.getElementById("metrics-export-csv").href;
+    metricsShowCsv(href, "Run history — CSV",
+                   "Every run matching the filters currently applied.");
+  });
+  document.getElementById("metrics-csv-toggle").addEventListener("click", () => {
+    _mCsvRaw = !_mCsvRaw;
+    metricsRenderCsv();
+  });
+  // Dismiss on a click outside the card, and on Esc. The listener sits on the
+  // backdrop itself, so a click that lands on the card never reaches it.
+  for (const id of ["metrics-filter-modal", "metrics-csv-modal"]) {
+    const m = document.getElementById(id);
+    m.addEventListener("click", (ev) => {
+      if (ev.target === m) metricsCloseModal(id);
+    });
+  }
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape") return;
+    for (const id of ["metrics-filter-modal", "metrics-csv-modal"]) {
+      const m = document.getElementById(id);
+      if (m && m.classList.contains("open")) metricsCloseModal(id);
+    }
   });
   metricsBuildFilters();
+  metricsLoadFacets();
   metricsBuildTabs();
   // Quiet background probe so the banner state is correct on first open.
   metricsProbe();
@@ -308,6 +352,10 @@ async function metricsCreateRunForMission(mission) {
     planned_makespan_sec: schedule.makespan_sec,
     plan_json: schedule,
   };
+  // Hand back the row this session already created if it is still unused:
+  // arming twice otherwise leaves the first row orphaned, and telemetry that
+  // arrives between the two arms attaches to a run nothing will ever finish.
+  if (_mSessionRunId) payload.reuse_run_id = _mSessionRunId;
   const data = await metricsFetch("/api/runs", { method: "POST", body: payload });
   _mSessionRunId = data.run_id;
   _mSelectedRunId = data.run_id;
@@ -511,8 +559,8 @@ function metricsBuildFilters() {
     <label>Run ID <input id="mf-run_id" placeholder="uuid or blank"></label>
     <label>Date from <input id="mf-date_from" type="date"></label>
     <label>Date to <input id="mf-date_to" type="date"></label>
-    <label>Condition <input id="mf-experimental_condition" placeholder="e.g. 6r-12ws-vision"></label>
-    <label>Algorithm <input id="mf-algorithm" placeholder="e.g. built-in, brkga"></label>
+    <label>Condition <select id="mf-experimental_condition"><option value="">any</option></select></label>
+    <label>Algorithm <select id="mf-algorithm"><option value="">any</option></select></label>
     <label>Drive mode <select id="mf-drive_mode"><option value="">any</option>
       <option value="vision">vision (camera only)</option>
       <option value="color">color sensor</option></select></label>
@@ -521,10 +569,11 @@ function metricsBuildFilters() {
     <label>Run status <select id="mf-status"><option value="">any</option>
       <option>created</option><option>running</option><option>completed</option>
       <option>failed</option><option>aborted</option></select></label>
-    <label>Outcome <select id="mf-outcome"><option value="">all runs</option>
+    <label>Outcome <select id="mf-outcome"><option value="">all executed runs</option>
       <option value="successful">successful only</option>
       <option value="failed">failed only</option>
-      <option value="aborted">aborted only</option></select></label>
+      <option value="aborted">aborted only</option>
+      <option value="include_nonexecuted">include non-executed records</option></select></label>
     <label>Workstations <input id="mf-workstation_count" type="number" min="0"></label>
     <label>Processing time (s) <input id="mf-process_sec" type="number" min="0"></label>
     <label>Random seed <input id="mf-random_seed" type="number"></label>
@@ -567,6 +616,10 @@ async function metricsLoadHistory() {
   const params = metricsFilterQuery();
   const csvLink = document.getElementById("metrics-export-csv");
   if (csvLink) csvLink.href = `/api/export/runs.csv?${params.toString()}`;
+  metricsUpdateFilterCount();
+  // Refresh after a load so a value recorded since the page opened is
+  // selectable without a reload.
+  metricsLoadFacets();
   let data;
   try {
     data = await metricsFetch(`/api/history?${params.toString()}`, { timeoutMs: 8000 });
@@ -589,6 +642,10 @@ function metricsRenderHistory() {
       const mv = r.metrics[_mSort.key.slice(2)];
       return mv && mv.value !== null ? mv.value : -Infinity;
     }
+    if (_mSort.key === "attempt_sec") {
+      return r.attempt_sec === null || r.attempt_sec === undefined
+        ? -Infinity : r.attempt_sec;
+    }
     return r[_mSort.key] ?? "";
   };
   runs.sort((a, b) => {
@@ -597,13 +654,16 @@ function metricsRenderHistory() {
   });
 
   const cols = [
-    ["created_at_utc", "created (ET)"], ["run_id", "run"],
-    ["status", "status"], ["experimental_condition", "condition"],
-    ["algorithm", "algorithm"], ["drive_mode", "drive"],
-    ["robot_count", "robots"],
-    ["m:actual_makespan_sec", "makespan"],
-    ["m:throughput_jobs_per_min", "jobs/min"],
-    [`m:${chartKey}`, chartKey.replace(/_/g, " ")],
+    ["created_at_utc", "Created (ET)"], ["run_id", "Run"],
+    ["status", "Status"], ["experimental_condition", "Condition"],
+    ["algorithm", "Algorithm"], ["drive_mode", "Drive"],
+    ["robot_count", "Robots"],
+    // Next to makespan on purpose: for a completed run the two agree, and
+    // for every other run makespan is blank while this says how far it got.
+    ["attempt_sec", "Attempt (s)"],
+    ["m:actual_makespan_sec", "Makespan (s)"],
+    ["m:throughput_jobs_per_min", "Jobs/min"],
+    [`m:${chartKey}`, mTitleCase(chartKey.replace(/_/g, " "))],
   ];
   const seen = new Set();
   const uniqueCols = cols.filter(([k]) => !seen.has(k) && seen.add(k));
@@ -614,7 +674,25 @@ function metricsRenderHistory() {
   const body = runs.map((r) => {
     const cells = uniqueCols.map(([key]) => {
       if (key === "created_at_utc") return `<td>${escapeHtml(mFmtEastern(r.created_at_utc))}</td>`;
-      if (key === "run_id") return `<td title="${escapeHtml(r.run_id)}">${escapeHtml(mShortId(r.run_id))} <a href="/api/export/run/${escapeHtml(r.run_id)}.json" download title="download full run JSON">⇩</a></td>`;
+      if (key === "run_id") return `<td title="${escapeHtml(r.run_id)}">${escapeHtml(mShortId(r.run_id))} `
+        + `<a href="/api/export/run/${escapeHtml(r.run_id)}.json" download title="download full run JSON">⇩</a> `
+        + `<a href="#" class="run-csv-link" data-run="${escapeHtml(r.run_id)}" title="read this run's CSV here">CSV</a></td>`;
+      if (key === "status") {
+        const st = String(r.status || "unknown");
+        return `<td class="center"><span class="run-status run-status-${escapeHtml(st)}">`
+          + `${escapeHtml(st)}</span></td>`;
+      }
+      if (key === "attempt_sec") {
+        const v = r.attempt_sec;
+        return `<td class="num">${v === null || v === undefined ? "—" : escapeHtml(v.toFixed(1))}</td>`;
+      }
+      if (key === "algorithm") {
+        const v = String(r.algorithm ?? "—");
+        return `<td class="algo" title="${escapeHtml(v)}">${escapeHtml(v)}</td>`;
+      }
+      if (key === "drive_mode" || key === "robot_count") {
+        return `<td class="center">${escapeHtml(String(r[key] ?? "—"))}</td>`;
+      }
       if (key.startsWith("m:")) {
         const mv = r.metrics[key.slice(2)];
         const text = mv && mv.value !== null ? mFmt(mv.value) : "—";
@@ -623,7 +701,9 @@ function metricsRenderHistory() {
       }
       return `<td>${escapeHtml(String(r[key] ?? "—"))}</td>`;
     }).join("");
-    return `<tr class="run-row" data-run="${escapeHtml(r.run_id)}">${cells}</tr>`;
+    const sel = r.run_id === _mSelectedRunId ? " selected" : "";
+    return `<tr class="run-row${sel}" data-run="${escapeHtml(r.run_id)}" `
+      + `aria-selected="${r.run_id === _mSelectedRunId}">${cells}</tr>`;
   }).join("");
 
   const aggHtml = metricsAggregatesHtml(chartKey);
@@ -631,9 +711,10 @@ function metricsRenderHistory() {
     <h3 style="margin:14px 0 6px; font-size:14px;">Run history (${runs.length})</h3>
     <div class="metrics-table-wrap"><table>
       <thead><tr>${head}</tr></thead><tbody>${body ||
-        '<tr><td colspan="10" class="muted">No runs match these filters.</td></tr>'}</tbody>
+        `<tr><td colspan="${uniqueCols.length}" class="muted">No runs match these filters.</td></tr>`}</tbody>
     </table></div>
-    <p class="metrics-note">Click a column to sort; click a row to load that run into the cards above. ⇩ downloads the full run JSON.</p>
+    ${metricsHiddenNoteHtml()}
+    <p class="metrics-note">Click a column to sort; click a row to load that run into the cards above and keep it highlighted. ⇩ downloads the full run JSON; CSV opens that run's CSV in a window.</p>
     <div class="metrics-chart-grid">
       <div class="metrics-chart-box"><h4>${escapeHtml(chartKey.replace(/_/g, " "))} over time</h4>
         <canvas id="metrics-chart-time"></canvas></div>
@@ -653,12 +734,22 @@ function metricsRenderHistory() {
     tr.addEventListener("click", (ev) => {
       if (ev.target.closest("a")) return;
       _mSelectedRunId = tr.dataset.run;
+      metricsMarkSelectedRow();
       const sel = document.getElementById("metrics-run-select");
       if (sel) sel.value = _mSelectedRunId;
       metricsLoadSelectedRun();
       window.scrollTo({ top: 0, behavior: "smooth" });
     });
   }
+  for (const a of box.querySelectorAll("a.run-csv-link")) {
+    a.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      metricsShowCsv(`/api/export/run/${encodeURIComponent(a.dataset.run)}.csv`,
+                     `Run ${mShortId(a.dataset.run)} — CSV`,
+                     "Run summary, computed metrics, per robot, and per job.");
+    });
+  }
+  metricsMarkSelectedRow();
   metricsDrawTimeChart(runs, chartKey);
   metricsDrawCompareChart(chartKey);
 }
@@ -979,11 +1070,11 @@ async function metricsTabRobots(box) {
     robots = (await metricsFetch(`/api/runs/${_mSelectedRunId}/robots`)).robots;
   } catch (_) { /* table below still renders metric rows */ }
   const rows = robots.map((r) => `<tr>
-    <td>${escapeHtml(r.robot_id)}</td>
-    <td>${escapeHtml(r.status)}</td>
-    <td class="num">${r.completion_elapsed_ms !== null ? mFmtSec(r.completion_elapsed_ms / 1000) : "—"}</td>
-    <td class="num">${r.start_battery_pct ?? "—"} → ${r.end_battery_pct ?? "—"}</td>
-    <td class="num">${r.terminal_yaw_deg !== null ? `${mFmt(r.terminal_yaw_deg)}°` : "—"}</td>
+    <td class="mid">${escapeHtml(r.robot_id)}</td>
+    <td class="mid">${escapeHtml(r.status)}</td>
+    <td class="mid">${r.completion_elapsed_ms !== null ? mFmtSec(r.completion_elapsed_ms / 1000) : "—"}</td>
+    <td class="mid">${r.start_battery_pct ?? "—"} → ${r.end_battery_pct ?? "—"}</td>
+    <td class="mid">${r.terminal_yaw_deg !== null ? `${mFmt(r.terminal_yaw_deg)}°` : "—"}</td>
     <td>${escapeHtml(r.failure_reason || "")}</td>
   </tr>`).join("");
   const perRobotKeys = ["robot_productive_utilization_pct",
@@ -995,8 +1086,8 @@ async function metricsTabRobots(box) {
   box.innerHTML = `
     <h3>Robots in this run</h3>
     <div class="metrics-table-wrap"><table>
-      <thead><tr><th>robot</th><th>status</th><th>completed at</th>
-        <th>battery %</th><th>final yaw</th><th>failure reason</th></tr></thead>
+      <thead><tr><th>Robot</th><th>Status</th><th>Completed At</th>
+        <th>Battery %</th><th>Final Yaw</th><th>Failure Reason</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="6" class="muted">No robots registered for this run.</td></tr>'}</tbody>
     </table></div>
     ${metricsKeyedTableHtml(perRobotKeys, "Per-robot metrics")}`;
@@ -1010,14 +1101,14 @@ async function metricsTabJobs(box) {
   } catch (_) { /* fall through */ }
   const t = (ms) => ms !== null && ms !== undefined ? mFmtSec(ms / 1000) : "—";
   const rows = jobs.map((j) => `<tr>
-    <td>${escapeHtml(j.job_id)}</td>
-    <td>${escapeHtml(j.assigned_robot_id || "—")}</td>
-    <td>${escapeHtml(j.workstation_id || "—")}</td>
-    <td>${escapeHtml(j.status)}</td>
-    <td class="num">${t(j.release_elapsed_ms)}</td>
-    <td class="num">${t(j.delivery_elapsed_ms)}</td>
-    <td class="num">${t(j.pickup_elapsed_ms)}</td>
-    <td class="num">${t(j.completion_elapsed_ms)}</td>
+    <td class="mid">${escapeHtml(j.job_id)}</td>
+    <td class="mid">${escapeHtml(j.assigned_robot_id || "—")}</td>
+    <td class="mid">${escapeHtml(j.workstation_id || "—")}</td>
+    <td class="mid">${escapeHtml(j.status)}</td>
+    <td class="mid">${t(j.release_elapsed_ms)}</td>
+    <td class="mid">${t(j.delivery_elapsed_ms)}</td>
+    <td class="mid">${t(j.pickup_elapsed_ms)}</td>
+    <td class="mid">${t(j.completion_elapsed_ms)}</td>
     <td>${escapeHtml(j.failure_reason || "")}</td>
   </tr>`).join("");
   const wsKeys = ["workstation_processing_utilization_pct",
@@ -1126,3 +1217,238 @@ async function metricsTabQuality(box) {
 
 // Definitions are needed for display names in every tab — warm the cache.
 metricsEnsureDefinitions();
+
+
+// ---------------------------------------------------------------------------
+// Selection highlight, filter window, and the in-page CSV reader.
+// ---------------------------------------------------------------------------
+
+let _mCsvRaw = false;          // CSV window showing raw text rather than tables
+let _mCsvText = "";            // last CSV fetched, kept for the raw toggle
+let _mCsvUrl = "";
+
+// Applied to the DOM directly rather than by re-rendering the table: the run
+// history is re-sorted and re-drawn on every load, and repainting it just to
+// move a highlight would lose the scroll position the highlight exists to
+// help the reader keep.
+function metricsMarkSelectedRow() {
+  for (const tr of document.querySelectorAll("tr.run-row")) {
+    const on = tr.dataset.run === _mSelectedRunId;
+    tr.classList.toggle("selected", on);
+    tr.setAttribute("aria-selected", on ? "true" : "false");
+  }
+}
+
+function metricsOpenModal(id) {
+  const m = document.getElementById(id);
+  if (!m) return;
+  m.classList.add("open");
+  m.setAttribute("aria-hidden", "false");
+}
+
+function metricsCloseModal(id) {
+  const m = document.getElementById(id);
+  if (!m) return;
+  m.classList.remove("open");
+  m.setAttribute("aria-hidden", "true");
+}
+
+// The filter fields are behind a button now, so the button has to say how
+// many are set -- otherwise an applied filter is invisible and a run missing
+// from the history looks like missing data.
+function metricsUpdateFilterCount() {
+  const btn = document.getElementById("metrics-open-filters");
+  if (!btn) return;
+  let n = 0;
+  for (const el of document.querySelectorAll("#metrics-filters input")) {
+    if (el.value.trim() !== "") n += 1;
+  }
+  for (const el of document.querySelectorAll("#metrics-filters select")) {
+    if (el.selectedIndex > 0) n += 1;
+  }
+  btn.innerHTML = n
+    ? `Filters<span class="metrics-filter-count">${n}</span>`
+    : "Filters";
+}
+
+// Minimal RFC4180 reader: quoted fields, embedded commas, newlines and ""
+// escapes. Written out rather than split(",") because failure_reason and
+// notes routinely contain commas.
+function metricsParseCsv(text) {
+  const rows = [];
+  let row = [], field = "", quoted = false, i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+        quoted = false; i += 1; continue;
+      }
+      field += c; i += 1; continue;
+    }
+    if (c === '"') { quoted = true; i += 1; continue; }
+    if (c === ",") { row.push(field); field = ""; i += 1; continue; }
+    if (c === "\r") { i += 1; continue; }
+    if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; i += 1; continue; }
+    field += c; i += 1;
+  }
+  if (field !== "" || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+// A blank line starts a new block; the first row of each block is its header.
+function metricsCsvBlocks(rows) {
+  const blocks = [];
+  let cur = [];
+  for (const r of rows) {
+    if (r.length === 0 || (r.length === 1 && r[0].trim() === "")) {
+      if (cur.length) { blocks.push(cur); cur = []; }
+      continue;
+    }
+    cur.push(r);
+  }
+  if (cur.length) blocks.push(cur);
+  return blocks;
+}
+
+async function metricsShowCsv(url, title, subtitle) {
+  _mCsvUrl = url;
+  _mCsvRaw = false;
+  document.getElementById("metrics-csv-title").textContent = title;
+  document.getElementById("metrics-csv-sub").textContent = subtitle || "";
+  const dl = document.getElementById("metrics-csv-download");
+  dl.href = url;
+  document.getElementById("metrics-csv-body").innerHTML =
+    '<p class="muted">Loading…</p>';
+  metricsOpenModal("metrics-csv-modal");
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _mCsvText = await res.text();
+  } catch (err) {
+    _mCsvText = "";
+    document.getElementById("metrics-csv-body").innerHTML =
+      `<p class="warning">Could not read that CSV: ${escapeHtml(String(err.message || err))}</p>`;
+    return;
+  }
+  metricsRenderCsv();
+}
+
+function metricsRenderCsv() {
+  const body = document.getElementById("metrics-csv-body");
+  const toggle = document.getElementById("metrics-csv-toggle");
+  if (!body) return;
+  if (!_mCsvText.trim()) {
+    body.innerHTML = '<p class="muted">That CSV is empty.</p>';
+    return;
+  }
+  toggle.textContent = _mCsvRaw ? "Table" : "Raw text";
+  if (_mCsvRaw) {
+    body.innerHTML = `<pre class="csv-raw">${escapeHtml(_mCsvText)}</pre>`;
+    return;
+  }
+  const blocks = metricsCsvBlocks(metricsParseCsv(_mCsvText));
+  body.innerHTML = blocks.map((rows) => {
+    const head = rows[0].map((h) => `<th>${escapeHtml(h)}</th>`).join("");
+    const cols = rows[0].length;
+    const trs = rows.slice(1).map((r) => {
+      const tds = [];
+      for (let i = 0; i < cols; i += 1) {
+        const v = r[i] === undefined ? "" : r[i];
+        const num = v !== "" && !Number.isNaN(Number(v));
+        tds.push(`<td class="${num ? "num" : ""}">${escapeHtml(v)}</td>`);
+      }
+      return `<tr>${tds.join("")}</tr>`;
+    }).join("");
+    const label = rows[0].join(", ").slice(0, 60);
+    return `<div class="csv-block-title">${escapeHtml(label)}</div>`
+      + `<div class="metrics-table-wrap"><table><thead><tr>${head}</tr></thead>`
+      + `<tbody>${trs}</tbody></table></div>`;
+  }).join("");
+}
+
+
+// Condition and algorithm are dropdowns rather than text boxes because the
+// backend matches them exactly: typing "external" against a stored
+// "external (nearest_2026-09-09_20-53-58.json)" returned no rows and looked
+// like an empty database. Their value sets are small and closed, so the only
+// honest control is one that lists them.
+let _mFacets = null;
+
+async function metricsLoadFacets() {
+  try {
+    const res = await fetch("/api/runs/facets");
+    if (!res.ok) return;
+    _mFacets = await res.json();
+  } catch (err) {
+    return;                      // filters still usable, just not populated
+  }
+  metricsFillFacetSelects();
+}
+
+function metricsFillFacetSelects() {
+  if (!_mFacets) return;
+  for (const col of ["experimental_condition", "algorithm"]) {
+    const sel = document.getElementById(`mf-${col}`);
+    if (!sel) continue;
+    const keep = sel.value;
+    const items = _mFacets[col] || [];
+    const opts = ['<option value="">any</option>'];
+    let seen = false;
+    for (const it of items) {
+      if (it.value === keep) seen = true;
+      opts.push(`<option value="${escapeHtml(it.value)}">`
+        + `${escapeHtml(it.value)} (${it.count})</option>`);
+    }
+    // A selection whose runs have all been filtered away must survive the
+    // rebuild, or re-applying the filters would silently widen them.
+    if (keep && !seen) {
+      opts.push(`<option value="${escapeHtml(keep)}">${escapeHtml(keep)}</option>`);
+    }
+    sel.innerHTML = opts.join("");
+    sel.value = keep;
+    // Long algorithm strings are clipped by the select's own width, so the
+    // full value goes in the tooltip.
+    sel.title = sel.value || "any";
+  }
+  for (const col of ["experimental_condition", "algorithm"]) {
+    const sel = document.getElementById(`mf-${col}`);
+    if (sel && !sel.dataset.titleBound) {
+      sel.dataset.titleBound = "1";
+      sel.addEventListener("change", () => { sel.title = sel.value || "any"; });
+    }
+  }
+}
+
+
+// A run row is created when a mission is ARMED, so arming twice or arming
+// and walking away leaves a row that never corresponded to robots moving.
+// History and the CSV export count only rows with a start timestamp and at
+// least one event. Nothing is deleted, and what was left out is stated here
+// -- a shorter list with no explanation is how the phantom rows went
+// unnoticed until 2026-09-22 in the first place.
+function metricsHiddenNoteHtml() {
+  const n = (_mHistory && _mHistory.nonexecuted_hidden) || 0;
+  if (!n) return "";
+  return `<p class="metrics-note"><strong>${n} non-executed record`
+    + `${n === 1 ? "" : "s"} hidden.</strong> These were armed but never `
+    + `started, or carry no telemetry. They are still in the database; `
+    + `choose <em>Outcome &rarr; include non-executed records</em> to see `
+    + `them.</p>`;
+}
+
+
+// Headers are Title Case; a few tokens would look wrong capitalised word by
+// word, so they are spelled out rather than run through the generic rule.
+const M_TITLE_WORDS = {
+  et: "ET", id: "ID", pct: "%", sec: "(s)", ms: "(ms)", mae: "MAE",
+  p50: "p50", p90: "p90", p95: "p95", kpi: "KPI", csv: "CSV",
+};
+
+function mTitleCase(text) {
+  return String(text).split(/\s+/).filter(Boolean).map((w) => {
+    const key = w.toLowerCase();
+    if (M_TITLE_WORDS[key]) return M_TITLE_WORDS[key];
+    return key.charAt(0).toUpperCase() + key.slice(1);
+  }).join(" ");
+}
