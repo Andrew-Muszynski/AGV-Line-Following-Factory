@@ -15,6 +15,7 @@ Canonical units: seconds, meters, degrees, percent, watt-hours.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import math
 import sqlite3
@@ -47,6 +48,11 @@ OCCUPIED_STATES = PRODUCTIVE_STATES | {
 }
 
 TERMINAL_RUN_EVENTS = {"RUN_COMPLETED", "RUN_FAILED", "RUN_ABORTED"}
+
+#: Six hours. The longest real run recorded is under ten minutes, so this is
+#: generous by two orders of magnitude and only ever catches a stale
+#: ended_at_utc -- see run_times().
+MAX_PLAUSIBLE_RUN_MS = 6 * 60 * 60 * 1000
 
 
 # ---------------------------------------------------------------------------
@@ -200,15 +206,70 @@ def load_run_bundle(conn: sqlite3.Connection, run_id: str) -> dict:
 # ---------------------------------------------------------------------------
 # timeline / state model
 
+def _iso_to_epoch(value):
+    """Parse an ISO-8601 stamp from the runs table, or None."""
+    if not value:
+        return None
+    try:
+        return dt.datetime.fromisoformat(str(value)).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
 def run_times(bundle) -> dict:
     """t0/tend (elapsed ms) and durations. Makespan only for completed runs;
-    observed duration for failed/aborted (spec 7.1 / 7.2)."""
+    observed duration for failed/aborted (spec 7.1 / 7.2).
+
+    The RUN_STARTED / terminal events are authoritative, because they are on
+    the supervisor's own clock and share a zero with every other elapsed_ms.
+    When one of them is absent the run row's started_at_utc / ended_at_utc is
+    used instead, and `time_source` says which was used.
+
+    THE FALLBACK IS NOT COSMETIC. Finalization is triggered by the terminal
+    event arriving, but the supervisor keeps flushing pose batches afterwards
+    -- on the 2026-10-13 reference run the last event landed 71 minutes after
+    the metrics were computed. A run finalized before its terminal event was
+    visible stored a null makespan forever, on a page holding every number
+    needed to compute it.
+    """
     events = bundle["events"]
-    status = bundle["run"]["status"]
+    run = bundle["run"]
+    status = run["status"]
     t0 = next((e["elapsed_ms"] for e in events
                if e["event_type"] == "RUN_STARTED"), None)
     tend = next((e["elapsed_ms"] for e in events
                  if e["event_type"] in TERMINAL_RUN_EVENTS), None)
+
+    source = "events"
+    if t0 is None or tend is None:
+        t0 = 0 if t0 is None else t0
+        # PREFER THE LAST EVENT over the run row. ended_at_utc is not
+        # trustworthy on its own: a cleanup pass on 2026-09-22 stamped a
+        # batch of long-dead runs as failed, so one run whose events span
+        # 95 s carries an ended_at 13 days after its start. Taking that at
+        # face value produced an "observed duration" of 13 days and state
+        # durations to match. The last event is the last moment the run is
+        # known to have existed, which is the defensible floor.
+        last_event = max((e["elapsed_ms"] for e in events
+                          if e["elapsed_ms"] is not None), default=None)
+        if last_event is not None:
+            tend = last_event
+            source = "last_event"
+        else:
+            started = _iso_to_epoch(run.get("started_at_utc"))
+            ended = _iso_to_epoch(run.get("ended_at_utc"))
+            if started is not None and ended is not None and ended >= started:
+                tend = int(round((ended - started) * 1000.0))
+                source = "run_row"
+
+    # A run on this rig lasts minutes. Anything past the ceiling is a stale
+    # timestamp, not a measurement, and is dropped rather than published --
+    # a fabricated duration silently enters every aggregate that divides by
+    # it, which is worse than a gap.
+    if tend is not None and t0 is not None and (tend - t0) > MAX_PLAUSIBLE_RUN_MS:
+        tend = None
+        source = "implausible"
+
     makespan = None
     observed = None
     if t0 is not None and tend is not None:
@@ -218,7 +279,7 @@ def run_times(bundle) -> dict:
         else:
             observed = span
     return {"t0_ms": t0, "tend_ms": tend, "makespan_sec": makespan,
-            "observed_sec": observed,
+            "observed_sec": observed, "time_source": source,
             "span_sec": makespan if makespan is not None else observed}
 
 
@@ -334,18 +395,57 @@ def compute_run_metrics(conn: sqlite3.Connection, run_id: str) -> list[dict]:
           status="ok" if times["observed_sec"] is not None else "missing")
 
     # ---- jobs ---------------------------------------------------------------
+    # Per-job rows only start at the 2026-09-15 runs. Before that the jobs
+    # table is empty, which made JC zero and published a THROUGHPUT OF 0.0
+    # for runs that in fact served all 12 jobs -- a false number, not a
+    # missing one, and worse than a dash because it silently entered the
+    # aggregates. Those runs do carry one PROCESSING_COMPLETED event per job,
+    # so the count is recoverable; when nothing is recoverable the metric is
+    # left null rather than zeroed.
     JA = len(jobs)
     completed_jobs = [j for j in jobs if j["status"] == "completed"]
     JC = len(completed_jobs)
+    jobs_source = "jobs_table"
+    if JA == 0:
+        done_ev = {e.get("job_id") for e in events
+                   if e["event_type"] in ("PROCESSING_COMPLETED",
+                                          "DROPOFF_COMPLETED")
+                   and e.get("job_id")}
+        n_done = len(done_ev) or sum(
+            1 for e in events if e["event_type"] == "PROCESSING_COMPLETED")
+        if n_done:
+            declared = run.get("job_count")
+            JA = int(declared) if declared else n_done
+            JC = min(n_done, JA)
+            jobs_source = "events"
+        else:
+            jobs_source = "none"
+
     c.add("job_completion_rate", _ratio(JC, JA), numerator=JC, denominator=JA,
           valid_n=JA)
+    # A WORKSTATION is served when every job at it is done -- with
+    # pickup-and-delivery that is its drop AND its pick-up, so 24 bays are
+    # 48 jobs. Operator, 2026-10-30: "48/48 jobs done" read as 48 bays.
+    by_ws: dict = {}
+    for j in jobs:
+        if j.get("workstation_id") is not None:
+            by_ws.setdefault(str(j["workstation_id"]), []).append(
+                j["status"] == "completed")
+    WA = len(by_ws)
+    WC = sum(1 for done in by_ws.values() if all(done))
+    c.add("workstation_completion_rate", _ratio(WC, WA) if WA else None,
+          numerator=WC if WA else None, denominator=WA if WA else None,
+          valid_n=WA, status="ok" if WA else "missing")
     c.add("throughput_jobs_per_min",
-          _ratio(60.0 * JC, T) if T else None,
-          numerator=JC, denominator=T)
+          _ratio(60.0 * JC, T) if (T and jobs_source != "none") else None,
+          numerator=JC if jobs_source != "none" else None, denominator=T)
     c.add("observed_throughput_jobs_per_min",
-          _ratio(60.0 * JC, times["observed_sec"]) if times["observed_sec"] else None,
-          numerator=JC, denominator=times["observed_sec"],
-          status="ok" if times["observed_sec"] else "missing")
+          _ratio(60.0 * JC, times["observed_sec"])
+          if (times["observed_sec"] and jobs_source != "none") else None,
+          numerator=JC if jobs_source != "none" else None,
+          denominator=times["observed_sec"],
+          status="ok" if (times["observed_sec"] and jobs_source != "none")
+          else "missing")
 
     flow = [( (j["completion_elapsed_ms"] - j["release_elapsed_ms"]) / 1000.0)
             for j in completed_jobs
@@ -526,6 +626,26 @@ def compute_run_metrics(conn: sqlite3.Connection, run_id: str) -> list[dict]:
           missing_n=len(deadlocks) - len(resolved_dl))
     c.add("unresolved_deadlock_count", len(unresolved_deadlocks),
           valid_n=len(unresolved_deadlocks))
+    # Total time the fleet spent deadlocked, which is what a run costs the
+    # operator -- the mean above says how bad a typical episode was, not how
+    # much of the run was lost. An UNRESOLVED deadlock is counted from
+    # detection to the end of the run, because the fleet was stuck for all of
+    # it; excluding those would flatter exactly the worst runs.
+    dl_total = 0.0
+    dl_n = 0
+    for d in deadlocks:
+        start = d["detected_elapsed_ms"]
+        if start is None:
+            continue
+        end = d["resolved_elapsed_ms"]
+        if end is None:
+            end = times["tend_ms"]          # unresolved: stuck until the end
+        if end is None or end < start:
+            continue
+        dl_total += (end - start) / 1000.0
+        dl_n += 1
+    c.add("total_deadlock_sec", dl_total if deadlocks else 0.0,
+          valid_n=dl_n, missing_n=len(deadlocks) - dl_n)
 
     # ---- 10. separation / vision safety ------------------------------------
     telemetry = [t for t in bundle["telemetry"] if t["valid"]]
@@ -742,7 +862,113 @@ def compute_run_metrics(conn: sqlite3.Connection, run_id: str) -> list[dict]:
     c.add("telemetry_coverage_pct", dq["telemetry_coverage_pct"],
           status="ok" if dq["telemetry_coverage_pct"] is not None else "missing")
 
+    _label_blanks(c, bundle, run, times)
     return c.values
+
+
+# ---------------------------------------------------------------------------
+# why a value is blank
+
+#: A metric this run could never have, because the thing it measures did not
+#: happen -- no conflicts to resolve, no reroutes to succeed, no pickup leg.
+#: Not a defect, and showing it in the same orange as a real gap trains the
+#: reader to ignore both.
+STATUS_NA = "n/a"
+#: The supervisor never emits the source. No recomputation will fill these in;
+#: closing them means instrumenting fleetSupervisor.py.
+STATUS_NO_SOURCE = "not_instrumented"
+
+#: metric-key prefix -> (event type or telemetry column that would supply it)
+_SOURCE_GATED = {
+    "yaw_": "ROTATION_ATTEMPT_*",
+    "rotation_": "ROTATION_ATTEMPT_*",
+    "camera_correction_rate": "ROTATION_ATTEMPT_*",
+    "acceptable_turn_throughput_per_min": "ROTATION_ATTEMPT_*",
+    "pose_age_": "telemetry.pose_age_ms",
+    "energy_": "telemetry.voltage_v / current_a",
+    "command_ack_": "COMMAND_ACK events",
+}
+
+#: metric key -> the count metric that must be non-zero for it to exist
+_ZERO_DENOMINATOR = {
+    "auto_conflict_resolution_rate": "conflict_count",
+    "reroute_success_rate": "reroute_count",
+    "reroute_detour_distance_m": "reroute_count",
+    "reroute_detour_time_sec": "reroute_count",
+    "mean_deadlock_recovery_sec": "deadlock_count",
+    "mean_recovery_time_sec": "robot_fault_count",
+}
+
+
+def _label_blanks(c, bundle, run, times) -> None:
+    """Re-label `missing` values that are blank for a KNOWN reason.
+
+    A null is never filled in here -- the number stays absent. What changes
+    is that the page can say whether it is absent because nothing happened,
+    because the rig does not record it, or because something actually went
+    wrong. Only the last of those is worth a reader's attention, and before
+    this all three looked identical.
+    """
+    by_key = {}
+    for v in c.values:
+        if v["scope_type"] == "run":
+            by_key[v["metric_key"]] = v
+
+    def count_of(key):
+        v = by_key.get(key)
+        return v["value"] if v and v["value"] is not None else None
+
+    events_present = {e["event_type"] for e in bundle["events"]}
+    tel = bundle["telemetry"]
+    has_pose_age = any(t.get("pose_age_ms") is not None for t in tel)
+    has_power = any(t.get("voltage_v") is not None
+                    or t.get("current_a") is not None for t in tel)
+    has_rotation = any(t.startswith("ROTATION_ATTEMPT") for t in events_present)
+    has_ack = "COMMAND_ACK" in events_present
+    rpd_on = bool(run.get("process_sec")) and any(
+        j.get("pickup_elapsed_ms") is not None for j in bundle["jobs"])
+    completed = run["status"] == "completed"
+
+    source_ok = {
+        "ROTATION_ATTEMPT_*": has_rotation,
+        "telemetry.pose_age_ms": has_pose_age,
+        "telemetry.voltage_v / current_a": has_power,
+        "COMMAND_ACK events": has_ack,
+    }
+
+    for v in c.values:
+        if v["status"] != "missing" or v["value"] is not None:
+            continue
+        key = v["metric_key"]
+
+        # 1. the other half of the completed/incomplete pair
+        if completed and key in ("observed_duration_sec",
+                                 "observed_throughput_jobs_per_min"):
+            v["status"] = STATUS_NA
+            continue
+        if not completed and key in ("actual_makespan_sec",
+                                     "throughput_jobs_per_min",
+                                     "makespan_error_sec", "makespan_error_pct"):
+            v["status"] = STATUS_NA
+            continue
+
+        # 2. the pickup leg, which these runs do not use
+        if not rpd_on and key in ("pickup_response_time_mean_sec",
+                                  "loaded_transport_time_mean_sec"):
+            v["status"] = STATUS_NA
+            continue
+
+        # 3. nothing of that kind happened, so there is nothing to average
+        gate = _ZERO_DENOMINATOR.get(key)
+        if gate is not None and count_of(gate) == 0:
+            v["status"] = STATUS_NA
+            continue
+
+        # 4. the rig never records the source
+        for prefix, source in _SOURCE_GATED.items():
+            if key.startswith(prefix) and not source_ok.get(source, True):
+                v["status"] = STATUS_NO_SOURCE
+                break
 
 
 # ---------------------------------------------------------------------------

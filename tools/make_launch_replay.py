@@ -31,9 +31,9 @@ of the offsets schedule is run r4, a 12-job mission that shares the launch
 but then diverges to the bays; its node-0 arrivals are reported alongside
 for comparison.
 
-Node geometry is read out of fleet/camera_grid_navigate.py with ast rather
-than imported, because that module pulls in rclpy, which is not installed on
-the Windows side.
+Node geometry comes from fleet/testbed_coordinates.json (via
+testbed_coordinates.py, which needs no rclpy), the same file the navigator
+drives to.
 """
 from __future__ import annotations
 
@@ -44,6 +44,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import statistics
 from collections import defaultdict
 
@@ -66,25 +67,11 @@ WANT = ("DEPOT_SLOT_WORLD_IN", "DEPOT_ENTRY_WORLD_IN", "NODE0_WORLD_IN",
 
 
 def nav_constants() -> dict:
-    tree = ast.parse(open(NAV, encoding="utf-8").read())
-    out = {}
-    for node in tree.body:
-        # The depot tables are annotated assignments (`X: dict[...] = {...}`),
-        # which are AnnAssign, not Assign.
-        if isinstance(node, ast.Assign):
-            targets = node.targets
-        elif isinstance(node, ast.AnnAssign):
-            targets = [node.target]
-        else:
-            continue
-        for t in targets:
-            if isinstance(t, ast.Name) and t.id in WANT and node.value is not None:
-                try:
-                    out[t.id] = ast.literal_eval(node.value)
-                except ValueError:
-                    pass
-    missing = set(WANT) - set(out)
-    assert not missing, f"could not read {missing} from camera_grid_navigate"
+    """The navigator's node tables, from the one shared file (2026-10-22;
+    these used to be parsed out of camera_grid_navigate.py's literals)."""
+    sys.path.insert(0, os.path.join(ROOT, "fleet"))
+    import testbed_coordinates as tc
+    out = {name: getattr(tc, name) for name in WANT}
     return out
 
 

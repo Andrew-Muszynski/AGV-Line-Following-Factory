@@ -49,9 +49,11 @@ are kept. Add --dry-run to see the measurements and deltas without
 writing anything.
 
 The JSON this writes is the RECORD, not the live values. To apply a
-measurement, run --emit-python and paste the printed literal into BOTH
-apriltag_localize.py and camera_grid_navigate.py -- they run on different
-machines and cannot import each other, so both must carry it.
+measurement, run --apply: it writes the measured positions into
+testbed_coordinates.json, the one node table that both apriltag_localize.py
+and camera_grid_navigate.py load (2026-10-22). Redeploy it to the Linux
+laptop with tools/deploy_linux.sh. --emit-python still prints the old
+literal form, for reading only.
 
 Requires the same stack as a route: camera bridge, apriltag_localize.py,
 micro-ROS agent and rosbridge. It does NOT need fleetSupervisor.py, and
@@ -80,14 +82,32 @@ from camera_grid_navigate import (
 from camera_trajectory import normalize_deg
 
 # The measurement RECORD. Nothing reads this at runtime: the live values are
-# the WORKSTATION_WORLD_IN literal embedded in BOTH apriltag_localize.py and
-# camera_grid_navigate.py. Those two run on different machines and cannot
-# import each other, so a JSON present on one but missing on the other would
-# let the localiser and the navigator silently disagree about where every bay
-# is -- exactly the class of bug that ends in a collision. The literal is the
-# single source of truth; this file is provenance, and the input to
-# --emit-python.
+# in testbed_coordinates.json, which --apply writes from this record. That
+# file is shared by the localiser and the navigator and both refuse to start
+# without it, so they cannot silently disagree about where a bay is.
 CALIBRATION_FILENAME = "workstation_calibration.json"
+
+
+def apply_json(path: str) -> None:
+    """Write every measured position in the record into
+    testbed_coordinates.json and say what moved."""
+    import testbed_coordinates as tc
+    with open(path, encoding="utf-8") as fh:
+        blob = json.load(fh)
+    updates = {}
+    for kind, (section, _table) in SECTION_BY_KIND.items():
+        for label, rec in (blob.get(section) or {}).items():
+            updates[str(label)] = (rec["x_in"], rec["y_in"])
+    if not updates:
+        raise SystemExit(f"{path} holds no measurements")
+    for label, (x, y) in sorted(updates.items(), key=lambda kv: tc._order(kv[0])):
+        old = tc.NODES.get(label)
+        moved = "" if old is None else f"  (was {old[0]:.2f}, {old[1]:.2f})"
+        print(f"  {label:>4}  {x:6.2f}  {y:6.2f}{moved}")
+    out = tc.save(updates, datetime.now().strftime("%Y-%m-%d"))
+    print(f"\nwrote {len(updates)} positions to {out}\n"
+          "Redeploy (tools/deploy_linux.sh) and restart both the vision and "
+          "the supervisor.")
 
 
 def emit_python(path: str) -> None:
@@ -271,10 +291,13 @@ def parse_assignment(tokens: list[str], rows: int,
 def main() -> None:
     ap = argparse.ArgumentParser(
         description="Measure workstation node positions from parked robots.")
+    ap.add_argument("--apply", action="store_true",
+                    help="write the recorded measurements into "
+                         "testbed_coordinates.json (the one node table both "
+                         "the navigator and the localiser load) and exit")
     ap.add_argument("--emit-python", action="store_true",
                     help="print the measured tables as Python literals and "
-                         "exit -- paste into BOTH apriltag_localize.py and "
-                         "camera_grid_navigate.py")
+                         "exit (for reading; --apply is how they go live)")
     ap.add_argument("--assign", nargs="+", metavar="ROBOT:TARGET",
                     help="ROBOT:TARGET pairs. TARGET is a workstation node "
                          "number (65..113 on an 8x8), a depot slot (D1, D2, "
@@ -303,11 +326,14 @@ def main() -> None:
 
     default_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 CALIBRATION_FILENAME)
+    if args.apply:
+        apply_json(args.out or default_path)
+        return
     if args.emit_python:
         emit_python(args.out or default_path)
         return
     if not args.assign:
-        raise SystemExit("--assign is required (or use --emit-python)")
+        raise SystemExit("--assign is required (or use --apply / --emit-python)")
 
     assignment = parse_assignment(args.assign, args.rows, args.cols)
     robots = sorted(assignment)
@@ -439,9 +465,9 @@ def main() -> None:
         bays = (args.rows - 1) * (args.cols - 1)
         print(f"\nwrote {len(results)} target(s) to {out_path}")
         print("NOTE: this file is the record, not the live values. Run "
-              "--emit-python and paste the")
-        print("      literals into BOTH apriltag_localize.py and "
-              "camera_grid_navigate.py to take effect.")
+              "--apply to write them")
+        print("      into testbed_coordinates.json (read by both the "
+              "navigator and the localiser).")
         print(f"  workstations : {len(blob['nodes'])}/{bays}")
         print(f"  depot slots  : {len(blob['depot_slots'])}")
         print(f"  depot entries: {len(blob['depot_entries'])}")

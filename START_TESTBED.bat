@@ -82,6 +82,28 @@ REM change at a time.
 set "NOLLM=1"
 set "VTHREADS=8"
 
+REM --- turn method (optional first argument) -------------------------------
+REM   START_TESTBED.bat              -> staged, the code default
+REM   START_TESTBED.bat rotate_rel   -> firmware alvik.rotate(), per-robot
+REM                                     calibrated, reintroduces the
+REM                                     drive->turn seam fault
+REM   START_TESTBED.bat wheel        -> slow streamed taper, no seam
+REM The value is exported to the supervisor only; nothing else reads it. It
+REM also lands in the run row (fleet/tuning_snapshot.py) and in the tab
+REM title, so an A/B block can always be identified after the fact.
+set "TURN=%~1"
+set "TURNENV="
+set "TURNTAG="
+if not "%TURN%"=="" (
+  if /I not "%TURN%"=="staged" if /I not "%TURN%"=="rotate_rel" if /I not "%TURN%"=="wheel" (
+    echo Turn method must be staged, rotate_rel or wheel -- got "%TURN%".
+    pause
+    exit /b 1
+  )
+  set "TURNENV=AGV_TURN_METHOD=%TURN%"
+  set "TURNTAG= [%TURN%]"
+)
+
 where wt.exe >nul 2>&1
 if errorlevel 1 (
   echo Windows Terminal ^(wt.exe^) not found.
@@ -104,6 +126,8 @@ echo   ROS side:    %LINUXUSER%@%LINUXIP%  (agent, rosbridge, supervisor)
 echo   Windows:     camera bridge, vision, metrics app
 echo   robots:      must be flashed with v2  ^(AGENT_IP=%LINUXIP%^)
 echo   LLM advisor: NOLLM=%NOLLM%   vision threads: %VTHREADS%
+if not "%TURN%"=="" echo   TURN METHOD: %TURN%   ^(fallback only -- the Run tab Drive mode choice wins^)
+if "%TURN%"=="" echo   turn method: per mission, from the Run tab Drive mode buttons
 echo.
 
 REM Windows-native first: the camera bridge LISTENS and vision connects to it.
@@ -128,7 +152,7 @@ REM machine's LAN IP, not 127.0.0.1.
 wt.exe -w %WIN% new-tab --title "vision" -d "%REPO%" cmd /k tools\run_vision_windows.bat %VTHREADS% %ROSHOST%
 timeout /t 1 /nobreak >nul
 
-wt.exe -w %WIN% new-tab --title "supervisor" ssh -t %LINUXUSER%@%LINUXIP% bash run_role_linux.sh supervisor
+wt.exe -w %WIN% new-tab --title "supervisor%TURNTAG%" ssh -t %LINUXUSER%@%LINUXIP% %TURNENV% bash run_role_linux.sh supervisor
 timeout /t 1 /nobreak >nul
 
 wt.exe -w %WIN% new-tab --title "ros shell" ssh -t %LINUXUSER%@%LINUXIP% bash run_role_linux.sh shell
@@ -141,6 +165,8 @@ echo Starting testbed as tabs in Windows Terminal window "%WIN%"...
 echo   ROS side:    WSL2 %DISTRO%  (agent, rosbridge, supervisor)
 echo   robots:      must be flashed with v3  ^(AGENT_IP=192.168.0.162^)
 echo   LLM advisor: NOLLM=%NOLLM%   vision threads: %VTHREADS%
+if not "%TURN%"=="" echo   TURN METHOD: %TURN%   ^(fallback only -- the Run tab Drive mode choice wins^)
+if "%TURN%"=="" echo   turn method: per mission, from the Run tab Drive mode buttons
 echo.
 
 wt.exe -w %WIN% new-tab --title "camera bridge" -d "%REPO%" cmd /k python camera_bridge_windows.py --camera 1 --backend msmf --port 8765 --jpeg-quality 95
@@ -158,7 +184,7 @@ timeout /t 2 /nobreak >nul
 wt.exe -w %WIN% new-tab --title "vision" -d "%REPO%" cmd /k tools\run_vision_windows.bat %VTHREADS% %ROSHOST%
 timeout /t 1 /nobreak >nul
 
-wt.exe -w %WIN% new-tab --title "supervisor" wsl.exe -d %DISTRO% bash -lc "cd %WSLREPO% && AGV_NO_LLM=%NOLLM% bash tools/run_role.sh supervisor"
+wt.exe -w %WIN% new-tab --title "supervisor%TURNTAG%" wsl.exe -d %DISTRO% bash -lc "cd %WSLREPO% && AGV_NO_LLM=%NOLLM% %TURNENV% bash tools/run_role.sh supervisor"
 timeout /t 1 /nobreak >nul
 
 wt.exe -w %WIN% new-tab --title "ros shell" wsl.exe -d %DISTRO% bash -lc "cd %WSLREPO% && bash tools/run_role.sh shell"

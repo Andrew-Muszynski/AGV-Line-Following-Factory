@@ -7,6 +7,7 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
 <link rel="stylesheet" href="/static/css/app.css">
 <link rel="stylesheet" href="/static/css/metrics.css">
+<link rel="stylesheet" href="/static/css/recordings.css">
 </head>
 <body data-view="setup">
 <nav class="topbar">
@@ -15,6 +16,8 @@
   <button class="secondary" id="view-plan">2 &middot; Plan &amp; Simulate</button>
   <button class="secondary" id="view-run">3 &middot; Run &amp; Monitor</button>
   <button class="secondary" id="view-metrics">4 &middot; Performance Metrics</button>
+  <button class="secondary" id="view-definitions">5 &middot; Definitions</button>
+  <button class="secondary" id="view-recordings">6 &middot; Recordings</button>
   <span id="setup-summary" class="v-plan-run">
     <span id="setup-summary-text"></span>
     <button class="secondary" id="edit-setup">Edit Setup</button>
@@ -85,10 +88,22 @@
       <label class="field">Import plan (external solver JSON)
         <input id="import-plan" type="file" accept=".json,application/json">
       </label>
+      <label class="field">Saved plans (VRP/generated_plans)
+        <span style="display:flex; gap:6px; align-items:center;">
+          <select id="saved-plans" style="flex:1; min-width:0;">
+            <option value="">— checking… —</option>
+          </select>
+          <button class="secondary" id="saved-plans-refresh" type="button"
+                  title="Re-read generated_plans/" style="padding:4px 8px;">&#x21bb;</button>
+        </span>
+      </label>
       <div class="actions">
         <button id="solve">Solve</button>
+        <button class="secondary" id="save-plan" disabled
+                title="Write this plan into VRP/generated_plans/">Save to VRP</button>
         <button class="secondary" id="download-json" disabled>Download JSON</button>
       </div>
+      <p id="saved-plans-status" class="muted" style="margin:2px 0 0; font-size:11px;"></p>
       <p id="capacity-warning" class="warning" style="display:none;"></p>
     </div>
   </section>
@@ -184,12 +199,27 @@
         <span class="tool-label">Drive mode</span>
         <button class="secondary" id="drive-mode-color">Color sensor + camera safety</button>
         <button class="secondary" id="drive-mode-vision">Camera only</button>
+        <button class="secondary" id="drive-mode-encoder">Camera + Encoder</button>
         <span id="drive-mode-status" class="mode-status muted"></span>
       </div>
       <div class="tool-row">
-        <span class="tool-label">Turn+drive fusion</span>
-        <button class="secondary" id="fuse-turns-toggle" disabled>Fuse turns (disabled)</button>
-        <span id="fuse-turns-status" class="mode-status muted">disabled — caused 2 collisions 2026-07-31</span>
+        <span class="tool-label">Traffic planner</span>
+        <button class="secondary" id="traffic-page" title="The routes this page solved (its own WAIT schedule)">Page plan</button>
+        <button class="secondary" id="traffic-astar" title="Uncoordinated A*: fastest route per robot, no planned waits">A*</button>
+        <button class="secondary" id="traffic-wait" title="Iterative delay insertion on fixed L-shaped routes">WAIT</button>
+        <button class="secondary" id="traffic-pp" title="Prioritized planning">PP</button>
+        <button class="secondary" id="traffic-cbs" title="Conflict-Based Search">CBS</button>
+        <span id="traffic-status" class="mode-status muted"></span>
+      </div>
+      <div class="tool-row">
+        <span class="tool-label">Recording</span>
+        <input id="rec-label" class="rec-label-input" type="text" maxlength="120"
+               placeholder="Name for the next run's video (optional)"
+               title="For example R037 S1_6r PP from the DOE run sheet. Left blank, the video is named from the start time, robot count and traffic planner.">
+        <button class="secondary" id="rec-auto" title="Record every run: starts when you press Start, stops 5 s after the run ends">Auto-record on</button>
+        <button class="secondary" id="rec-toggle" title="Start or stop a recording by hand">Record now</button>
+        <button class="secondary" id="rec-second" title="Also record the second overhead camera (its own laptop, 192.168.0.73:8090) under the same name, tagged _second">Second camera on</button>
+        <span id="rec-status" class="mode-status muted">checking the recorder…</span>
       </div>
       <div class="tool-row">
         <span class="tool-label">Supervisor</span>
@@ -199,20 +229,6 @@
         <button class="secondary" id="sup-ping" title="Ask every robot to answer with GET_STATUS. A robot that stays silent has a dead micro-ROS session and needs a power cycle -- a green LED only means it reached an agent once.">Ping robots</button>
         <span id="sup-status" class="mode-status muted">no mission sent</span>
       </div>
-      <p class="muted" style="margin:0;">Preferred path: hand the mission to the fleet supervisor on the
-        Linux laptop (run it with <b>--listen</b>) — it dispatches natively with lower latency, the
-        BUSY-ack protocol, and the same conflict + vision gates. The browser Start above is the fallback.
-        <b>Drive mode</b> picks how the supervisor moves each robot once a mission starts: <b>Color sensor +
-        camera safety</b> dispatches the original FORWARD_UNTIL_&lt;color&gt;/turn command vocabulary, with
-        vision only monitoring/veto (the long-proven path). <b>Camera only</b> dispatches pure AprilTag
-        position/heading control (drive_leg/turn_to_heading) and never uses the color sensor at all. Chosen
-        per mission, sent with it — no supervisor restart needed to switch.
-        <b>Turn+drive fusion</b> is DISABLED — built 2026-07-31 to skip the brake/settle between a turn
-        and the following drive, but caused two real hardware collisions the same day (the arrival
-        square-up after a fused turn+drive pointed the wrong way, since it only knew the heading it had
-        just driven, not the heading of the leg after that). The supervisor forces it off unconditionally
-        regardless of what's sent here. See turn_then_drive_leg()'s docstring in camera_grid_navigate.py
-        for the full history before ever re-enabling it.</p>
       <div id="sup-robot-status" class="muted" style="font-family:monospace; white-space:pre; font-size:11px;"></div>
       <div id="dispatch-editors"></div>
       <div id="dispatch-robot-status" class="muted" style="font-family:monospace; white-space:pre; font-size:11px;"></div>
@@ -302,6 +318,7 @@
           <h2 style="margin:0;">Current Run <span id="metrics-run-badge" class="metrics-badge"></span></h2>
           <span class="tool-row">
             <select id="metrics-run-select" title="Pick which run the KPI cards show"></select>
+            <button class="secondary" id="metrics-watch-video" style="display:none;" title="Play this run's video on the Recordings page">Watch video</button>
             <button class="secondary" id="metrics-refresh">Refresh</button>
           </span>
         </div>
@@ -327,6 +344,103 @@
       <div class="panel">
         <div class="side-tabs" id="metrics-tabs"></div>
         <div id="metrics-tab-content"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Page 5. The definitions table is long enough to need its own page;
+       as a tab inside Page 4 it pushed the run you were reading off
+       screen. Rendered once, on first visit. -->
+  <section id="definitions-page" class="v-definitions">
+    <div class="panel">
+      <h2 style="margin:0 0 4px;">Metric definitions</h2>
+      <p class="muted" style="margin:0 0 10px; font-size:12px;">
+        Every metric the testbed computes: what it means, its unit, the
+        formula, and the exact source fields it is derived from. Versioned —
+        a stored value records the definition version it was computed under.
+      </p>
+      <div id="definitions-content">
+        <p class="muted">Loading definitions…</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Page 6. Saved run videos (video_recorder.py) and a player that puts
+       the run's notable events on the video's own timeline. Populated by
+       static/js/recordings.js. -->
+  <section id="recordings-page" class="v-recordings">
+    <div class="rec-layout">
+      <aside class="panel rec-library">
+        <div class="rec-library-head">
+          <h2>Recordings <span id="rec-count" class="rec-count"></span></h2>
+          <button class="secondary" id="rec-refresh">Refresh</button>
+        </div>
+        <div id="rec-live" class="rec-live-banner" hidden></div>
+        <input id="rec-search" type="search" placeholder="Filter: 6r cbs, R037, 2026-10-17" aria-label="Filter recordings">
+        <div id="rec-list" class="rec-list" aria-label="Saved recordings"></div>
+        <p id="rec-storage" class="rec-storage muted"></p>
+      </aside>
+      <div class="panel rec-viewer">
+        <p id="rec-empty" class="muted">No recordings yet. With Auto-record on, every run started from Run &amp; Monitor is saved here as its own video.</p>
+        <div id="rec-detail" hidden>
+          <div class="rec-head">
+            <input id="rec-title" class="rec-title-input" type="text" maxlength="200" aria-label="Video name">
+            <span class="tool-row">
+              <button id="rec-save-title" hidden>Save name</button>
+              <button class="secondary" id="rec-download">Download</button>
+              <button class="secondary" id="rec-open-run">Run metrics</button>
+              <button class="secondary rec-delete" id="rec-delete">Delete</button>
+            </span>
+          </div>
+          <div class="rec-stage">
+            <video id="rec-video" controls preload="metadata" playsinline></video>
+            <video id="rec-video-2" preload="metadata" playsinline muted hidden></video>
+            <p id="rec-stage-note" class="rec-stage-note" hidden></p>
+          </div>
+          <div id="rec-timeline" class="rec-timeline" title="Click to jump. Ticks are run events: red safety, blue progress.">
+            <div id="rec-ticks"></div>
+            <div id="rec-playhead" class="rec-playhead"></div>
+          </div>
+          <div class="tool-row rec-controls">
+            <span class="tool-label">Speed</span>
+            <span id="rec-speed" class="tool-row">
+              <button class="secondary" data-rate="0.5">0.5&times;</button>
+              <button class="secondary active" data-rate="1">1&times;</button>
+              <button class="secondary" data-rate="2">2&times;</button>
+              <button class="secondary" data-rate="4">4&times;</button>
+            </span>
+            <span class="tool-label rec-gap">Events</span>
+            <button class="secondary" id="rec-prev" title="Jump to 2 s before the previous event">&lsaquo; Previous</button>
+            <button class="secondary" id="rec-next" title="Jump to 2 s before the next event">Next &rsaquo;</button>
+            <label class="rec-check"><input type="checkbox" id="rec-show-safety" checked><i class="rec-key rec-key-safety"></i>Safety</label>
+            <label class="rec-check"><input type="checkbox" id="rec-show-progress" checked><i class="rec-key rec-key-progress"></i>Progress</label>
+          </div>
+          <div class="tool-row rec-controls" id="rec-cam-row" hidden>
+            <span class="tool-label">Camera</span>
+            <span id="rec-cam" class="tool-row">
+              <button class="secondary active" data-cam="main">Main</button>
+              <button class="secondary" data-cam="second">Second</button>
+              <button class="secondary" data-cam="both">Side by side</button>
+            </span>
+            <span class="tool-label rec-gap">Sync</span>
+            <button class="secondary" id="rec-sync-minus" title="If the second camera runs ahead of the main one">Delay second 0.1 s</button>
+            <span id="rec-sync" class="mode-status muted"></span>
+            <button class="secondary" id="rec-sync-plus" title="If the second camera lags behind the main one">Advance second 0.1 s</button>
+          </div>
+          <dl id="rec-meta" class="rec-meta"></dl>
+          <div class="metrics-table-wrap scroll rec-events-wrap">
+            <table>
+              <thead><tr>
+                <th class="col-num" scope="col">Video</th>
+                <th class="col-num" scope="col">Run</th>
+                <th class="col-left" scope="col">Event</th>
+                <th class="col-left" scope="col">Robots</th>
+                <th class="col-left" scope="col">Detail</th>
+              </tr></thead>
+              <tbody id="rec-events"></tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
   </section>
@@ -394,10 +508,11 @@
   </div>
 </div>
 
-<script src="/static/js/solver.js"></script>
-<script src="/static/js/live-monitor.js"></script>
-<script src="/static/js/metrics.js"></script>
-<script src="/static/js/vlm-chat.js"></script>
-<script src="/static/js/app.js"></script>
+<script src="/static/js/solver.js?v={{ asset_v }}"></script>
+<script src="/static/js/live-monitor.js?v={{ asset_v }}"></script>
+<script src="/static/js/metrics.js?v={{ asset_v }}"></script>
+<script src="/static/js/vlm-chat.js?v={{ asset_v }}"></script>
+<script src="/static/js/recordings.js?v={{ asset_v }}"></script>
+<script src="/static/js/app.js?v={{ asset_v }}"></script>
 </body>
 </html>

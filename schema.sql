@@ -24,6 +24,20 @@ CREATE TABLE IF NOT EXISTS runs (
     random_seed            INTEGER,
     planned_makespan_sec   REAL,
     plan_json              TEXT,
+    -- Snapshot of the CONTROL TUNING this run executed under: the 47 motion
+    -- parameters handed to each navigator, plus the coordination, vision and
+    -- localization constants. Captured at run start, because these change
+    -- between runs and nothing else in this row records which values were
+    -- live -- three different motion controllers were used across the runs
+    -- recorded before 2026-10-14 and the data cannot say which was which.
+    tuning_json            TEXT,
+    -- The DOE's treatment: which traffic planner produced the dispatched
+    -- routes (page_wait | astar | wait | pp | cbs). Separate from
+    -- `algorithm`, which names the JOB planner whose allocation was frozen.
+    traffic_method         TEXT,
+    -- The saved plan file the run was dispatched from (e.g. DOE_6r_cbs.json):
+    -- with frozen DOE plans, this IS the treatment, exactly.
+    plan_file              TEXT,
     notes                  TEXT,
     definition_set_version INTEGER NOT NULL DEFAULT 1
 );
@@ -155,3 +169,50 @@ CREATE TABLE IF NOT EXISTS metric_values (
     computed_at_utc    TEXT NOT NULL,
     PRIMARY KEY (run_id, scope_type, scope_id, metric_key, definition_version, revision)
 );
+
+-- One row per recorded video of the annotated overhead camera stream
+-- (video_recorder.py). The file lives in data/videos/; this row is the index
+-- the Recordings page reads. run_id is NULL for a manual recording made with
+-- no run armed.
+CREATE TABLE IF NOT EXISTS run_videos (
+    video_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id             TEXT REFERENCES runs(run_id),
+    title              TEXT NOT NULL,
+    file_name          TEXT NOT NULL,
+    -- recording | ready | failed | interrupted
+    status             TEXT NOT NULL DEFAULT 'recording',
+    -- auto (a run's start/end signals) | manual (Record now)
+    started_by         TEXT,
+    stop_reason        TEXT,
+    started_at_utc     TEXT NOT NULL,
+    ended_at_utc       TEXT,
+    duration_sec       REAL,
+    fps                REAL,
+    width              INTEGER,
+    height             INTEGER,
+    frame_count        INTEGER,
+    -- distinct frames that arrived from the stream (the rest are repeats)
+    camera_frames      INTEGER,
+    stall_count        INTEGER,
+    max_stall_sec      REAL,
+    codec              TEXT,
+    browser_playable   INTEGER,
+    bytes              INTEGER,
+    -- Video time (s) at which the run's elapsed clock reads 0: an event at
+    -- elapsed_ms plays at run_t0_offset_sec + elapsed_ms / 1000.
+    run_t0_offset_sec  REAL,
+    -- supervisor (RUN_STARTED) | browser (the Start button)
+    offset_source      TEXT,
+    stream_url         TEXT,
+    error              TEXT,
+    notes              TEXT,
+    -- The same run seen by the second overhead camera, recorded on its own
+    -- laptop (overhead_cam/overhead_recorder.py) and played from there.
+    -- second_offset_sec: this video's time at which the second video's
+    -- 0:00 plays.
+    second_camera_url  TEXT,
+    second_camera_file TEXT,
+    second_offset_sec  REAL,
+    second_error       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_run_videos_run ON run_videos(run_id);

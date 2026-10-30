@@ -13,7 +13,7 @@ RAW RESULTS ARE NEVER TOUCHED. Every output goes under --out-dir (default
 analysis/), every master row carries source_file + row_index, so any
 percentage in any summary traces back to one model's one response to one
 question about one frame. Nothing here writes to tools/ or to
-"DATA AND STATS FOR PAPER/".
+"data/stats_for_paper/".
 
 GRADING IS NOT REDONE. `correct` is read from the benchmark file as-is.
 This module adds only classification on top: which capability family a
@@ -87,7 +87,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 #: Where benchmark JSONs live. Read-only, every one of them.
 SOURCE_GLOBS = [
-    "DATA AND STATS FOR PAPER/*.json",
+    "data/stats_for_paper/*.json",
     "tools/*.json",
     "tools/vlm_live/*/*.json",
     "runs_linux/*.json",

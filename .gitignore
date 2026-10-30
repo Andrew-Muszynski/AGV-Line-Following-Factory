@@ -25,6 +25,10 @@ TESTBED_WORKFLOW.md
 AprilTag Localize Output/
 runs/
 solved_plans/
+# Plans saved deliberately from the dashboard (plan_store.py). Local
+# working data like the two above, and a BRKGA export can be large.
+generated_plans/*
+!generated_plans/README.md
 *output*.txt
 terminal output.txt
 ORACLE_VM/test.txt

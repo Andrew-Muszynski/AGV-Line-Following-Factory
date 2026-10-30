@@ -18,6 +18,7 @@ would be far more code and no more correct here.
 from __future__ import annotations
 
 import argparse
+import itertools
 import re
 from pathlib import Path
 
@@ -306,6 +307,35 @@ def add_code(doc: Document, lines: list[str]) -> None:
 BLOCK_START = re.compile(r"^(#{1,4}\s|\||```|>\s|[-*]\s|\d+\.\s|-{3,}$)")
 
 
+def add_figure(doc: Document, path: Path, caption: str, number: int) -> None:
+    """Embed a figure, scaled to the text column, with a caption beneath.
+
+    Width is clamped to the live text width rather than the paper width --
+    a 2070px chart inserted at native size runs into the margins and Word
+    will not fix it for you. Height follows from the image's own aspect, so
+    nothing is stretched.
+    """
+    from PIL import Image
+
+    sec = doc.sections[0]
+    avail = sec.page_width - sec.left_margin - sec.right_margin
+    w, h = Image.open(path).size
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_before = Pt(10)
+    p.paragraph_format.space_after = Pt(2)
+    _keep_with_next(p)
+    p.add_run().add_picture(str(path), width=avail)
+
+    cap = doc.add_paragraph()
+    cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    cap.paragraph_format.space_after = Pt(12)
+    add_inline(cap, f"**Figure {number}.** {caption}", size=Pt(9), color=SLATE)
+    for r in cap.runs:
+        r.font.name = BODY_FONT
+
+
 def gather_item(lines, i, first):
     """A list item plus its wrapped continuation lines.
 
@@ -330,11 +360,23 @@ def gather_item(lines, i, first):
     return " ".join(buf), i
 
 
-def convert(md: str, out: Path) -> None:
+def convert(md: str, out: Path, base: Path | None = None) -> None:
+    """Render `md` to `out`.
+
+    `base` is the directory that relative image paths resolve against -- the
+    markdown file's own directory, which is what Markdown means by a relative
+    link. It used to resolve against the output directory, which only agreed
+    with Markdown while source and output sat side by side; once the sources
+    moved to docs/ and the .docx files to THESIS PAPER/ it silently looked in
+    the wrong place. Defaults to the output directory so older callers that
+    pass only two arguments keep working.
+    """
+    base = base or out.parent
     doc = Document()
     build_styles(doc)
     page_setup(doc)
 
+    fignum = itertools.count(1)
     lines = md.split("\n")
     i, n = 0, len(lines)
 
@@ -388,6 +430,18 @@ def convert(md: str, out: Path) -> None:
                 rows.append(split_row(lines[i].strip()))
                 i += 1
             add_table(doc, rows)
+            continue
+
+        # Figure: ![caption](figures/x.png) alone on a line. Numbered in
+        # source order and captioned beneath, which is what a reader expects
+        # and what lets body text refer to "Figure 3" without a live field.
+        m = re.match(r"^!\[(.*?)\]\((.+?)\)$", stripped)
+        if m:
+            caption, src = m.group(1), (base / m.group(2))
+            if not src.exists():
+                raise SystemExit(f"figure not found: {src}")
+            add_figure(doc, src, caption, next(fignum))
+            i += 1
             continue
 
         m = re.match(r"^(#{1,4})\s+(.*)$", stripped)
@@ -444,9 +498,13 @@ def convert(md: str, out: Path) -> None:
     want_head = sum(1 for l in lines if re.match(r"^#{2,3}\s", l))
     if n_tbl != want_tbl or n_head < want_head - 1:
         raise SystemExit(
-            f"conversion lost content: {n_tbl}/{want_tbl} tables, "
-            f"{n_head}/{want_head} headings. Refusing to write a silently "
-            f"truncated document.")
+            f"conversion incomplete: produced {n_tbl} of {want_tbl} tables "
+            f"and {n_head} of {want_head} headings. Refusing to write a "
+            f"silently truncated document.\n"
+            f"  If the table count is short by one or two, check for a header "
+            f"row of empty cells such as '| | |'. It matches the separator "
+            f"pattern, so it is counted as a table that was never built. "
+            f"Give every table real column headers.")
     doc.save(str(out))
     return doc
 
@@ -463,7 +521,7 @@ def main() -> int:
     COMPACT = a.compact
     src = Path(a.source)
     out = Path(a.out) if a.out else src.with_suffix(".docx")
-    convert(src.read_text(encoding="utf-8"), out)
+    convert(src.read_text(encoding="utf-8"), out, src.parent)
     print(f"wrote {out}  ({out.stat().st_size:,} bytes)")
     return 0
 

@@ -1,0 +1,876 @@
+[
+  {
+    "block_id": "B06",
+    "move": [
+      "Alvik6",
+      "Alvik1"
+    ],
+    "robots": {
+      "Alvik1": {
+        "where": "node 38",
+        "x_in": 63.5,
+        "y_in": 56.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik2": {
+        "where": "",
+        "x_in": 38.44,
+        "y_in": 81.72,
+        "yaw_deg": -179.25
+      },
+      "Alvik3": {
+        "where": "",
+        "x_in": 23.3,
+        "y_in": 86.76,
+        "yaw_deg": 90.24
+      },
+      "Alvik4": {
+        "where": "",
+        "x_in": 13.24,
+        "y_in": 26.72,
+        "yaw_deg": -179.75
+      },
+      "Alvik5": {
+        "where": "",
+        "x_in": 44.96,
+        "y_in": 11.03,
+        "yaw_deg": -89.77
+      },
+      "Alvik6": {
+        "where": "node 16",
+        "x_in": 83.5,
+        "y_in": 26.75,
+        "yaw_deg": 90.0
+      }
+    },
+    "questions": 26
+  },
+  {
+    "block_id": "B07",
+    "move": [
+      "Alvik5",
+      "Alvik1"
+    ],
+    "robots": {
+      "Alvik1": {
+        "where": "node 45",
+        "x_in": 53.5,
+        "y_in": 66.75,
+        "yaw_deg": -90.0
+      },
+      "Alvik2": {
+        "where": "",
+        "x_in": 38.44,
+        "y_in": 81.72,
+        "yaw_deg": -179.25
+      },
+      "Alvik3": {
+        "where": "",
+        "x_in": 23.3,
+        "y_in": 86.76,
+        "yaw_deg": 90.24
+      },
+      "Alvik4": {
+        "where": "",
+        "x_in": 13.24,
+        "y_in": 26.72,
+        "yaw_deg": -179.75
+      },
+      "Alvik5": {
+        "where": "depot D5",
+        "x_in": 44.96,
+        "y_in": 11.2,
+        "yaw_deg": 0.0
+      },
+      "Alvik6": {
+        "where": "node 16",
+        "x_in": 83.5,
+        "y_in": 26.75,
+        "yaw_deg": 90.0
+      }
+    },
+    "questions": 26
+  },
+  {
+    "block_id": "B08",
+    "move": [
+      "Alvik3",
+      "Alvik6"
+    ],
+    "robots": {
+      "Alvik1": {
+        "where": "node 45",
+        "x_in": 53.5,
+        "y_in": 66.75,
+        "yaw_deg": -90.0
+      },
+      "Alvik2": {
+        "where": "",
+        "x_in": 38.44,
+        "y_in": 81.72,
+        "yaw_deg": -179.25
+      },
+      "Alvik3": {
+        "where": "node 18",
+        "x_in": 23.5,
+        "y_in": 36.75,
+        "yaw_deg": 90.0
+      },
+      "Alvik4": {
+        "where": "",
+        "x_in": 13.24,
+        "y_in": 26.72,
+        "yaw_deg": -179.75
+      },
+      "Alvik5": {
+        "where": "depot D5",
+        "x_in": 44.96,
+        "y_in": 11.2,
+        "yaw_deg": 0.0
+      },
+      "Alvik6": {
+        "where": "node 55",
+        "x_in": 73.5,
+        "y_in": 76.75,
+        "yaw_deg": 90.0
+      }
+    },
+    "questions": 26
+  },
+  {
+    "block_id": "B09",
+    "move": [
+      "Alvik4",
+      "Alvik3"
+    ],
+    "robots": {
+      "Alvik1": {
+        "where": "node 45",
+        "x_in": 53.5,
+        "y_in": 66.75,
+        "yaw_deg": -90.0
+      },
+      "Alvik2": {
+        "where": "",
+        "x_in": 38.44,
+        "y_in": 81.72,
+        "yaw_deg": -179.25
+      },
+      "Alvik3": {
+        "where": "node 30",
+        "x_in": 63.5,
+        "y_in": 46.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik4": {
+        "where": "node 36",
+        "x_in": 43.5,
+        "y_in": 56.75,
+        "yaw_deg": 180.0
+      },
+      "Alvik5": {
+        "where": "depot D5",
+        "x_in": 44.96,
+        "y_in": 11.2,
+        "yaw_deg": 0.0
+      },
+      "Alvik6": {
+        "where": "node 55",
+        "x_in": 73.5,
+        "y_in": 76.75,
+        "yaw_deg": 90.0
+      }
+    },
+    "questions": 26
+  },
+  {
+    "block_id": "B10",
+    "move": [
+      "Alvik5",
+      "Alvik2"
+    ],
+    "robots": {
+      "Alvik1": {
+        "where": "node 45",
+        "x_in": 53.5,
+        "y_in": 66.75,
+        "yaw_deg": -90.0
+      },
+      "Alvik2": {
+        "where": "bay 79",
+        "x_in": 18.61,
+        "y_in": 41.69,
+        "yaw_deg": -90.0
+      },
+      "Alvik3": {
+        "where": "node 30",
+        "x_in": 63.5,
+        "y_in": 46.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik4": {
+        "where": "node 36",
+        "x_in": 43.5,
+        "y_in": 56.75,
+        "yaw_deg": 180.0
+      },
+      "Alvik5": {
+        "where": "node 40",
+        "x_in": 83.5,
+        "y_in": 56.75,
+        "yaw_deg": 90.0
+      },
+      "Alvik6": {
+        "where": "node 55",
+        "x_in": 73.5,
+        "y_in": 76.75,
+        "yaw_deg": 90.0
+      }
+    },
+    "questions": 25
+  },
+  {
+    "block_id": "B11",
+    "move": [
+      "Alvik6",
+      "Alvik4"
+    ],
+    "robots": {
+      "Alvik1": {
+        "where": "node 45",
+        "x_in": 53.5,
+        "y_in": 66.75,
+        "yaw_deg": -90.0
+      },
+      "Alvik2": {
+        "where": "bay 79",
+        "x_in": 18.61,
+        "y_in": 41.69,
+        "yaw_deg": -90.0
+      },
+      "Alvik3": {
+        "where": "node 30",
+        "x_in": 63.5,
+        "y_in": 46.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik4": {
+        "where": "bay 94",
+        "x_in": 28.78,
+        "y_in": 61.67,
+        "yaw_deg": 90.0
+      },
+      "Alvik5": {
+        "where": "node 40",
+        "x_in": 83.5,
+        "y_in": 56.75,
+        "yaw_deg": 90.0
+      },
+      "Alvik6": {
+        "where": "bay 105",
+        "x_in": 68.3,
+        "y_in": 71.79,
+        "yaw_deg": 180.0
+      }
+    },
+    "questions": 25
+  },
+  {
+    "block_id": "B12",
+    "move": [
+      "Alvik6",
+      "Alvik4"
+    ],
+    "robots": {
+      "Alvik1": {
+        "where": "node 45",
+        "x_in": 53.5,
+        "y_in": 66.75,
+        "yaw_deg": -90.0
+      },
+      "Alvik2": {
+        "where": "bay 79",
+        "x_in": 18.61,
+        "y_in": 41.69,
+        "yaw_deg": -90.0
+      },
+      "Alvik3": {
+        "where": "node 30",
+        "x_in": 63.5,
+        "y_in": 46.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik4": {
+        "where": "node 33",
+        "x_in": 13.5,
+        "y_in": 56.75,
+        "yaw_deg": 180.0
+      },
+      "Alvik5": {
+        "where": "node 40",
+        "x_in": 83.5,
+        "y_in": 56.75,
+        "yaw_deg": 90.0
+      },
+      "Alvik6": {
+        "where": "bay 101",
+        "x_in": 28.65,
+        "y_in": 71.38,
+        "yaw_deg": 180.0
+      }
+    },
+    "questions": 25
+  },
+  {
+    "block_id": "B13",
+    "move": [
+      "Alvik4",
+      "Alvik5"
+    ],
+    "robots": {
+      "Alvik1": {
+        "where": "node 45",
+        "x_in": 53.5,
+        "y_in": 66.75,
+        "yaw_deg": -90.0
+      },
+      "Alvik2": {
+        "where": "bay 79",
+        "x_in": 18.61,
+        "y_in": 41.69,
+        "yaw_deg": -90.0
+      },
+      "Alvik3": {
+        "where": "node 30",
+        "x_in": 63.5,
+        "y_in": 46.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik4": {
+        "where": "node 57",
+        "x_in": 13.5,
+        "y_in": 86.75,
+        "yaw_deg": -90.0
+      },
+      "Alvik5": {
+        "where": "bay 87",
+        "x_in": 28.58,
+        "y_in": 51.55,
+        "yaw_deg": 90.0
+      },
+      "Alvik6": {
+        "where": "bay 101",
+        "x_in": 28.65,
+        "y_in": 71.38,
+        "yaw_deg": 180.0
+      }
+    },
+    "questions": 25
+  },
+  {
+    "block_id": "B14",
+    "move": [
+      "Alvik1",
+      "Alvik2"
+    ],
+    "robots": {
+      "Alvik1": {
+        "where": "depot D1",
+        "x_in": 19.64,
+        "y_in": 10.86,
+        "yaw_deg": 0.0
+      },
+      "Alvik2": {
+        "where": "node 39",
+        "x_in": 73.5,
+        "y_in": 56.75,
+        "yaw_deg": 180.0
+      },
+      "Alvik3": {
+        "where": "node 30",
+        "x_in": 63.5,
+        "y_in": 46.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik4": {
+        "where": "node 57",
+        "x_in": 13.5,
+        "y_in": 86.75,
+        "yaw_deg": -90.0
+      },
+      "Alvik5": {
+        "where": "bay 87",
+        "x_in": 28.58,
+        "y_in": 51.55,
+        "yaw_deg": 90.0
+      },
+      "Alvik6": {
+        "where": "bay 101",
+        "x_in": 28.65,
+        "y_in": 71.38,
+        "yaw_deg": 180.0
+      }
+    },
+    "questions": 26
+  },
+  {
+    "block_id": "B15",
+    "move": [
+      "Alvik6",
+      "Alvik1"
+    ],
+    "robots": {
+      "Alvik1": {
+        "where": "depot D1",
+        "x_in": 19.64,
+        "y_in": 10.86,
+        "yaw_deg": 180.0
+      },
+      "Alvik2": {
+        "where": "node 39",
+        "x_in": 73.5,
+        "y_in": 56.75,
+        "yaw_deg": 180.0
+      },
+      "Alvik3": {
+        "where": "node 30",
+        "x_in": 63.5,
+        "y_in": 46.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik4": {
+        "where": "node 57",
+        "x_in": 13.5,
+        "y_in": 86.75,
+        "yaw_deg": -90.0
+      },
+      "Alvik5": {
+        "where": "bay 87",
+        "x_in": 28.58,
+        "y_in": 51.55,
+        "yaw_deg": 90.0
+      },
+      "Alvik6": {
+        "where": "bay 72",
+        "x_in": 18.42,
+        "y_in": 31.9,
+        "yaw_deg": 180.0
+      }
+    },
+    "questions": 26
+  },
+  {
+    "block_id": "B16",
+    "move": [
+      "Alvik1",
+      "Alvik5"
+    ],
+    "robots": {
+      "Alvik1": {
+        "where": "bay 95",
+        "x_in": 38.48,
+        "y_in": 61.67,
+        "yaw_deg": 90.0
+      },
+      "Alvik2": {
+        "where": "node 39",
+        "x_in": 73.5,
+        "y_in": 56.75,
+        "yaw_deg": 180.0
+      },
+      "Alvik3": {
+        "where": "node 30",
+        "x_in": 63.5,
+        "y_in": 46.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik4": {
+        "where": "node 57",
+        "x_in": 13.5,
+        "y_in": 86.75,
+        "yaw_deg": -90.0
+      },
+      "Alvik5": {
+        "where": "node 13",
+        "x_in": 53.5,
+        "y_in": 26.75,
+        "yaw_deg": 180.0
+      },
+      "Alvik6": {
+        "where": "bay 72",
+        "x_in": 18.42,
+        "y_in": 31.9,
+        "yaw_deg": 180.0
+      }
+    },
+    "questions": 25
+  },
+  {
+    "block_id": "B17",
+    "move": [
+      "Alvik2",
+      "Alvik4"
+    ],
+    "robots": {
+      "Alvik1": {
+        "where": "bay 95",
+        "x_in": 38.48,
+        "y_in": 61.67,
+        "yaw_deg": 90.0
+      },
+      "Alvik2": {
+        "where": "node 20",
+        "x_in": 43.5,
+        "y_in": 36.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik3": {
+        "where": "node 30",
+        "x_in": 63.5,
+        "y_in": 46.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik4": {
+        "where": "node 41",
+        "x_in": 13.5,
+        "y_in": 66.75,
+        "yaw_deg": -90.0
+      },
+      "Alvik5": {
+        "where": "node 13",
+        "x_in": 53.5,
+        "y_in": 26.75,
+        "yaw_deg": 180.0
+      },
+      "Alvik6": {
+        "where": "bay 72",
+        "x_in": 18.42,
+        "y_in": 31.9,
+        "yaw_deg": 180.0
+      }
+    },
+    "questions": 25
+  },
+  {
+    "block_id": "B18",
+    "move": [
+      "Alvik2",
+      "Alvik6"
+    ],
+    "robots": {
+      "Alvik1": {
+        "where": "bay 95",
+        "x_in": 38.48,
+        "y_in": 61.67,
+        "yaw_deg": 90.0
+      },
+      "Alvik2": {
+        "where": "depot D2",
+        "x_in": 25.88,
+        "y_in": 11.04,
+        "yaw_deg": -90.0
+      },
+      "Alvik3": {
+        "where": "node 30",
+        "x_in": 63.5,
+        "y_in": 46.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik4": {
+        "where": "node 41",
+        "x_in": 13.5,
+        "y_in": 66.75,
+        "yaw_deg": -90.0
+      },
+      "Alvik5": {
+        "where": "node 13",
+        "x_in": 53.5,
+        "y_in": 26.75,
+        "yaw_deg": 180.0
+      },
+      "Alvik6": {
+        "where": "node 50",
+        "x_in": 23.5,
+        "y_in": 76.75,
+        "yaw_deg": 90.0
+      }
+    },
+    "questions": 26
+  },
+  {
+    "block_id": "B19",
+    "move": [
+      "Alvik6",
+      "Alvik2"
+    ],
+    "robots": {
+      "Alvik1": {
+        "where": "bay 95",
+        "x_in": 38.48,
+        "y_in": 61.67,
+        "yaw_deg": 90.0
+      },
+      "Alvik2": {
+        "where": "node 18",
+        "x_in": 23.5,
+        "y_in": 36.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik3": {
+        "where": "node 30",
+        "x_in": 63.5,
+        "y_in": 46.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik4": {
+        "where": "node 41",
+        "x_in": 13.5,
+        "y_in": 66.75,
+        "yaw_deg": -90.0
+      },
+      "Alvik5": {
+        "where": "node 13",
+        "x_in": 53.5,
+        "y_in": 26.75,
+        "yaw_deg": 180.0
+      },
+      "Alvik6": {
+        "where": "bay 70",
+        "x_in": 68.25,
+        "y_in": 21.76,
+        "yaw_deg": 90.0
+      }
+    },
+    "questions": 25
+  },
+  {
+    "block_id": "B20",
+    "move": [
+      "Alvik3",
+      "Alvik1"
+    ],
+    "robots": {
+      "Alvik1": {
+        "where": "node 61",
+        "x_in": 53.5,
+        "y_in": 86.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik2": {
+        "where": "node 18",
+        "x_in": 23.5,
+        "y_in": 36.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik3": {
+        "where": "bay 88",
+        "x_in": 37.98,
+        "y_in": 51.46,
+        "yaw_deg": 0.0
+      },
+      "Alvik4": {
+        "where": "node 41",
+        "x_in": 13.5,
+        "y_in": 66.75,
+        "yaw_deg": -90.0
+      },
+      "Alvik5": {
+        "where": "node 13",
+        "x_in": 53.5,
+        "y_in": 26.75,
+        "yaw_deg": 180.0
+      },
+      "Alvik6": {
+        "where": "bay 70",
+        "x_in": 68.25,
+        "y_in": 21.76,
+        "yaw_deg": 90.0
+      }
+    },
+    "questions": 25
+  },
+  {
+    "block_id": "B21",
+    "move": [
+      "Alvik3",
+      "Alvik1"
+    ],
+    "robots": {
+      "Alvik1": {
+        "where": "node 62",
+        "x_in": 63.5,
+        "y_in": 86.75,
+        "yaw_deg": 180.0
+      },
+      "Alvik2": {
+        "where": "node 18",
+        "x_in": 23.5,
+        "y_in": 36.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik3": {
+        "where": "bay 96",
+        "x_in": 48.32,
+        "y_in": 61.91,
+        "yaw_deg": 0.0
+      },
+      "Alvik4": {
+        "where": "node 41",
+        "x_in": 13.5,
+        "y_in": 66.75,
+        "yaw_deg": -90.0
+      },
+      "Alvik5": {
+        "where": "node 13",
+        "x_in": 53.5,
+        "y_in": 26.75,
+        "yaw_deg": 180.0
+      },
+      "Alvik6": {
+        "where": "bay 70",
+        "x_in": 68.25,
+        "y_in": 21.76,
+        "yaw_deg": 90.0
+      }
+    },
+    "questions": 25
+  },
+  {
+    "block_id": "B22",
+    "move": [
+      "Alvik3",
+      "Alvik1"
+    ],
+    "robots": {
+      "Alvik1": {
+        "where": "node 30",
+        "x_in": 63.5,
+        "y_in": 46.75,
+        "yaw_deg": 180.0
+      },
+      "Alvik2": {
+        "where": "node 18",
+        "x_in": 23.5,
+        "y_in": 36.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik3": {
+        "where": "node 54",
+        "x_in": 63.5,
+        "y_in": 76.75,
+        "yaw_deg": -90.0
+      },
+      "Alvik4": {
+        "where": "node 41",
+        "x_in": 13.5,
+        "y_in": 66.75,
+        "yaw_deg": -90.0
+      },
+      "Alvik5": {
+        "where": "node 13",
+        "x_in": 53.5,
+        "y_in": 26.75,
+        "yaw_deg": 180.0
+      },
+      "Alvik6": {
+        "where": "bay 70",
+        "x_in": 68.25,
+        "y_in": 21.76,
+        "yaw_deg": 90.0
+      }
+    },
+    "questions": 25
+  },
+  {
+    "block_id": "B23",
+    "move": [
+      "Alvik1",
+      "Alvik4"
+    ],
+    "robots": {
+      "Alvik1": {
+        "where": "node 43",
+        "x_in": 33.5,
+        "y_in": 66.75,
+        "yaw_deg": 90.0
+      },
+      "Alvik2": {
+        "where": "node 18",
+        "x_in": 23.5,
+        "y_in": 36.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik3": {
+        "where": "node 54",
+        "x_in": 63.5,
+        "y_in": 76.75,
+        "yaw_deg": -90.0
+      },
+      "Alvik4": {
+        "where": "depot D4",
+        "x_in": 38.58,
+        "y_in": 11.15,
+        "yaw_deg": -90.0
+      },
+      "Alvik5": {
+        "where": "node 13",
+        "x_in": 53.5,
+        "y_in": 26.75,
+        "yaw_deg": 180.0
+      },
+      "Alvik6": {
+        "where": "bay 70",
+        "x_in": 68.25,
+        "y_in": 21.76,
+        "yaw_deg": 90.0
+      }
+    },
+    "questions": 26
+  },
+  {
+    "block_id": "B24",
+    "move": [
+      "Alvik3",
+      "Alvik4"
+    ],
+    "robots": {
+      "Alvik1": {
+        "where": "node 43",
+        "x_in": 33.5,
+        "y_in": 66.75,
+        "yaw_deg": 90.0
+      },
+      "Alvik2": {
+        "where": "node 18",
+        "x_in": 23.5,
+        "y_in": 36.75,
+        "yaw_deg": 0.0
+      },
+      "Alvik3": {
+        "where": "bay 107",
+        "x_in": 18.44,
+        "y_in": 81.8,
+        "yaw_deg": -90.0
+      },
+      "Alvik4": {
+        "where": "depot D4",
+        "x_in": 38.58,
+        "y_in": 11.15,
+        "yaw_deg": 90.0
+      },
+      "Alvik5": {
+        "where": "node 13",
+        "x_in": 53.5,
+        "y_in": 26.75,
+        "yaw_deg": 180.0
+      },
+      "Alvik6": {
+        "where": "bay 70",
+        "x_in": 68.25,
+        "y_in": 21.76,
+        "yaw_deg": 90.0
+      }
+    },
+    "questions": 26
+  }
+]

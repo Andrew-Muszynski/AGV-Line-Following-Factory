@@ -84,6 +84,12 @@ DEFINITIONS: list[dict] = [
        "Completed jobs over attempted/released jobs. Failed jobs stay in the "
        "denominator.",
        ["jobs.status"]),
+    _d("workstation_completion_rate", "Workstation completion rate", "run",
+       "ratio", "higher", r"\frac{W_C}{W_A}",
+       "Workstations whose every job is completed over workstations with "
+       "jobs. With pickup-and-delivery a workstation has two jobs (its drop "
+       "and its pick-up), so this is the count of bays actually served.",
+       ["jobs.status", "jobs.workstation_id"]),
     _d("throughput_jobs_per_min", "Throughput", "run", "jobs/min", "higher",
        r"60\frac{J_C}{T}",
        "Completed jobs per minute of actual makespan. NULL for unsuccessful "
@@ -232,6 +238,14 @@ DEFINITIONS: list[dict] = [
        "lower", r"N_{deadlock\ unresolved}",
        "Deadlock episodes never resolved during the run.",
        ["conflicts.status"]),
+    _d("total_deadlock_sec", "Time spent deadlocked", "run", "s", "lower",
+       r"\sum_g (t^{end}_g - t^{detected}_g)",
+       "Total wall-clock time the fleet spent in a deadlock across all "
+       "episodes. A resolved episode is measured to its resolution; an "
+       "UNRESOLVED one is measured to the end of the run, because the fleet "
+       "was stuck for the remainder -- excluding those would flatter the "
+       "worst runs. Zero when no deadlock was detected.",
+       ["conflicts.detected_elapsed_ms", "conflicts.resolved_elapsed_ms"]),
 
     # ---- 10. Safety --------------------------------------------------------
     _d("collision_count", "Collision count", "run", "count", "lower",

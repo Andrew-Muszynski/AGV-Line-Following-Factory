@@ -45,8 +45,30 @@ def connect(db_path: str | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 5000")
     with open(SCHEMA_PATH, "r", encoding="utf-8") as fh:
         conn.executescript(fh.read())
+    _migrate(conn)
     conn.commit()
     return conn
+
+
+#: Columns added after a database was already in the field. CREATE TABLE IF
+#: NOT EXISTS will not add them, so they are applied here. Each entry is
+#: idempotent -- an existing column is skipped, never redefined.
+_ADDED_COLUMNS = (
+    ("runs", "tuning_json", "TEXT"),
+    ("runs", "traffic_method", "TEXT"),
+    ("runs", "plan_file", "TEXT"),
+    ("run_videos", "second_camera_url", "TEXT"),
+    ("run_videos", "second_camera_file", "TEXT"),
+    ("run_videos", "second_offset_sec", "REAL"),
+    ("run_videos", "second_error", "TEXT"),
+)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, column, decl in _ADDED_COLUMNS:
+        have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in have:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
 def new_run_id() -> str:
@@ -59,31 +81,36 @@ def new_run_id() -> str:
 RUN_FIELDS = (
     "experimental_condition", "algorithm", "drive_mode", "robot_count",
     "job_count", "workstation_count", "process_sec", "capacity",
-    "random_seed", "planned_makespan_sec", "plan_json", "notes",
+    "random_seed", "planned_makespan_sec", "plan_json", "tuning_json",
+    "traffic_method", "plan_file", "notes",
 )
+
+#: Payload keys that arrive as a dict/list and are stored as JSON text.
+_JSON_FIELDS = ("plan_json", "tuning_json")
 
 
 def create_run(conn: sqlite3.Connection, payload: dict) -> str:
     run_id = str(payload.get("run_id") or new_run_id())
-    plan_json = payload.get("plan_json")
-    if isinstance(plan_json, (dict, list)):
-        plan_json = json.dumps(plan_json)
     values = {k: payload.get(k) for k in RUN_FIELDS}
-    values["plan_json"] = plan_json
+    for key in _JSON_FIELDS:
+        if isinstance(values.get(key), (dict, list)):
+            values[key] = json.dumps(values[key])
     conn.execute(
         """INSERT INTO runs (run_id, created_at_utc, status,
                experimental_condition, algorithm, drive_mode, robot_count,
                job_count, workstation_count, process_sec, capacity,
-               random_seed, planned_makespan_sec, plan_json, notes,
-               definition_set_version)
-           VALUES (?, ?, 'created', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               random_seed, planned_makespan_sec, plan_json, tuning_json,
+               traffic_method, plan_file, notes, definition_set_version)
+           VALUES (?, ?, 'created', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (run_id, utc_now_iso(),
          values["experimental_condition"], values["algorithm"],
          values["drive_mode"], values["robot_count"], values["job_count"],
          values["workstation_count"], values["process_sec"],
          values["capacity"], values["random_seed"],
          values["planned_makespan_sec"], values["plan_json"],
-         values["notes"], int(payload.get("definition_set_version") or 1)))
+         values["tuning_json"], values["traffic_method"],
+         values["plan_file"], values["notes"],
+         int(payload.get("definition_set_version") or 1)))
     conn.commit()
     return run_id
 
@@ -109,7 +136,7 @@ def update_run(conn: sqlite3.Connection, run_id: str, patch: dict) -> bool:
             sets.append(f"{key} = COALESCE({key}, ?)")
         else:
             sets.append(f"{key} = ?")
-        if key == "plan_json" and isinstance(value, (dict, list)):
+        if key in _JSON_FIELDS and isinstance(value, (dict, list)):
             value = json.dumps(value)
         args.append(value)
     if not sets:
@@ -360,3 +387,49 @@ def max_final_revision(conn: sqlite3.Connection, run_id: str) -> int | None:
         """SELECT MAX(revision) AS rev FROM metric_values
            WHERE run_id = ? AND status = 'final'""", (run_id,)).fetchone()
     return row["rev"] if row and row["rev"] is not None else None
+
+
+# --------------------------------------------------------------------------
+# run videos (video_recorder.py)
+
+VIDEO_FIELDS = (
+    "run_id", "title", "file_name", "status", "started_by", "stop_reason",
+    "ended_at_utc", "duration_sec", "fps", "width", "height", "frame_count",
+    "camera_frames", "stall_count", "max_stall_sec", "codec",
+    "browser_playable", "bytes", "run_t0_offset_sec", "offset_source",
+    "stream_url", "error", "notes", "second_camera_url",
+    "second_camera_file", "second_offset_sec", "second_error",
+)
+
+
+def create_video(conn: sqlite3.Connection, values: dict) -> int:
+    keys = [k for k in VIDEO_FIELDS if k in values]
+    cur = conn.execute(
+        f"""INSERT INTO run_videos (started_at_utc, {", ".join(keys)})
+            VALUES (?, {", ".join("?" * len(keys))})""",
+        (utc_now_iso(), *[values[k] for k in keys]))
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def update_video(conn: sqlite3.Connection, video_id: int, patch: dict) -> bool:
+    keys = [k for k in VIDEO_FIELDS if k in patch]
+    if not keys:
+        return False
+    cur = conn.execute(
+        f"UPDATE run_videos SET {', '.join(f'{k} = ?' for k in keys)} "
+        "WHERE video_id = ?", (*[patch[k] for k in keys], video_id))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def get_video(conn: sqlite3.Connection, video_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM run_videos WHERE video_id = ?",
+                        (video_id,)).fetchone()
+
+
+def delete_video(conn: sqlite3.Connection, video_id: int) -> bool:
+    cur = conn.execute("DELETE FROM run_videos WHERE video_id = ?",
+                       (video_id,))
+    conn.commit()
+    return cur.rowcount > 0

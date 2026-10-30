@@ -1,0 +1,136 @@
+{
+  "about": [
+    "Per-robot drive_leg() calibration, applied by fleetSupervisor.py on top of the fleet-wide navigator args.",
+    "brake_lead_in: distance from the target at which the single STOP fires = this robot's measured median coast after a STOP.",
+    "steer_trim_rpm: feed-forward wheel differential that cancels this robot's standing heading error (kp_yaw is proportional-only).",
+    "Derive with tools/analyze_stops.py <supervisor_live.log> --write; re-run after a few missions to confirm the residuals are near zero."
+  ],
+  "applied": "2026-10-22T14:38:22",
+  "derived_from": "supervisor_live.log, legs since 2026-10-15 (aim)",
+  "robots": {
+    "Alvik1": {
+      "brake_lead_in": 1.24,
+      "steer_trim_rpm": -2.87,
+      "legs": 42,
+      "coast_sd_in": 0.356,
+      "heading_err_deg_before": 0.77,
+      "lateral_in_before": 0.083,
+      "trim_samples": [
+        [
+          0.0,
+          -2.343
+        ],
+        [
+          -3.81,
+          0.77
+        ]
+      ],
+      "aim_lateral_in": {}
+    },
+    "Alvik2": {
+      "brake_lead_in": 1.23,
+      "steer_trim_rpm": -1.66,
+      "legs": 37,
+      "coast_sd_in": 0.279,
+      "heading_err_deg_before": -0.058,
+      "lateral_in_before": 0.07,
+      "trim_samples": [
+        [
+          0.0,
+          -0.963
+        ],
+        [
+          -1.56,
+          -0.058
+        ]
+      ],
+      "aim_lateral_in": {}
+    },
+    "Alvik3": {
+      "brake_lead_in": 1.67,
+      "steer_trim_rpm": -4.87,
+      "legs": 40,
+      "coast_sd_in": 0.64,
+      "heading_err_deg_before": 2.787,
+      "lateral_in_before": 0.015,
+      "trim_samples": [
+        [
+          0.0,
+          -4.753
+        ],
+        [
+          -7.72,
+          2.787
+        ]
+      ],
+      "aim_lateral_in": {
+        "depot_slot": 0.81,
+        "workstation": 0.34
+      },
+      "aim_along_in": {
+        "depot_slot": 0.3
+      }
+    },
+    "Alvik4": {
+      "brake_lead_in": 1.24,
+      "steer_trim_rpm": -0.99,
+      "legs": 49,
+      "coast_sd_in": 0.356,
+      "heading_err_deg_before": 0.218,
+      "lateral_in_before": 0.032,
+      "trim_samples": [
+        [
+          0.0,
+          -0.782
+        ],
+        [
+          -1.27,
+          0.218
+        ]
+      ],
+      "aim_lateral_in": {}
+    },
+    "Alvik5": {
+      "brake_lead_in": 1.43,
+      "steer_trim_rpm": -2.76,
+      "legs": 37,
+      "coast_sd_in": 0.378,
+      "heading_err_deg_before": 0.5,
+      "lateral_in_before": 0.078,
+      "trim_samples": [
+        [
+          0.0,
+          -2.105
+        ],
+        [
+          -3.42,
+          0.5
+        ]
+      ],
+      "aim_lateral_in": {}
+    },
+    "Alvik6": {
+      "brake_lead_in": 1.42,
+      "steer_trim_rpm": -0.19,
+      "legs": 42,
+      "coast_sd_in": 0.324,
+      "heading_err_deg_before": 0.514,
+      "lateral_in_before": -0.02,
+      "trim_samples": [
+        [
+          0.0,
+          -0.311
+        ],
+        [
+          -0.51,
+          0.514
+        ]
+      ],
+      "aim_lateral_in": {
+        "depot_slot": -0.25
+      }
+    }
+  },
+  "aim_along_note": "2026-10-23 from the four shakedown runs (Alvik3 parked 0.57-0.81in past D3; 8 workstation visits +0.38in median). Other robots within noise, left unset.",
+  "alvik3_note_2026_10_23": "Round 1: Alvik3 coast 1.67in (178 legs since the shakedowns) vs lead 1.33; lead raised, along-track aims reduced by the same 0.34in (depot 0.64->0.30, workstation 0.38->0)."
+}

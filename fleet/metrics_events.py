@@ -56,6 +56,11 @@ class MetricsEmitter:
         self._thread: threading.Thread | None = None
         self._base_url: str | None = None
         self._run_id: str | None = None
+        #: The navigator Namespace, handed over by the supervisor when it
+        #: builds its workers. Held so push_tuning() can record the 47 motion
+        #: parameters a run actually executed under -- including any env or
+        #: CLI override, which a snapshot of module defaults would miss.
+        self._nav_args = None
         self._seq = 0
         self._t0 = time.monotonic()
         self._dropped = 0
@@ -95,8 +100,62 @@ class MetricsEmitter:
             self._ensure_thread()
             print(f"[metrics] streaming events for run {self._run_id} "
                   f"to {self._base_url}")
+            self.push_tuning()
         except Exception:
             pass
+
+    def remember_nav_args(self, nav_args) -> None:
+        """Called by the supervisor as it constructs each navigator.
+
+        TWO BUGS FIXED 2026-10-21. The configure-time push_tuning() runs
+        before any navigator exists, so its snapshot had no navigator args
+        and recorded effective_turn_method "unknown" -- every run since
+        2026-10-15. And the args were kept only the FIRST time, so in listen
+        mode every later mission reported the first mission's turn method
+        even after the Drive mode buttons changed it. Now the newest args
+        always win, and the snapshot is re-sent once per run as soon as the
+        first navigator of that run is built (the PATCH replaces the earlier
+        one)."""
+        self._nav_args = nav_args
+        if (self.enabled and self._run_id
+                and getattr(self, "_tuned_run", None) != self._run_id):
+            self._tuned_run = self._run_id
+            self.push_tuning(nav_args)
+
+    def push_tuning(self, nav_args=None) -> None:
+        """Record the control tuning this run executes under.
+
+        Sent once, at mission configure, as a PATCH on the run row. The
+        browser creates the run and cannot know these values -- they live in
+        the supervisor and navigator modules on this machine.
+
+        Fire-and-forget on a daemon thread: a metrics backend that is down
+        must never delay a dispatch, and a run with no tuning recorded is a
+        gap in the analysis, not a reason to refuse to drive.
+        """
+        if not self.enabled:
+            return
+
+        args = nav_args if nav_args is not None else self._nav_args
+
+        def _send():
+            try:
+                import tuning_snapshot
+                snap = tuning_snapshot.collect(args)
+                url = f"{self._base_url}/api/runs/{self._run_id}"
+                body = json.dumps({"tuning_json": snap}).encode("utf-8")
+                req = urllib.request.Request(
+                    url, data=body, method="PATCH",
+                    headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SEC):
+                    pass
+                print(f"[metrics] tuning captured: {tuning_snapshot.summary(snap)}")
+            except Exception as exc:
+                print(f"[metrics] tuning capture failed ({exc!r}) -- the run "
+                      f"will record no configuration")
+
+        threading.Thread(target=_send, name="metrics-tuning",
+                         daemon=True).start()
 
     # -- helpers for callers -------------------------------------------------
 

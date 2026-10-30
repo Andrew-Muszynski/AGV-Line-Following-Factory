@@ -154,13 +154,52 @@ entry = 8 * 8 + 7 * 7 + 1        # first entry label on an 8x8 grid
 flank = da.entry_edge_nodes(entry, 8, 8)
 check("entry_edge_nodes gives the two flanking grid nodes",
       flank is not None and len(flank) == 2, f"{entry} -> {flank}")
+# Alvik3 needs the ENTRY itself. Backing Alvik5 out to the other flank would
+# park it 5.00in from that entry, inside the 5.625in sweep of the turn
+# Alvik3 makes there -- the 2026-10-16 Alvik2/Alvik3 standoff at 137/36. So
+# the entry robot must NOT take the flank; the robot that can step clear
+# yields instead.
 adv = advisor({"Alvik5": entry, "Alvik3": flank[0]}, REAL,
               plans={"Alvik3": [str(entry)], "Alvik5": [flank[1]]})
 plan = adv.resolve_deadlock(["Alvik3", "Alvik5"], 109.1)
+foot = da.entry_rotation_footprint(entry, 8, 8)
+check("the entry robot is not parked inside the turn the other must make",
+      not (plan and plan.robot == "Alvik5" and str(plan.to_node) in foot),
+      f"{plan.robot if plan else None} -> {plan.to_node if plan else None}")
+# 2026-10-30: and Alvik3 cannot step clear EITHER. It stands on the flank,
+# 5.00in from the occupied entry, so its own departure turn sweeps into
+# Alvik5 -- the rotation gate holds it and the yield fails on its 3 s
+# deadline. Until 2026-10-30 this test accepted that doomed sidestep. Neither
+# robot can turn: declining and leaving it to the abort is the truth.
+check("neither can turn (each 5.00in from the other): declined",
+      plan is None,
+      f"{plan.robot if plan else None} -> {plan.to_node if plan else None}")
+
+# One node further back, Alvik5 CAN turn on the entry: both flanks are
+# inside Alvik3's path or turn, so it passes through the free flank to a
+# lattice node off the lane and waits there (two hops).
+back = [n for n in adv._grid_neighbours(flank[0])
+        if n not in flank and da.entry_edge_nodes(entry, 8, 8)][0]
+adv = advisor({"Alvik5": entry, "Alvik3": back}, REAL,
+              plans={"Alvik3": [str(flank[0]), str(entry)],
+                     "Alvik5": [flank[1]]})
+plan = adv.resolve_deadlock(["Alvik3", "Alvik5"], 109.1)
+check("Alvik3 one node back: the entry robot escapes in two hops",
+      plan is not None and plan.robot == "Alvik5"
+      and str(plan.via) == str(flank[1]) and str(plan.to_node) not in foot,
+      f"{plan.robot if plan else None} -> {plan.to_node if plan else None}"
+      f" via {getattr(plan, 'via', None)}")
+
+# Alvik3 needs only the FLANK -- it is not entering the bay. Backing out to
+# the far flank puts Alvik5 10in from where Alvik3 will be: the backtrack is
+# still the right answer here, and still the only shape an entry robot has.
+adv = advisor({"Alvik5": entry, "Alvik3": 17}, REAL,
+              plans={"Alvik3": [str(flank[0])], "Alvik5": [flank[1]]})
+plan = adv.resolve_deadlock(["Alvik3", "Alvik5"], 109.1)
 check("the robot on the entry backs out", plan and plan.kind == "backtrack")
-check("it backs to a free flanking node, not into the blocker",
-      plan and plan.to_node == flank[1],
-      f"{flank[0]} holds Alvik3, so it must take {flank[1]}")
+check("it backs to the free flank away from the blocker's target",
+      plan and str(plan.to_node) == str(flank[1]),
+      f"{flank[0]} is Alvik3's target, so it must take {flank[1]}")
 
 print("6. cycles of 3, 4 and 5 -- exactly one robot yields")
 for size in (3, 4, 5):
@@ -251,6 +290,24 @@ check("after the out leg it holds the node it is standing on",
 check("and no longer holds the node it vacated",
       res is not None and "3" not in res.request.destination_nodes,
       "this is what unblocks the other robot")
+print("12b. the way home is RESERVED before it is driven (2026-10-22)")
+# Another robot standing on home: the return must be refused, nothing changed.
+adv.robots["Alvik3"].current_node, saved = 3, adv.robots["Alvik3"].current_node
+adv._grant_reservation("Alvik3", -1, adv._standing_request(3), 111.0)
+check("home occupied -> begin_yield_return refuses",
+      adv.begin_yield_return("Alvik5", back_item, 111.0) is False
+      and "4" in adv.reservations["Alvik5"].request.destination_nodes)
+adv._release_reservation("Alvik3")
+adv.robots["Alvik3"].current_node = saved
+adv._grant_reservation("Alvik3", -1, adv._standing_request(saved), 111.5)
+check("home free -> the return leg is reserved",
+      adv.begin_yield_return("Alvik5", back_item, 112.0) is True
+      and "3" in adv.reservations["Alvik5"].request.destination_nodes)
+blocked = adv._reservation_blocker(
+    "Alvik3", adv._movement_request(da.PlanItem(
+        command="F", kind="move", from_node=2, to_node=3)))
+check("so nobody else can be granted a move onto home while it drives back",
+      blocked is not None, str(blocked))
 adv.finish_yield_leg("Alvik5", 3, 114.0)
 adv.end_yield("Alvik5", 114.0)
 res = adv.reservations.get("Alvik5")

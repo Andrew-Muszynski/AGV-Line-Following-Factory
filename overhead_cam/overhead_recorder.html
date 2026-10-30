@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Overhead Camera</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><circle cx=%2250%22 cy=%2250%22 r=%2240%22 fill=%22%23d92d20%22/></svg>">
+<style>
+  :root {
+    --bg: #f4f6f9;
+    --panel: #ffffff;
+    --ink: #172033;
+    --muted: #5c667a;
+    --line: #d8deea;
+    --soft: #eef2f7;
+    --accent: #2563eb;
+    --accent-soft: #eaf1ff;
+    --rec: #d92d20;
+    --rec-soft: #fdecea;
+    --warn: #b45309;
+    --stage: #0f141b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #10141b;
+      --panel: #171d26;
+      --ink: #e6eaf1;
+      --muted: #97a1b3;
+      --line: #2a3342;
+      --soft: #1f2732;
+      --accent: #6b9bff;
+      --accent-soft: #1d2a44;
+      --rec: #f0645a;
+      --rec-soft: #3a1d1c;
+      --warn: #f2a65a;
+      --stage: #06090d;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #10141b; --panel: #171d26; --ink: #e6eaf1; --muted: #97a1b3;
+    --line: #2a3342; --soft: #1f2732; --accent: #6b9bff; --accent-soft: #1d2a44;
+    --rec: #f0645a; --rec-soft: #3a1d1c; --warn: #f2a65a; --stage: #06090d;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 14px/1.45 "Segoe UI", system-ui, -apple-system, "Ubuntu", sans-serif;
+  }
+  button, input { font: inherit; color: inherit; }
+  button {
+    border: 1px solid var(--line);
+    background: var(--soft);
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--muted); }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.on { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+  input[type=text], input[type=search] {
+    width: 100%;
+    padding: 7px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--panel);
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 12px 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 { margin: 0; font-size: 17px; }
+  .host { color: var(--muted); font-size: 12px; font-family: ui-monospace, Consolas, monospace; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 10px; border-radius: 999px;
+    font-size: 12px; font-weight: 700; letter-spacing: .02em;
+    background: var(--soft); color: var(--muted);
+  }
+  .pill.rec { background: var(--rec-soft); color: var(--rec); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .pill.rec .dot { animation: blink 1.2s steps(2, start) infinite; }
+  @keyframes blink { to { visibility: hidden; } }
+  @media (prefers-reduced-motion: reduce) { .pill.rec .dot { animation: none; } }
+  .spacer { flex: 1; }
+  .disk { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+  main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    gap: 16px;
+    padding: 16px 20px 32px;
+    max-width: 1500px;
+    margin: 0 auto;
+  }
+  @media (max-width: 960px) { main { grid-template-columns: 1fr; padding: 12px 16px; } }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px;
+    min-width: 0;
+  }
+  .stage {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    background: var(--stage);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .stage img, .stage video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .stage .note {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px; margin: 0; text-align: center;
+    color: #cfd6e2; font-size: 14px;
+  }
+  .stage-label {
+    position: absolute; left: 10px; top: 10px;
+    padding: 2px 8px; border-radius: 4px;
+    background: rgba(0,0,0,.55); color: #fff;
+    font-size: 12px; font-weight: 600;
+  }
+  [hidden] { display: none !important; }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .recbar { margin-top: 12px; }
+  .recbar input { flex: 1 1 260px; width: auto; }
+  #record { background: var(--rec); border-color: var(--rec); color: #fff; min-width: 96px; }
+  #record:disabled { opacity: .45; }
+  .timer { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--rec); }
+  .hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+  .error {
+    margin: 10px 0 0; padding: 8px 10px; border-radius: 6px;
+    background: var(--rec-soft); color: var(--rec);
+    font: 12px/1.4 ui-monospace, Consolas, monospace; white-space: pre-wrap;
+  }
+  .detail { margin-top: 14px; }
+  .detail .title-input { font-size: 17px; font-weight: 700; flex: 1 1 280px; width: auto; }
+  dl.meta {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 8px 16px; margin: 12px 0 0;
+  }
+  dl.meta dt { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
+  dl.meta dd { margin: 2px 0 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  button.danger:hover { background: var(--rec-soft); color: var(--rec); border-color: var(--rec); }
+
+  .library { display: flex; flex-direction: column; gap: 10px; align-self: start; position: sticky; top: 12px; max-height: calc(100vh - 24px); }
+  @media (max-width: 960px) { .library { position: static; max-height: none; } }
+  .library h2 { margin: 0; font-size: 16px; }
+  .count { color: var(--muted); font-weight: 400; font-size: 13px; }
+  .list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; padding-right: 2px; }
+  .item {
+    display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px;
+    text-align: left; font-weight: 400; padding: 6px; background: var(--panel);
+  }
+  .item.active { border-color: var(--accent); background: var(--accent-soft); }
+  .item .thumb { width: 96px; aspect-ratio: 16 / 9; border-radius: 4px; background: var(--stage); object-fit: cover; }
+  .item .t { font-weight: 600; overflow-wrap: anywhere; }
+  .item .s { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .item .status { color: var(--rec); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .empty { color: var(--muted); margin: 4px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Overhead camera</h1>
+  <span class="host" id="host"></span>
+  <span class="pill" id="state"><span class="dot"></span><span id="state-text">connecting</span></span>
+  <span class="spacer"></span>
+  <span class="disk" id="disk"></span>
+</header>
+
+<main>
+  <section class="panel">
+    <div class="stage">
+      <img id="live" alt="Live overhead camera view" hidden>
+      <video id="player" controls preload="metadata" playsinline hidden></video>
+      <p class="note" id="stage-note">Live view is paused.</p>
+      <span class="stage-label" id="stage-label">Live</span>
+    </div>
+
+    <div class="row recbar">
+      <input type="text" id="name" maxlength="120" placeholder="Name this recording, e.g. R037 S1_6r CBS" aria-label="Recording name">
+      <button id="record">Record</button>
+      <button id="stop" hidden>Stop</button>
+      <span class="timer" id="timer"></span>
+      <span class="spacer"></span>
+      <button id="live-toggle" title="The camera serves one program at a time; the live view lets go of it 10 s after nobody is watching">Pause live view</button>
+      <button id="back-live" hidden>Back to live</button>
+    </div>
+    <p class="hint" id="hint"></p>
+    <div class="error" id="error" hidden></div>
+
+    <div class="detail" id="detail" hidden>
+      <div class="row">
+        <input type="text" class="title-input" id="title" maxlength="120" aria-label="Recording name">
+        <button id="save-title" hidden>Save name</button>
+        <span class="row" id="speed" role="group" aria-label="Playback speed">
+          <button data-rate="0.5">0.5×</button>
+          <button data-rate="1" class="on">1×</button>
+          <button data-rate="2">2×</button>
+          <button data-rate="4">4×</button>
+        </span>
+        <button id="download">Download</button>
+        <button id="delete" class="danger">Delete</button>
+      </div>
+      <dl class="meta" id="meta"></dl>
+    </div>
+  </section>
+
+  <aside class="panel library">
+    <div class="row">
+      <h2>Recordings <span class="count" id="count"></span></h2>
+      <span class="spacer"></span>
+      <button id="refresh">Refresh</button>
+    </div>
+    <input type="search" id="search" placeholder="Filter by name or date" aria-label="Filter recordings">
+    <div class="list" id="list"></div>
+  </aside>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let status = null;
+let items = [];
+let selected = null;        // file name in the player
+let liveWanted = true;
+let libVersion = -1;
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function fmtDur(sec) {
+  if (sec === null || sec === undefined) return "—";
+  const s = Math.max(0, Math.round(sec)), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  const r = String(s % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${r}` : `${m}:${r}`;
+}
+function fmtBytes(b) {
+  if (!b) return "—";
+  return b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : `${(b / 1e6).toFixed(b >= 1e8 ? 0 : 1)} MB`;
+}
+function fmtWhen(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+// ---- status ----------------------------------------------------------------
+async function poll() {
+  try {
+    status = await api("/api/status");
+  } catch (_) {
+    status = null;
+  }
+  renderStatus();
+  if (status && status.version !== libVersion) loadLibrary();
+}
+
+function renderStatus() {
+  const pill = $("state"), text = $("state-text");
+  if (!status) {
+    pill.className = "pill"; text.textContent = "recorder unreachable";
+    $("record").disabled = true;
+    return;
+  }
+  $("host").textContent = `${status.host} · ${status.camera} · ${status.encode}`;
+  $("disk").textContent = `${status.disk_free_gb} GB free · ${status.dir}`;
+  const r = status.recording;
+  $("record").disabled = Boolean(r);
+  $("record").hidden = Boolean(r);
+  $("stop").hidden = !r;
+  $("name").disabled = Boolean(r);
+  if (r) {
+    pill.className = "pill rec"; text.textContent = `REC ${fmtDur(r.elapsed_sec)}`;
+    $("timer").textContent = `${fmtDur(r.elapsed_sec)} · ${fmtBytes(r.bytes)}`;
+    $("hint").textContent = `Recording “${r.title}” to ${r.file}`;
+  } else {
+    pill.className = "pill";
+    text.textContent = status.finalizing.length ? "saving…" : status.mode === "preview" ? "live view" : "idle";
+    $("timer").textContent = "";
+    $("hint").textContent = status.finalizing.length
+      ? `Saving “${status.finalizing.join("”, “")}”: a few seconds.`
+      : "Record takes about 2 seconds to start (it checks the camera first). Stop finishes the file; it then appears in the list.";
+  }
+  $("error").hidden = !status.error;
+  $("error").textContent = status.error || "";
+  renderStage();
+}
+
+// ---- stage: live view or playback -------------------------------------------
+function renderStage() {
+  const live = $("live"), player = $("player"), note = $("stage-note");
+  const playing = Boolean(selected);
+  const recording = Boolean(status && status.recording);
+  $("back-live").hidden = !playing;
+  $("live-toggle").hidden = playing;
+  $("live-toggle").textContent = liveWanted ? "Pause live view" : "Show live view";
+  $("stage-label").textContent = playing ? "Playback" : recording ? "Live · recording" : "Live";
+  player.hidden = !playing;
+  const showLive = !playing && (liveWanted || recording);
+  if (showLive && !live.getAttribute("src")) live.src = "/stream";
+  if (!showLive && live.getAttribute("src")) { live.removeAttribute("src"); }
+  live.hidden = !showLive;
+  note.hidden = playing || showLive;
+  note.textContent = "Live view is paused. It starts again with Show live view or when you press Record.";
+}
+
+// ---- library -------------------------------------------------------------------
+async function loadLibrary() {
+  try {
+    const data = await api("/api/recordings");
+    items = data.recordings || [];
+    libVersion = data.version;
+  } catch (err) {
+    $("list").innerHTML = `<p class="empty">Could not load recordings: ${esc(err.message)}</p>`;
+    return;
+  }
+  renderList();
+  if (selected && !items.some((v) => v.file === selected)) closePlayer();
+  else if (selected) renderDetail();
+}
+
+function renderList() {
+  const q = $("search").value.toLowerCase().split(/\s+/).filter(Boolean);
+  const shown = items.filter((v) => {
+    const hay = `${v.title} ${v.file} ${fmtWhen(v.started)}`.toLowerCase();
+    return q.every((t) => hay.includes(t));
+  });
+  $("count").textContent = q.length ? `${shown.length} of ${items.length}` : String(items.length);
+  if (!shown.length) {
+    $("list").innerHTML = `<p class="empty">${items.length ? "Nothing matches this filter." : "No recordings yet."}</p>`;
+    return;
+  }
+  $("list").innerHTML = shown.map((v) => {
+    const ready = v.status === "ready";
+    const thumb = ready ? `<img class="thumb" loading="lazy" alt="" src="/thumbs/${encodeURIComponent(v.file.replace(/\.mp4$/, ".jpg"))}">`
+      : `<span class="thumb"></span>`;
+    const cam = v.camera ? ` · ${esc(v.camera)} camera` : "";
+    const sub = ready ? `${fmtDur(v.duration_sec)} · ${fmtBytes(v.bytes)}${cam}` : `<span class="status">${esc(v.status)}</span>`;
+    return `<button class="item${v.file === selected ? " active" : ""}" data-file="${esc(v.file)}" ${ready ? "" : "disabled"}>
+      ${thumb}<span><span class="t">${esc(v.title)}</span><br>
+      <span class="s">${esc(fmtWhen(v.started))}</span><br><span class="s">${sub}</span></span></button>`;
+  }).join("");
+}
+
+function openRecording(file) {
+  selected = file;
+  const player = $("player");
+  player.src = `/videos/${encodeURIComponent(file)}`;
+  player.playbackRate = currentRate();
+  renderList();
+  renderDetail();
+  renderStage();
+}
+
+function closePlayer() {
+  selected = null;
+  const player = $("player");
+  player.pause();
+  player.removeAttribute("src");
+  player.load();
+  $("detail").hidden = true;
+  renderList();
+  renderStage();
+}
+
+function renderDetail() {
+  const v = items.find((x) => x.file === selected);
+  if (!v) return;
+  $("detail").hidden = false;
+  if (document.activeElement !== $("title")) $("title").value = v.title;
+  $("save-title").hidden = $("title").value.trim() === v.title;
+  const rows = [
+    ["Recorded", fmtWhen(v.started)], ["Length", fmtDur(v.duration_sec)],
+    ["Size", fmtBytes(v.bytes)], ["File", v.file],
+  ];
+  if (v.stop_reason && v.stop_reason !== "stopped") rows.push(["Ended because", v.stop_reason]);
+  $("meta").innerHTML = rows.map(([k, val]) => `<div><dt>${esc(k)}</dt><dd>${esc(val)}</dd></div>`).join("");
+}
+
+function currentRate() {
+  const on = document.querySelector("#speed button.on");
+  return on ? Number(on.dataset.rate) : 1;
+}
+
+// ---- actions -------------------------------------------------------------------
+$("record").addEventListener("click", async () => {
+  $("record").disabled = true;
+  $("hint").textContent = "Starting…";
+  try {
+    status = await api("/api/record", { name: $("name").value });
+    $("name").value = "";
+    if (selected) closePlayer();
+  } catch (err) {
+    $("error").hidden = false;
+    $("error").textContent = err.message;
+  }
+  renderStatus();
+  loadLibrary();
+});
+$("name").addEventListener("keydown", (ev) => { if (ev.key === "Enter" && !$("record").disabled) $("record").click(); });
+$("stop").addEventListener("click", async () => {
+  $("stop").disabled = true;
+  try { status = await api("/api/stop", {}); } catch (err) { alert(err.message); }
+  $("stop").disabled = false;
+  renderStatus();
+  loadLibrary();
+});
+$("live-toggle").addEventListener("click", () => { liveWanted = !liveWanted; renderStage(); });
+$("back-live").addEventListener("click", closePlayer);
+$("refresh").addEventListener("click", loadLibrary);
+$("search").addEventListener("input", renderList);
+$("list").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button.item");
+  if (b && !b.disabled) openRecording(b.dataset.file);
+});
+$("speed").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button[data-rate]");
+  if (!b) return;
+  for (const x of $("speed").querySelectorAll("button")) x.classList.toggle("on", x === b);
+  $("player").playbackRate = Number(b.dataset.rate);
+});
+$("player").addEventListener("loadedmetadata", () => { $("player").playbackRate = currentRate(); });
+$("title").addEventListener("input", renderDetail);
+async function saveTitle() {
+  try {
+    const out = await api("/api/rename", { file: selected, name: $("title").value });
+    const wasPlaying = !$("player").paused, t = $("player").currentTime;
+    selected = out.file;
+    await loadLibrary();
+    if (out.file !== $("player").getAttribute("src")?.split("/").pop()) {
+      $("player").src = `/videos/${encodeURIComponent(out.file)}`;
+      $("player").currentTime = t;
+      if (wasPlaying) $("player").play().catch(() => {});
+    }
+    $("title").blur();
+    renderDetail();
+  } catch (err) { alert(`Rename: ${err.message}`); }
+}
+$("save-title").addEventListener("click", saveTitle);
+$("title").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") saveTitle();
+  if (ev.key === "Escape") { $("title").blur(); $("title").value = (items.find((x) => x.file === selected) || {}).title || ""; renderDetail(); }
+});
+$("download").addEventListener("click", () => { if (selected) location.href = `/videos/${encodeURIComponent(selected)}?download=1`; });
+$("delete").addEventListener("click", async () => {
+  const v = items.find((x) => x.file === selected);
+  if (!v || !confirm(`Delete “${v.title}” (${fmtBytes(v.bytes)}) from this laptop? This cannot be undone.`)) return;
+  try { await api("/api/delete", { file: v.file }); } catch (err) { alert(`Delete: ${err.message}`); return; }
+  closePlayer();
+  loadLibrary();
+});
+
+poll();
+setInterval(() => { if (!document.hidden) poll(); }, 1000);
+</script>
+</body>
+</html>

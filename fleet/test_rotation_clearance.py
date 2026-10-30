@@ -20,6 +20,7 @@ measured on the hardware.
 
     python3 test_rotation_clearance.py
 """
+import math
 import sys
 import types
 
@@ -57,6 +58,15 @@ class _St:
 class _Adv:
     def __init__(self, names, kind="turn"):
         self.robots = {n: _St(kind) for n in names}
+        # The real advisor's wait-for registration. The guard calls this when
+        # it holds a turn, so the EXISTING deadlock detector can see a
+        # standoff that is not a reservation -- see the 2026-10-15 run-5
+        # writeup in _rotation_clearance_hold(). Recorded here so the tests
+        # below can assert the registration actually happens.
+        self.vision_blocks = []
+
+    def note_vision_block(self, robot, blocker):
+        self.vision_blocks.append((robot, blocker))
 
 
 class _Vis:
@@ -64,11 +74,13 @@ class _Vis:
     def snapshot_in(self): return self._p
 
 
-def hold(poses, who="Alvik1", kind="turn", vision=True):
+def hold(poses, who="Alvik1", kind="turn", vision=True, adv_out=None):
     sup = object.__new__(F.FleetSupervisor)
     sup.vision = _Vis(poses) if vision else None
-    return F.FleetSupervisor._rotation_clearance_hold(
-        sup, _Adv(list(poses), kind), who)
+    adv = _Adv(list(poses), kind)
+    if adv_out is not None:
+        adv_out.append(adv)
+    return F.FleetSupervisor._rotation_clearance_hold(sup, adv, who)
 
 
 parked = {f"Alvik{i}": (D[f"D{i}"][0], D[f"D{i}"][1], 0.0, 0.0)
@@ -95,18 +107,28 @@ check("BOTH 0.5in off toward each other is refused", r is not None,
       "5.30in -- overlaps by 0.325in")
 check("and the message says by how much", r and "short by" in r, r or "")
 
-# The real budget, stated as a property rather than a magic number.
-for off in (0.30, 0.33):
+# The real budget, stated as a property rather than a magic number, at
+# whichever pair of slots is tightest in testbed_coordinates.json (D5-D6 at
+# 6.30in until 2026-10-22; D1-D2 at 6.19in after the meter-stick re-set).
+pairs = [(f"D{k}", f"D{k+1}") for k in range(1, 6)]
+lo, hi = min(pairs, key=lambda ab: math.hypot(D[ab[1]][0] - D[ab[0]][0],
+                                              D[ab[1]][1] - D[ab[0]][1]))
+ra, rb = f"Alvik{lo[1:]}", f"Alvik{hi[1:]}"
+pitch = math.hypot(D[hi][0] - D[lo][0], D[hi][1] - D[lo][1])
+budget = pitch - 5.625
+for frac in (0.90, 0.97):
+    off = budget * frac / 2
     p = dict(parked)
-    p["Alvik5"] = (D["D5"][0] + off, D["D5"][1], 0.0, 0.0)
-    p["Alvik6"] = (D["D6"][0] - off, D["D6"][1], 0.0, 0.0)
-    check(f"each {off}in off (total {2*off:.2f}in) still clears",
-          hold(p, "Alvik5") is None, "budget is 0.675in at the tightest pair")
+    p[ra] = (D[lo][0] + off, D[lo][1], 0.0, 0.0)
+    p[rb] = (D[hi][0] - off, D[hi][1], 0.0, 0.0)
+    check(f"{lo}-{hi}: each {off:.2f}in off (total {2*off:.2f}in) still clears",
+          hold(p, ra) is None, f"budget is {budget:.3f}in at the tightest pair")
+off = budget * 1.06 / 2
 p = dict(parked)
-p["Alvik5"] = (D["D5"][0] + 0.35, D["D5"][1], 0.0, 0.0)
-p["Alvik6"] = (D["D6"][0] - 0.35, D["D6"][1], 0.0, 0.0)
-check("each 0.35in off (total 0.70in) is refused",
-      hold(p, "Alvik5") is not None)
+p[ra] = (D[lo][0] + off, D[lo][1], 0.0, 0.0)
+p[rb] = (D[hi][0] - off, D[hi][1], 0.0, 0.0)
+check(f"{lo}-{hi}: each {off:.2f}in off (total {2*off:.2f}in) is refused",
+      hold(p, ra) is not None)
 
 print("\nthe 2026-09-30 collision geometry")
 r = hold({"Alvik3": (0.0, 0.0, 0.0, 0.0), "Alvik4": (5.00, 0.0, 0.0, 0.0)},
@@ -145,6 +167,35 @@ r = hold({"Alvik1": (0.0, 0.0, 0.0, 0.0),
           "Alvik2": (5.5, 0.0, 0.0, 0.0),
           "Alvik3": (4.0, 0.0, 0.0, 0.0)})
 check("names Alvik3, the nearer one", r is not None and "Alvik3" in r, r or "")
+
+print("\na hold must be VISIBLE to the deadlock detector")
+# 2026-10-15 run 5: Alvik1 stalled and stopped dead on node 18. This guard
+# correctly refused to let Alvik3 rotate into it -- about every 3 s for
+# 115 s, while four more robots queued up behind. The run ended in a
+# five-robot standstill with deadlocks_detected = 0, because a positional
+# hold is not a reservation and the detector saw an empty graph. The
+# corridor gate had the identical bug fixed on 2026-09-29 by recording the
+# hold; this guard, added a day later, did not get it.
+seen = []
+r = hold({"Alvik1": (0.0, 0.0, 0.0, 0.0), "Alvik2": (4.0, 0.0, 0.0, 0.0)},
+         who="Alvik1", adv_out=seen)
+check("the turn is still refused", r is not None, r or "")
+check("and the standoff is registered in the wait-for graph",
+      seen and seen[0].vision_blocks == [("Alvik1", "Alvik2")],
+      str(seen[0].vision_blocks if seen else "no advisor captured"))
+
+seen = []
+hold({"Alvik1": (0.0, 0.0, 0.0, 0.0)}, who="Alvik1", adv_out=seen)
+check("a clear lane registers nothing",
+      seen and seen[0].vision_blocks == [],
+      str(seen[0].vision_blocks if seen else "no advisor captured"))
+
+seen = []
+hold({"Alvik1": (0.0, 0.0, 0.0, 0.0), "Alvik2": (4.0, 0.0, 0.0, 0.0)},
+     who="Alvik1", kind="move", adv_out=seen)
+check("a MOVE item is not a turn, so nothing is registered",
+      seen and seen[0].vision_blocks == [],
+      str(seen[0].vision_blocks if seen else "no advisor captured"))
 
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:

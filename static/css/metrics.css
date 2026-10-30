@@ -82,20 +82,71 @@
 #metrics-tab-content h3 { margin: 14px 0 6px; font-size: 14px; }
 #metrics-tab-content h3:first-child { margin-top: 2px; }
 
+/* Detail tables render at FULL HEIGHT. A capped box put a second scrollbar
+   inside the page scrollbar, so reading a 30-row metric family meant
+   scrolling a small window while the page stayed still. Only the run
+   history, which is unbounded in length, keeps its own scroll -- it opts in
+   with .scroll below. */
 .metrics-table-wrap {
-  max-height: 420px;
-  overflow: auto;
+  overflow-x: auto;
   border: 1px solid #e2e8f0;
   border-radius: 6px;
 }
-.metrics-table-wrap table { font-variant-numeric: tabular-nums; }
+.metrics-table-wrap.scroll {
+  max-height: 460px;
+  overflow-y: auto;
+}
+.metrics-table-wrap table {
+  font-variant-numeric: tabular-nums;
+  border-collapse: separate;   /* required for a sticky header to keep its
+                                  borders while the body scrolls under it */
+  border-spacing: 0;
+  width: 100%;
+}
+/* The header scrolls out of a 420px box within a few rows, and a numeric
+   column is unreadable once you cannot see which column it is. */
+.metrics-table-wrap thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f8fafc;
+  box-shadow: inset 0 -1px 0 #cbd5e1;
+}
 .metrics-table-wrap th {
   cursor: pointer;
   user-select: none;
-  text-align: center;
   vertical-align: bottom;
   white-space: nowrap;
+  font-weight: 600;
+  color: #334155;
 }
+/* ALIGNMENT IS PER COLUMN, AND THE HEADER USES THE SAME CLASS AS THE CELL.
+   Previously every th was centred while cells were left, centred or right
+   by their own class, so no header actually sat over its column -- the
+   wider the column, the further off it looked. */
+.metrics-table-wrap th.col-left,   .metrics-table-wrap td.col-left   { text-align: left; }
+.metrics-table-wrap th.col-center, .metrics-table-wrap td.col-center { text-align: center; }
+.metrics-table-wrap th.col-num,    .metrics-table-wrap td.col-num    { text-align: right; }
+/* Numeric columns are scanned by magnitude, so give the digits room from
+   the column rule without letting the header drift off the figures. */
+.metrics-table-wrap th.col-num,    .metrics-table-wrap td.col-num    { padding-right: 10px; }
+.metrics-table-wrap th.col-left,   .metrics-table-wrap td.col-left   { padding-left: 8px; }
+
+/* A blank cell now says WHY it is blank. Only a real gap stays orange;
+   "n/a" (nothing of that kind happened) and "not instrumented" (the rig
+   never records the source) are grey, because neither is a defect and
+   colouring them the same taught the eye to skip all three. */
+.metrics-value-na,
+.metrics-value-nosource { color: #94a3b8; font-style: italic; }
+.metrics-status-na,
+.metrics-status-nosource { color: #64748b; }
+
+/* Planned vs actual: the plan is context for the measured number, so it is
+   quieter, and only a miss beyond 10% is coloured. */
+.metrics-table-wrap td.plan-cell { color: #64748b; }
+.metrics-table-wrap td.plan-over  { color: #b91c1c; font-weight: 600; }
+.metrics-table-wrap td.plan-under { color: #15803d; font-weight: 600; }
+
 .metrics-table-wrap td.center { text-align: center; }
 /* Detail tables (robots, jobs) centre their cells so the values sit under
    the centred headers. The run-history table keeps its numerics
@@ -227,3 +278,30 @@
   border-color: #c0392b;
   color: #fff;
 }
+
+/* ---- Control tuning (per-run captured constants) --------------------------
+   The handful of values that actually get retuned are lifted out of the
+   tables: with ~127 constants on the page, a reader comparing two runs is
+   nearly always checking one of these first. */
+.tuning-headline-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+  margin: 8px 0 14px;
+}
+.tuning-chip {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid #dbe3ec;
+  border-left: 3px solid #6b5ca5;
+  border-radius: 5px;
+  background: #fbfcfe;
+  font-size: 12px;
+}
+.tuning-chip span { color: #5b6b7a; }
+.tuning-chip b { font-variant-numeric: tabular-nums; color: #1b2733; }
+/* Same values inside the full table, so scanning down finds them again. */
+.metrics-table-wrap tr.tuning-headline td { background: #f6f4fb; font-weight: 600; }

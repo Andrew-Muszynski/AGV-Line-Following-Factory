@@ -99,8 +99,23 @@ slow = F.COLLISION_CONTACT_IN + 1.0 * F.COLLISION_REACTION_SEC
 fast = F.COLLISION_CONTACT_IN + 8.0 * F.COLLISION_REACTION_SEC
 check(fast > slow, "faster closing triggers earlier",
       f"{slow:.2f}in at 1in/s vs {fast:.2f}in at 8in/s")
-check(slow < 6.16, "even the slow threshold stays under the depot slot pitch",
-      f"{slow:.2f}in < 6.16in, so parked neighbours are never caught")
+# The depot invariant is tested at the SLOWEST CLOSING THE GUARD WILL ACT
+# ON, not at an arbitrary slow speed. It used to be checked at 1.0in/s,
+# which COLLISION_REACTION_SEC = 0.56 fails (6.19in vs the 6.16in slot
+# pitch) -- but a pair genuinely closing at 1.0in/s is moving, not parked.
+# Parked neighbours show only vision noise: 0.06in rms over the 0.15s
+# minimum dt is ~0.4in/s, below COLLISION_MIN_CLOSING_IN_S, so the guard
+# never evaluates them at all. The binding case is the floor itself.
+#
+# This is belt and braces either way: a depot-slot or bay-spur pair takes
+# the parked_pair branch and is judged on overlap alone. The invariant
+# exists for the case where a stale pose defeats that detection.
+floor = F.COLLISION_CONTACT_IN + F.COLLISION_MIN_CLOSING_IN_S * F.COLLISION_REACTION_SEC
+check(floor < 6.16,
+      "at the slowest closing it acts on, the trigger stays under the "
+      "depot slot pitch",
+      f"{floor:.3f}in at the {F.COLLISION_MIN_CLOSING_IN_S}in/s floor "
+      f"< 6.16in, so parked neighbours are never caught")
 
 print("\n5. the 2026-09-29 depot collision, replayed")
 # Alvik3 standing at DE3 (32.09, 3.15); Alvik5 driving DE2->DE3 at ~3.2in/s.

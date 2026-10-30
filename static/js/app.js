@@ -5,6 +5,14 @@ document.getElementById("solve").addEventListener("click", solve);
 document.getElementById("open-report").addEventListener("click", showReport);
 document.getElementById("close-report").addEventListener("click", closeReport);
 document.getElementById("download-json").addEventListener("click", downloadJson);
+document.getElementById("save-plan").addEventListener("click", savePlanToVrp);
+document.getElementById("saved-plans-refresh").addEventListener("click", () => refreshSavedPlans(true));
+document.getElementById("saved-plans").addEventListener("change", (ev) => {
+  loadSavedPlan(ev.target.value);
+});
+// Populate the dropdown once at startup. Deliberately not awaited: a missing
+// plan store must not hold up the rest of the page.
+refreshSavedPlans();
 document.getElementById("dispatch-generate").addEventListener("click", dispatchGenerate);
 document.getElementById("dispatch-start").addEventListener("click", dispatchStart);
 document.getElementById("dispatch-hold").addEventListener("click", dispatchHold);
@@ -13,6 +21,8 @@ document.getElementById("sup-send").addEventListener("click", supervisorSendMiss
 document.getElementById("sup-start").addEventListener("click", () => {
   if (supPublish("fleet_control", "START")) {
     state.missionStartMs = Date.now();  // anchors Real-mode status badges
+    state.liveBays = new Map();         // bays empty until the robots act
+    state.liveRun = true;
     // Page 4 metrics: mark the registered run as started (fire-and-forget;
     // the supervisor's own RUN_STARTED event is the authoritative record).
     if (typeof metricsNotifyRunStarted === "function") {
@@ -69,12 +79,23 @@ document.getElementById("mode-sim").addEventListener("click", () => setMode("sim
 document.getElementById("mode-real").addEventListener("click", () => setMode("real"));
 document.getElementById("mode-live").addEventListener("click", () => setMode("live"));
 document.getElementById("drive-mode-color").addEventListener("click", () => setDriveMode("color"));
-document.getElementById("drive-mode-vision").addEventListener("click", () => setDriveMode("vision"));
-document.getElementById("fuse-turns-toggle").addEventListener("click", toggleFuseTurns);
+document.getElementById("drive-mode-vision").addEventListener("click", () => setDriveMode("vision", "staged"));
+document.getElementById("drive-mode-encoder").addEventListener("click", () => setDriveMode("vision", "rotate_rel"));
+document.getElementById("traffic-page").addEventListener("click", () => setTrafficMethod("page"));
+document.getElementById("traffic-astar").addEventListener("click", () => setTrafficMethod("astar"));
+document.getElementById("traffic-wait").addEventListener("click", () => setTrafficMethod("wait"));
+document.getElementById("traffic-pp").addEventListener("click", () => setTrafficMethod("pp"));
+document.getElementById("traffic-cbs").addEventListener("click", () => setTrafficMethod("cbs"));
 document.getElementById("view-setup").addEventListener("click", () => setView("setup"));
 document.getElementById("view-plan").addEventListener("click", () => setView("plan"));
 document.getElementById("view-run").addEventListener("click", () => setView("run"));
 document.getElementById("view-metrics").addEventListener("click", () => setView("metrics"));
+document.getElementById("view-definitions").addEventListener("click", () => setView("definitions"));
+document.getElementById("view-recordings").addEventListener("click", () => setView("recordings"));
+// Page 6 + the Run & Monitor Recording row (static/js/recordings.js).
+if (typeof recordingsInit === "function") {
+  try { recordingsInit(); } catch (err) { console.warn("recordings init error:", err); }
+}
 document.getElementById("edit-setup").addEventListener("click", () => setView("setup"));
 document.getElementById("decision-log-save").addEventListener("click", saveDecisionLog);
 document.getElementById("decision-log-clear").addEventListener("click", clearDecisionLog);

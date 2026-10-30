@@ -761,7 +761,8 @@
      entering/leaving Page 4 can never reset routes, sockets, or timers. */
   body[data-view="setup"] .v-metrics,
   body[data-view="plan"] .v-metrics,
-  body[data-view="run"] .v-metrics { display: none !important; }
+  body[data-view="run"] .v-metrics,
+  body[data-view="definitions"] .v-metrics { display: none !important; }
   body[data-view="metrics"] .v-setup,
   body[data-view="metrics"] .v-plan,
   body[data-view="metrics"] .v-run,
@@ -769,6 +770,28 @@
   body[data-view="metrics"] .grid-panel { display: none !important; }
   body[data-view="metrics"] main { grid-template-columns: 1fr; }
   #metrics-page {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-width: 0;
+  }
+
+  /* ---- Definitions view (Page 5) ------------------------------------------
+     Same show/hide pattern. The definitions table is long enough that it
+     needed its own page rather than a tab inside Page 4, where it pushed
+     the run under inspection off screen. */
+  body[data-view="setup"] .v-definitions,
+  body[data-view="plan"] .v-definitions,
+  body[data-view="run"] .v-definitions,
+  body[data-view="metrics"] .v-definitions { display: none !important; }
+  body[data-view="definitions"] .v-setup,
+  body[data-view="definitions"] .v-plan,
+  body[data-view="definitions"] .v-run,
+  body[data-view="definitions"] .v-plan-run,
+  body[data-view="definitions"] .grid-panel { display: none !important; }
+  body[data-view="definitions"] main { grid-template-columns: 1fr; }
+  #definitions-page {
     grid-column: 1 / -1;
     display: flex;
     flex-direction: column;

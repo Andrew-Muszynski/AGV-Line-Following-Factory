@@ -20,8 +20,10 @@ agv_grid_workstation_solver.html   ← grid model, timing constants, collision
                                       schedule planning + JSON export, live
                                       pose visualization via rosbridge
 
-AGV_Factory_color_pose/
-  └── AGV_Factory_color_pose.ino   ← Arduino sketch flashed to every Alvik
+firmware/
+  └── AGV_Factory_color_pose/
+        └── AGV_Factory_color_pose.ino
+                                   ← Arduino sketch flashed to every Alvik
 
 apriltag_detect.py                 ← webcam AprilTag ID + pixel-location
                                       viewer (tag36h11); pixels only
@@ -30,17 +32,78 @@ apriltag_localize.py               ← metric (inches) robot localization from
                                       the table-corner tags 20-23 via a
                                       plane-to-plane homography; works with
                                       any >=2 corner tags visible
-test_apriltag_localize.py          ← synthetic-camera tests for the fitter
+tests/test_apriltag_localize.py    ← synthetic-camera tests for the fitter
 
-solver.py, instance.py, schedule.py,
-cli.py, gui.py, simulator.py,
-visualizer.py, main.py             ← VRP-RPD solver core (protocol-agnostic,
-                                      unaffected by which sketch is live)
+archive/legacy_sim/                ← the standalone Tkinter VRP-RPD simulator
+  main.py, gui.py, cli.py,            (May 2026). Superseded by the browser
+  instance.py, schedule.py,           dashboard; nothing in the live stack
+  simulator.py, solver.py,            imports it. The modules import each
+  visualizer.py                       other by bare name, so run it from
+                                      inside the folder:
+                                        cd archive/legacy_sim && python main.py
+
+external/vrp_rpd/                  ← the live VRP-RPD solver (BRKGA, ALNS).
+                                      plan_server.py defaults to this path
 ```
 
 The sketch is in
-[`AGV_Factory_color_pose/`](AGV_Factory_color_pose/). Arduino requires the
-`.ino` file to remain in a same-named folder.
+[`firmware/AGV_Factory_color_pose/`](firmware/AGV_Factory_color_pose/). Arduino
+requires the `.ino` file to remain in a same-named folder, so each sketch keeps
+its own directory under `firmware/`.
+
+---
+
+## Repository layout
+
+Reorganized 14 October 2026. **The repository root holds only what a launch
+touches** -- the three `.bat` entry points, the dashboard HTML, `schema.sql`,
+and the eleven Python modules those reach. Everything a launch does not read
+lives in one of the folders below.
+
+| Folder | What is in it |
+|---|---|
+| `fleet/` | Supervisor, dispatch advisor, navigation and the robot-side Python. `fleet/routes/` holds the per-robot route files |
+| `tools/` | Utilities, figure generators, deploy scripts, benchmarks |
+| `external/vrp_rpd/` | The live VRP-RPD solver (BRKGA, ALNS). `plan_server.py` defaults here |
+| `static/` · `templates/` | Flask and dashboard assets |
+| `firmware/` | Every Arduino sketch, each in its own same-named folder |
+| `docs/` | All project markdown: `planning/`, `findings/`, `vlm/`, `workflow/`, `reports/` |
+| `data/` | Captured and derived data: the metrics SQLite, `telemetry/`, `logs/`, `camera_checks/`, `yaw_stress/`, `calib_frames_v2/`, `apriltag_output/`, `vlm_analysis/`, `stats_for_paper/` |
+| `generated_plans/` | Plans saved from the dashboard's **Save to VRP** button and listed in its **Saved plans** dropdown. See `plan_store.py` |
+| `runs/` · `runs_linux/` · `solved_plans/` | Run records and the automatic `/solve` archive. Referenced by path from the dashboard and the supervisor, so they stay at the root |
+| `figures/` | Generated figures. `tools/make_*.py` write here |
+| `media/` | `VIDEOS/` and `Presentations/` |
+| `THESIS PAPER/` | The thesis, the proposal, and every generated `.docx` |
+| `archive/` | Superseded code, including `legacy_sim/` and `old_test_data/` |
+| `ORACLE_VM/` · `failsafe_linux_laptop/` | Linux-laptop deployment payloads |
+| `tests/` · `third_party/` | Pytest suite; vendored dependencies |
+
+### Saving and reloading plans
+
+The dashboard writes solved plans straight into `generated_plans/` instead of
+downloading them, and reloads any of them from the **Saved plans** dropdown.
+This matters most for BRKGA, where a solve costs minutes of CPU.
+
+The store is `plan_store.py`, exposed by whichever server is up —
+`START_TESTBED.bat` runs `app.py` but not `plan_server.py`, and
+`start_dashboard.bat` the other way round:
+
+| Server | Endpoints |
+|---|---|
+| `app.py` (Flask, :8000) | `GET/POST /api/plans`, `GET/DELETE /api/plans/<name>` |
+| `plan_server.py` (:8082) | `GET/POST /plans`, `GET/DELETE /plans/<name>` |
+
+The page probes same-origin first, then :8082, and says so in the dropdown if
+neither answers. Saving never overwrites: a name already in use gets `_2`,
+`_3` appended. **Download JSON** is unchanged for when you want the file.
+
+Documents are written as markdown in `docs/` and rendered to Word in
+`THESIS PAPER/`. Relative image links resolve against the markdown file, so a
+figure reference is `../../figures/name.png`:
+
+```
+python3 tools/md_to_docx.py docs/reports/PROGRESS_REPORT_2026-10.md -o "THESIS PAPER/PROGRESS_REPORT_2026-10.docx"
+```
 
 ---
 

@@ -532,3 +532,22 @@ def test_deadlock_that_clears_is_resolved_not_unresolved(client):
     assert value_of(m, "deadlock_count")["value"] == 1
     assert value_of(m, "unresolved_deadlock_count")["value"] == 0
     assert value_of(m, "mean_deadlock_recovery_sec")["value"] ==         pytest.approx(8.0)
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-23: a collision abort ended "complete: none; errored: none" and the
+# browser's fallback PATCHed it to 'completed', overwriting RUN_ABORTED --
+# a 10-of-12-jobs run then showed a 165.8 s makespan.
+
+def test_logged_abort_is_never_upgraded_to_completed(client):
+    run_id = make_run(client)
+    s = Stream()
+    s.ev(0, "RUN_STARTED")
+    s.ev(165000, "RUN_ABORTED", reason="COLLISION")
+    s.ev(165010, "RUN_FAILED")
+    post_events(client, run_id, s)
+    r = client.patch(f"/api/runs/{run_id}", json={"status": "completed"})
+    assert r.status_code == 409
+    m = get_metrics(client, run_id)
+    assert m["run_status"] in ("failed", "aborted")
+    assert value_of(m, "actual_makespan_sec")["value"] is None

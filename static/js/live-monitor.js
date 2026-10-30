@@ -10,6 +10,10 @@ function setView(view) {
   document.getElementById("view-plan").className = view === "plan" ? "secondary active" : "secondary";
   document.getElementById("view-run").className = view === "run" ? "secondary active" : "secondary";
   document.getElementById("view-metrics").className = view === "metrics" ? "secondary active" : "secondary";
+  const defsBtn = document.getElementById("view-definitions");
+  if (defsBtn) defsBtn.className = view === "definitions" ? "secondary active" : "secondary";
+  const recBtn = document.getElementById("view-recordings");
+  if (recBtn) recBtn.className = view === "recordings" ? "secondary active" : "secondary";
   // The camera feed belongs to Run & Monitor only. Leaving the Run view (e.g.
   // back to Plan & Simulate) drops the MJPEG connection and hides the <img>;
   // returning to Run while Live is selected re-attaches it. Plan & Simulate is
@@ -32,6 +36,17 @@ function setView(view) {
   if (view === "metrics" && typeof metricsViewShown === "function") {
     try { metricsViewShown(); } catch (err) { console.warn("metrics view error:", err); }
   }
+  // Page 5 renders once, on first visit -- the definition list is static.
+  if (view === "definitions" && typeof definitionsViewShown === "function") {
+    try { definitionsViewShown(); } catch (err) { console.warn("definitions view error:", err); }
+  }
+  // Page 6 reloads the library each visit: a run may have just finished.
+  if (view === "recordings" && typeof recordingsViewShown === "function") {
+    try { recordingsViewShown(); } catch (err) { console.warn("recordings view error:", err); }
+  }
+  // Leaving the Recordings page pauses its player.
+  const recVideo = document.getElementById("rec-video");
+  if (recVideo && view !== "recordings" && !recVideo.paused) recVideo.pause();
 }
 
 // Compact configuration recap shown in the top bar outside the Setup view.
@@ -696,14 +711,19 @@ function setMode(mode) {
   render();
 }
 
-function setDriveMode(mode) {
+// turnMethod only matters for "vision"; color mode turns in firmware, so a
+// click on Color sensor leaves the last camera choice in place.
+function setDriveMode(mode, turnMethod) {
   state.driveMode = mode;
+  if (turnMethod) state.turnMethod = turnMethod;
   render();
 }
 
-function toggleFuseTurns() {
-  state.fuseTurns = !state.fuseTurns;
-  render();
+function driveModeLabel() {
+  if (state.driveMode !== "vision") return "color sensor + camera safety";
+  return state.turnMethod === "rotate_rel"
+    ? "camera + encoder turns (rotate_rel)"
+    : "camera only (staged turns)";
 }
 
 function escapeHtml(value) {
@@ -991,11 +1011,20 @@ function closeReport() {
 }
 
 function buildExportPayload() {
+  const modeSel = document.getElementById("route-mode");
   return {
+    route_mode: (modeSel && modeSel.value) || "",
+    generated_at: new Date().toISOString(),
     grid: { rows: state.rows, cols: state.cols },
     agents: state.agents,
     capacity: state.capacity,
-    rpd: { enabled: state.rpdMode, process_sec: state.processSec },
+    rpd: {
+      enabled: state.rpdMode, process_sec: state.processSec,
+      // Drop rule carried from an ALNS plan (traffic/alns.py, 2026-10-29):
+      // the supervisor starts a bay's processing clock when the drop's
+      // DWELL ends instead of on arrival. Absent for every other plan.
+      ...(state.rpdDropRule || {}),
+    },
     collision_window_sec: SAFETY_WINDOW_SEC,
     edge_collision_window_sec: EDGE_SAFETY_WINDOW_SEC,
     real_mode: {
@@ -1096,6 +1125,157 @@ function buildExportPayload() {
       detail: conflict.detail,
     })),
   };
+}
+
+// ---- saved plans (VRP/generated_plans) ------------------------------------
+// Writes the solved plan straight into the repo and lists what is already
+// there, so a BRKGA solve -- minutes of CPU -- is kept without the
+// download-then-reimport round trip.
+//
+// TWO POSSIBLE SERVERS, and which one is up depends on how the testbed was
+// started. START_TESTBED.bat runs app.py (Flask :8000, which serves this
+// page, so same-origin /api/plans works). start_dashboard.bat runs
+// plan_server.py (:8082) and opens the standalone page from file://. Probe
+// both once and remember the winner; if neither answers, the dropdown says
+// so instead of failing silently.
+//
+// The candidate list is built lazily rather than at load: in the split
+// build PLAN_SERVER_URL lives in solver.js, and reading it at top level
+// would make this file depend on script order.
+function planStoreCandidates() {
+  return [
+    { base: "/api/plans", label: "metrics app :8000" },
+    { base: PLAN_SERVER_URL + "/plans", label: "plan server :8082" },
+  ];
+}
+let planStore = { base: null, label: "", probed: false };
+const PLAN_STORE_NL = String.fromCharCode(10);  // newline inside alert() text
+
+function savedPlansStatus(text, isError) {
+  const el = document.getElementById("saved-plans-status");
+  if (!el) return;
+  el.textContent = text || "";
+  el.style.color = isError ? "#b91c1c" : "";
+}
+
+async function resolvePlanStore(force) {
+  if (planStore.probed && !force) return planStore.base;
+  planStore.probed = true;
+  for (const cand of planStoreCandidates()) {
+    // file:// has no origin for a bare "/api/..." to resolve against.
+    if (cand.base.startsWith("/") && window.location.protocol === "file:") continue;
+    try {
+      const resp = await fetch(cand.base, { method: "GET" });
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      if (!data || !Array.isArray(data.plans)) continue;
+      planStore = { base: cand.base, label: cand.label, probed: true, dir: data.dir };
+      return planStore.base;
+    } catch (_) { /* try the next one */ }
+  }
+  planStore.base = null;
+  return null;
+}
+
+function savedPlanLabel(row) {
+  if (row.error) return `${row.name}  (unreadable: ${row.error})`;
+  const bits = [];
+  if (row.route_mode || row.algorithm) bits.push(row.route_mode || row.algorithm);
+  if (row.agents) bits.push(`${row.agents} agent${row.agents === 1 ? "" : "s"}`);
+  if (row.bays) bits.push(`${row.bays} visit${row.bays === 1 ? "" : "s"}`);
+  if (row.rpd) bits.push(`RPD ${row.process_sec || 0}s`);
+  const span = row.makespan_sec || row.solver_makespan_sec_estimate;
+  if (span) bits.push(`${Math.round(span)}s`);
+  return bits.length ? `${row.name}  ·  ${bits.join("  ·  ")}` : row.name;
+}
+
+async function refreshSavedPlans(force) {
+  const sel = document.getElementById("saved-plans");
+  if (!sel) return;
+  const base = await resolvePlanStore(force);
+  if (!base) {
+    sel.innerHTML = '<option value="">— no plan store reachable —</option>';
+    savedPlansStatus("Start app.py (:8000) or plan_server.py (:8082) to save " +
+                     "and load plans in VRP/generated_plans.", true);
+    return;
+  }
+  let rows = [];
+  try {
+    const resp = await fetch(base);
+    rows = (await resp.json()).plans || [];
+  } catch (err) {
+    sel.innerHTML = '<option value="">— store unreachable —</option>';
+    savedPlansStatus(`Could not read the plan store: ${err.message}`, true);
+    return;
+  }
+  const keep = sel.value;
+  sel.innerHTML = rows.length
+    ? '<option value="">— select a saved plan —</option>'
+    : '<option value="">— none saved yet —</option>';
+  for (const row of rows) {
+    const opt = document.createElement("option");
+    opt.value = row.name;
+    opt.textContent = savedPlanLabel(row);
+    opt.title = `${row.name}${PLAN_STORE_NL}${row.modified}  ·  ${row.size} bytes`;
+    sel.appendChild(opt);
+  }
+  if (keep && rows.some((r) => r.name === keep)) sel.value = keep;
+  savedPlansStatus(`${rows.length} plan${rows.length === 1 ? "" : "s"} in ` +
+                   `generated_plans/  (via ${planStore.label})`);
+}
+
+async function loadSavedPlan(name) {
+  if (!name) return;
+  const base = await resolvePlanStore();
+  if (!base) return;
+  savedPlansStatus(`loading ${name}…`);
+  try {
+    const resp = await fetch(`${base}/${encodeURIComponent(name)}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+    importPlanFromJson(data, name);
+    // Which saved plan is on screen, for the run record and the video name
+    // (DOE_6r_cbs.json -> DOE_6r_cbs_1, _2, ...). Only while these exact
+    // routes are shown: a re-solve or a traffic button replaces them.
+    state.loadedPlanFile = name;
+    state.loadedPlanRoutes = state.routes;
+    savedPlansStatus(`loaded ${name}`);
+  } catch (err) {
+    savedPlansStatus(`load failed: ${err.message}`, true);
+    alert(`Loading ${name} failed: ${err.message}`);
+  }
+}
+
+async function savePlanToVrp() {
+  if (!state.routes.length) return;
+  const base = await resolvePlanStore(true);
+  if (!base) {
+    alert("No plan store reachable." + PLAN_STORE_NL + PLAN_STORE_NL +
+          "Start app.py (:8000) or plan_server.py (:8082), then press ↻.");
+    return;
+  }
+  const suggested = exportFileName();
+  const name = window.prompt("Save this plan into VRP/generated_plans/ as:", suggested);
+  if (name === null) return;
+  const wanted = name.trim() || suggested;
+  savedPlansStatus(`saving ${wanted}…`);
+  try {
+    const resp = await fetch(base, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: wanted, plan: buildExportPayload() }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+    await refreshSavedPlans(true);
+    const sel = document.getElementById("saved-plans");
+    if (sel) sel.value = data.name;
+    savedPlansStatus(`saved generated_plans/${data.name}` +
+      (data.name !== wanted ? "  (renamed, that name was taken)" : ""));
+  } catch (err) {
+    savedPlansStatus(`save failed: ${err.message}`, true);
+    alert(`Saving failed: ${err.message}`);
+  }
 }
 
 function downloadJson() {
@@ -1829,7 +2009,264 @@ function supervisorMissionCommands() {
 // The import replaces only the ASSIGNMENT step; timing, ready-time waits,
 // dwell deconfliction, command generation and dispatch are unchanged — so
 // every algorithm runs through the identical execution stack.
+// ---- DOE traffic plans (traffic/run_doe.py) --------------------------------
+// A plan made by one of the DOE's traffic planners (astar / wait / pp / cbs)
+// carries its routes fully planned: path_nodes plus the waits along them.
+// They must be dispatched EXACTLY as planned -- rebuilding L-shaped routes and
+// running this page's own WAIT over them would turn every method back into
+// WAIT. So this branch takes path and waits as given and only re-times them
+// with the same model (applyRouteTiming). The launch-cascade waits are already
+// inside wait_before_segment_sec. Do not press Solve afterwards: that rebuilds.
+function pathPointFromLabel(label) {
+  if (label === 0 || label === "0") return specialPathPoint("node0");
+  const s = String(label);
+  if (s.startsWith("DE")) return specialPathPoint(`depot-entry-${parseInt(s.slice(2), 10) - 1}`);
+  if (s.startsWith("D")) return specialPathPoint(`depot-slot-${parseInt(s.slice(1), 10) - 1}`);
+  const n = Number(label);
+  const lattice = state.rows * state.cols;
+  const bays = totalBayCount();
+  if (Number.isInteger(n) && n >= 1 && n <= lattice) {
+    return gridPathPoint({ r: state.rows - 1 - Math.floor((n - 1) / state.cols),
+                           c: (n - 1) % state.cols });
+  }
+  if (Number.isInteger(n) && n <= lattice + bays) {
+    return workstationPathPoint(bayFromNumber(n - lattice));
+  }
+  if (Number.isInteger(n) && n <= lattice + 2 * bays) {
+    return entryPathPoint(bayFromNumber(n - lattice - bays));
+  }
+  throw new Error(`traffic plan: unknown node label '${label}'`);
+}
+
+function importTrafficPlan(data, sourceName, opts = {}) {
+  const routesIn = [...data.routes].sort((a, b) => Number(a.agent) - Number(b.agent));
+  routesIn.forEach((r, i) => {
+    if (Number(r.agent) !== i + 1) {
+      throw new Error(`traffic plan: agents must be 1..${routesIn.length} (got ${r.agent})`);
+    }
+  });
+  const grid = data.grid || {};
+  if (grid.rows) document.getElementById("rows").value = grid.rows;
+  if (grid.cols) document.getElementById("cols").value = grid.cols;
+  syncControls();
+  const selected = new Set();
+  let anyPick = false;
+  const routes = routesIn.map((r, agent) => {
+    const visits = (r.visits || []).map((v) => {
+      const bay = bayFromNumber(Number(v.bay));
+      selected.add(bayId(bay.r, bay.c));
+      const mode = String(v.mode || "drop").toLowerCase();
+      if (mode === "pick" || mode === "service") anyPick = true;
+      return mode === "drop" ? { r: bay.r, c: bay.c } : { r: bay.r, c: bay.c, mode };
+    });
+    // Each workstation stop takes the mode of the next visit in order; the
+    // entry steps into and out of that bay carry it too, as buildAgentRoute
+    // does, so readiness and command generation see the same thing.
+    const path = [];
+    let vi = 0;
+    let exitMode = null;
+    for (const label of r.path_nodes) {
+      const point = pathPointFromLabel(label);
+      const prev = path[path.length - 1];
+      if (point.kind === "workstation") {
+        const mode = (visits[vi++] || {}).mode || "drop";
+        point.mode = mode;
+        if (prev && prev.kind === "entry") prev.mode = mode;
+        exitMode = mode;
+      } else if (point.kind === "entry" && prev && prev.kind === "workstation") {
+        point.mode = exitMode || "drop";
+        exitMode = null;
+      }
+      path.push(point);
+    }
+    const route = {
+      agent,
+      bays: cloneBays(visits),
+      path,
+      segments: [],
+      events: [],
+      distance: 0,
+      durationSec: 0,
+      launchOffsetSec: Number(r.launch_offset_sec) || 0,
+      extraWaitSec: 0,
+      manualWaypoints: [],
+      waitBeforeSec: cloneWaits(r.wait_before_segment_sec || {}),
+      pathMode: r.path_mode || `traffic:${data.traffic_method}`,
+      pinnedOrder: true,
+      pinnedPath: true,
+    };
+    applyRouteTiming(route);
+    return route;
+  });
+
+  document.getElementById("agents").value = routes.length;
+  if (Number.isFinite(Number(data.capacity))) {
+    document.getElementById("capacity").value = Math.round(Number(data.capacity));
+  }
+  const rpdOn = data.rpd && typeof data.rpd === "object" ? Boolean(data.rpd.enabled) : anyPick;
+  document.getElementById("rpd-mode").checked = rpdOn;
+  state.rpdDropRule = data.rpd && data.rpd.processing_starts
+    ? { processing_starts: data.rpd.processing_starts,
+        drop_dwell_sec: data.rpd.drop_dwell_sec }
+    : null;
+  // A different plan: its bays show the plan again until its run starts.
+  state.liveRun = false;
+  state.liveBays = new Map();
+  if (Number.isFinite(Number(data.process_sec))) {
+    document.getElementById("process-sec").value = Math.round(Number(data.process_sec));
+  }
+  syncControls();
+  state.selected = selected;
+  stopPlayback();
+  state.routes = routes;
+  state.conflicts = detectConflicts(routes);
+  state.schedule = scheduleStatus(routes, state.conflicts, 0, false);
+  // The JOB planner that made the allocation (e.g. ext:brkga) when the file
+  // says so -- the same value the traffic buttons leave in place.
+  state.planSource = data.job_planner || `traffic:${data.traffic_method} (${sourceName})`;
+  // A frozen DOE file (tools/freeze_doe_plans.py) loaded from Saved plans
+  // must be recorded under its method, exactly as if its button had made
+  // it; otherwise the run is stored as "page". setTrafficMethod() sets the
+  // same two values again after calling this.
+  state.trafficMethod = data.traffic_method;
+  state.trafficRoutesRef = routes;
+  computeEdgeUse();
+  refreshScheduleStatus();
+  state.timestep = 0;
+  invalidateDispatchEditors();
+  if (opts.stay) {
+    render();               // Run & Monitor switch: stay put, no report popup
+    return;
+  }
+  render();
+  setView("plan");
+  showReport();
+}
+
+// ---- Run & Monitor: traffic planner per run ---------------------------------
+// One job plan, any traffic planner: the buttons re-plan the SAME frozen job
+// allocation (which robot visits which bays, in what order) with the chosen
+// method via app.py /api/traffic/plan, so back-to-back runs differ only in
+// the traffic planner -- the DOE's treatment. "Page plan" restores the routes
+// this page solved. The method is sent with the mission and stored on the
+// run (runs.traffic_method).
+const TRAFFIC_METHODS = { page: "Page plan", astar: "A*", wait: "WAIT", pp: "PP", cbs: "CBS" };
+const TRAFFIC_TIME_LIMIT_SEC = 30;
+
+// "page" whenever the routes on screen are not the ones a traffic planner
+// produced -- e.g. after a new Solve or Import, which replace state.routes.
+function effectiveTrafficMethod() {
+  if (state.trafficMethod && state.trafficMethod !== "page" &&
+      state.routes === state.trafficRoutesRef) {
+    return state.trafficMethod;
+  }
+  return "page";
+}
+
+function trafficBase() {
+  // The page's own plan, captured the first time a traffic planner is used
+  // on it, and replaced whenever the page plan itself changes.
+  const onPagePlan = effectiveTrafficMethod() === "page";
+  if (onPagePlan && (!state.trafficBase || state.trafficBase.ref !== state.routes)) {
+    state.trafficBase = {
+      ref: state.routes,
+      routes: JSON.parse(JSON.stringify(state.routes)),
+      conflicts: state.conflicts,
+      schedule: state.schedule,
+      planSource: state.planSource,
+      payload: buildExportPayload(),
+    };
+  }
+  return state.trafficBase;
+}
+
+function renderTrafficButtons() {
+  const current = effectiveTrafficMethod();
+  for (const m of Object.keys(TRAFFIC_METHODS)) {
+    const b = document.getElementById(`traffic-${m}`);
+    if (b) b.className = m === current ? "secondary active" : "secondary";
+  }
+}
+
+function setTrafficButtonsDisabled(disabled) {
+  for (const m of Object.keys(TRAFFIC_METHODS)) {
+    const b = document.getElementById(`traffic-${m}`);
+    if (b) b.disabled = disabled;
+  }
+}
+
+async function setTrafficMethod(method) {
+  const status = document.getElementById("traffic-status");
+  if (!state.routes.length) {
+    status.textContent = "solve or import a plan first";
+    return;
+  }
+  if (state.supState === "running") {
+    status.textContent = "a mission is running -- abort or let it finish first";
+    return;
+  }
+  const base = trafficBase();
+  if (!base) {
+    // A frozen DOE file loaded from Saved plans: its routes ARE the method's
+    // plan, and there is no page plan behind it to re-plan from. Each DOE
+    // treatment has its own file -- load that one instead.
+    status.textContent = `this is a frozen ${TRAFFIC_METHODS[effectiveTrafficMethod()]} plan`
+      + ` -- for ${TRAFFIC_METHODS[method]}, load its own file from Saved plans`
+      + ` (e.g. ${String(state.loadedPlanFile || "DOE_6r_x.json").replace(/_[a-z]+\.json$/, `_${method}.json`)})`;
+    return;
+  }
+  if (method === "page") {
+    state.routes = JSON.parse(JSON.stringify(base.routes));
+    state.conflicts = base.conflicts;
+    state.schedule = base.schedule;
+    state.planSource = base.planSource;
+    state.trafficMethod = "page";
+    base.ref = state.routes;
+    computeEdgeUse();
+    invalidateDispatchEditors();
+    render();
+    status.textContent = `Page plan: makespan ${fmtSec(makespan())}`
+      + " -- send the mission again";
+    return;
+  }
+  const label = TRAFFIC_METHODS[method];
+  status.textContent = `planning with ${label}...`;
+  setTrafficButtonsDisabled(true);
+  try {
+    const resp = await fetch("/api/traffic/plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ method, plan: base.payload,
+                             name: base.planSource || "page",
+                             time_limit: TRAFFIC_TIME_LIMIT_SEC }),
+    });
+    const data = await resp.json();
+    if (!resp.ok || !data.ok) {
+      status.textContent = `${label}: no plan -- ${data.error || data.note || resp.status}`;
+      return;
+    }
+    importTrafficPlan(data.plan, base.planSource || "page", { stay: true });
+    state.planSource = base.planSource;   // job planner unchanged
+    state.trafficMethod = method;
+    state.trafficRoutesRef = state.routes;
+    const m = data.metrics || {};
+    const left = (data.conflicts || []).length;
+    status.textContent = `${label}: planned makespan ${fmtSec(m.planned_makespan_sec || 0)}`
+      + `, ${left ? left + " conflicts left for the runtime" : "conflict-free"}`
+      + `, ${data.planning_sec}s to plan -- send the mission again`;
+  } catch (err) {
+    status.textContent = `${label}: planner unreachable (${err.message}) -- is app.py running?`;
+  } finally {
+    setTrafficButtonsDisabled(false);
+    renderTrafficButtons();
+  }
+}
+
 function importPlanFromJson(data, sourceName) {
+  if (data && data.traffic_method && Array.isArray(data.routes) &&
+      data.routes.length && data.routes.every((r) => Array.isArray(r.path_nodes))) {
+    return importTrafficPlan(data, sourceName);
+  }
   // Accept either {visits: {Alvik1: [...]}} directly, or this app's own
   // export shape ({routes: [{agv, visits}, ...]}) — downloadJson() writes
   // the latter, so re-importing a file you just downloaded must work.
@@ -1924,6 +2361,9 @@ function importPlanFromJson(data, sourceName) {
   document.getElementById("agents").value = agentCount;
   document.getElementById("capacity").value = cap;
   document.getElementById("rpd-mode").checked = anyPick;
+  state.rpdDropRule = null;
+  state.liveRun = false;
+  state.liveBays = new Map();
   if (Number.isFinite(Number(data.process_sec))) {
     document.getElementById("process-sec").value = Math.round(Number(data.process_sec));
   }
@@ -1964,10 +2404,12 @@ async function supervisorSendMission() {
     algorithm: (state.planSource ||
       (document.getElementById("route-mode") || {}).value || "built-in"),
     drive_mode: state.driveMode,  // "color" | "vision" — see setDriveMode()
-    // Turn+drive fusion request -- the supervisor forces this off for
-    // missions with 2+ robots regardless of what's sent here (see
-    // run_advised_vision()'s docstring in fleetSupervisor.py).
-    fuse_turns: state.fuseTurns,
+    // "staged" | "rotate_rel"; outranks AGV_TURN_METHOD on the supervisor
+    // and lands in the run's tuning_json. Omitted in color mode.
+    turn_method: state.driveMode === "vision" ? state.turnMethod : undefined,
+    // The DOE treatment: which traffic planner made these routes. Stored on
+    // the run (runs.traffic_method) by metricsCreateRunForMission().
+    traffic_method: effectiveTrafficMethod(),
     ms: Date.now(),
   };
   // Page 4 metrics: register this mission as a run BEFORE dispatch so the
@@ -1987,8 +2429,8 @@ async function supervisorSendMission() {
   }
   if (supPublish("fleet_mission", JSON.stringify(mission))) {
     document.getElementById("sup-status").textContent =
-      `mission sent (${state.driveMode === "vision" ? "camera-only" : "color+camera"}` +
-      `${state.fuseTurns ? ", fuse_turns" : ""}) — wait for 'loaded', then Start`;
+      `mission sent (${driveModeLabel()}, traffic: `
+      + `${TRAFFIC_METHODS[effectiveTrafficMethod()]}) — wait for 'loaded', then Start`;
   }
 }
 
@@ -1997,6 +2439,7 @@ function renderSupervisorStatus(dataStr) {
   try { s = JSON.parse(dataStr); } catch (_) { return; }
   document.getElementById("sup-status").textContent =
     `supervisor: ${s.state}${s.note ? " — " + s.note : ""}`;
+  state.supState = s.state;   // the traffic planner buttons refuse while running
   // Live supervisor lifecycle (loaded/armed/running/finished/aborted/error),
   // straight off /fleet_status -- Page 4's KPI badge prefers this over the
   // metrics DB's coarser run status so "IDLE"/"ARMED" are visible the
@@ -2035,10 +2478,26 @@ function ingestDecisionEvent(dataStr) {
   let e;
   try { e = JSON.parse(dataStr); } catch (_) { return; }
   if (!e || typeof e.text !== "string") return;
-  // The supervisor stamps a per-run monotonic seq; dedupe rosbridge re-delivery.
+  // Dedupe rosbridge re-delivery. seq restarts at 1 every time the
+  // supervisor restarts, so the key includes that process's boot stamp --
+  // keyed on seq alone, a page left open across a supervisor restart threw
+  // away the new run's first events (bay events included) as "seen".
   if (e.seq != null) {
-    if (state.decisionLogSeen.has(e.seq)) return;
-    state.decisionLogSeen.add(e.seq);
+    const key = `${e.boot ?? ""}:${e.seq}`;
+    if (state.decisionLogSeen.has(key)) return;
+    state.decisionLogSeen.add(key);
+  }
+  // Workstation state for the bay colours, not a log line.
+  if (e.kind === "bay") {
+    state.liveRun = true;
+    ingestBayEvent(e.data);
+    render();
+    return;
+  }
+  // A new run: every bay starts empty again.
+  if (e.kind === "mission" && e.text.startsWith("run started")) {
+    state.liveBays = new Map();
+    state.liveRun = true;
   }
   state.decisionLog.push({
     ms: Number(e.ms) || Date.now(),

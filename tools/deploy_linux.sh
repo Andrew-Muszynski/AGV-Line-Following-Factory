@@ -30,6 +30,19 @@ FILES=(
   fleet/dispatch_advisor.py
   fleet/localization_modes.py
   fleet/metrics_events.py
+  # Imported by metrics_events.push_tuning(). Without it the import fails,
+  # the run records no control tuning, and a paired comparison loses the
+  # label that says which arm it was -- quietly, since the capture is
+  # deliberately non-fatal.
+  fleet/tuning_snapshot.py
+  # Every node position (2026-10-22). camera_grid_navigate.py refuses to
+  # start without it -- deliberately, so the two machines cannot silently
+  # disagree about where a bay is.
+  fleet/testbed_coordinates.py
+  fleet/testbed_coordinates.json
+  # Per-robot brake lead and steering trim, from tools/analyze_stops.py.
+  # Without it every robot drives on the fleet-wide defaults.
+  fleet/robot_drive_calibration.json
 )
 
 echo "deploying to $HOST:~/$DEST"
@@ -64,10 +77,13 @@ ssh "$HOST" "chmod +x ~/run_role_linux.sh"
 
 echo
 echo "verifying what landed..."
-ssh "$HOST" "cd ~/$DEST && ls -l fleetSupervisor.py camera_grid_navigate.py dispatch_advisor.py localization_modes.py metrics_events.py && echo && python3 -c 'import ast,sys
+ssh "$HOST" "cd ~/$DEST && ls -l fleetSupervisor.py camera_grid_navigate.py dispatch_advisor.py localization_modes.py metrics_events.py testbed_coordinates.json robot_drive_calibration.json && echo && python3 -c 'import ast,sys
 for f in [\"fleetSupervisor.py\",\"camera_grid_navigate.py\",\"dispatch_advisor.py\"]:
     ast.parse(open(f).read())
-    print(\"  parses OK\", f)'"
+    print(\"  parses OK\", f)
+import json, testbed_coordinates as tc
+json.load(open(\"robot_drive_calibration.json\"))
+print(\"  node coordinates id\", tc.COORDINATES_ID, \"(the vision window prints the same id)\")'"
 
 echo
 echo "NOT copied: timing_calibration.json (learned state -- the remote keeps"

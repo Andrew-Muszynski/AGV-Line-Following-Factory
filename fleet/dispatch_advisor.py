@@ -484,6 +484,37 @@ def entry_rotation_footprint(label: Any, rows: int, cols: int):
     return out
 
 
+def workstation_rotation_edges(label: Any, rows: int, cols: int):
+    """The lattice edges a rotation IN a workstation sweeps over, or None.
+
+    entry_rotation_footprint()'s note says rotating at a workstation is safe
+    -- true against robots standing on the four corner NODES (+1.30in or
+    more), not against a robot DRIVING along any edge of the bay's cell.
+    The workstation centre sits 4.8-5.2in from all four edges, and a
+    turning robot (5.625in disc) plus a square-on robot (2.0in half-width)
+    needs 4.81in. 2026-10-22, three times in one afternoon: Alvik2 began its
+    170deg square-up at 65 while Alvik3 drove 1->9 up the west edge, ~0.3in
+    clear, and the guard emergency-stopped both.
+
+    Returns a set of frozenset({a, b}) str labels: the four cell edges, with
+    the top edge also split at the bay entry that sits on it.
+    """
+    if not is_workstation_node(label, rows, cols):
+        return None
+    nodes = rows * cols
+    bays = (rows - 1) * (cols - 1)
+    b = int(label) - nodes - 1
+    row, col = b // (cols - 1), b % (cols - 1)
+
+    def lat(c, r):
+        return str(r * cols + c + 1)
+
+    bl, br, tl, tr = lat(col, row), lat(col + 1, row), lat(col, row + 1), lat(col + 1, row + 1)
+    entry = str(int(label) + bays)
+    return {frozenset(e) for e in ((bl, tl), (br, tr), (bl, br), (tl, tr),
+                                   (tl, entry), (entry, tr))}
+
+
 def entry_edge_nodes(label: Any, rows: int, cols: int):
     """The two grid nodes a workstation ENTRY node sits between, or None.
 
@@ -959,6 +990,11 @@ class YieldPlan:
     to_node: object
     blocked_robot: str
     reason: str
+    # A two-hop yield passes through this node on the way to to_node (and
+    # back through it on the way home). None for a one-hop yield.
+    via: object = None
+    # The first hop is driven tail first (no room to turn, nothing ahead).
+    reverse: bool = False
 
 
 @dataclass
@@ -1046,6 +1082,15 @@ class DispatchAdvisor:
     """Event-driven advisor. The supervisor calls decide(robot, now) whenever
     a robot is idle and ready for its next command, and record_done(robot,
     now) when the command it was given completes."""
+
+    #: True when a "turn" plan item does not itself rotate the robot, which
+    #: is the case in vision mode: the rotation happens at the END of the
+    #: preceding move (its square-up and turn toward the next leg) and is
+    #: gated there, at the moment it happens, by the supervisor's
+    #: await_rotation_clearance(). The supervisor sets this per mission.
+    #: Left False (colour mode), the turn item IS the rotation and the
+    #: entry-rotation hold below stays in force.
+    rotation_gated_at_execution = False
 
     def __init__(self, schedule: dict, robot_commands: dict[str, list[str]],
                  llm=None, log_path: Optional[str] = None,
@@ -1174,6 +1219,24 @@ class DispatchAdvisor:
         st.last_done_sec = now_sec
         st.launched = True
 
+    def bank_completed_move(self, robot: str, now_sec: float) -> bool:
+        """Record the robot's current plan item -- a move -- as done, after
+        its dispatch was already cancelled.
+
+        For a leg that failed AFTER the drive finished (a trailing turn or
+        square-up). record_done() cannot do this: it acts only on a pending
+        dispatch, and the supervisor's retry path has already called
+        cancel_dispatch(), which clears it. Returns False, changing nothing,
+        if the current item is not a move.
+        """
+        st = self.robots[robot]
+        if st.next_index >= len(st.plan) or st.plan[st.next_index].kind != "move":
+            return False
+        st.pending = ("plan", st.next_index)
+        st.dispatched_sec = None      # a failed leg is not a timing sample
+        self.record_done(robot, now_sec)
+        return True
+
     def cancel_dispatch(self, robot: str) -> None:
         """Undo a just-granted movement before it is published.
 
@@ -1262,7 +1325,16 @@ class DispatchAdvisor:
             # stationary, so the closing-speed guard had nothing to act on,
             # and the reservation layer was never consulted because a turn is
             # not a move. See entry_rotation_footprint() for the measurements.
-            if item.kind == "turn":
+            #
+            # NOT IN VISION MODE. There the turn item is a no-op that runs
+            # AFTER the rotation it describes, so holding it holds a robot
+            # that has already turned. 2026-10-16: Alvik3 finished its turn
+            # at entry 122 (yaw +88.3, pointing away from node 18) and was
+            # then held here for 60s -- "rotation at entry 122 would sweep
+            # into Alvik4 on node 18" -- while the move that would have
+            # carried it clear sat behind this item. The real rotation is
+            # gated where it happens; see rotation_gated_at_execution.
+            if item.kind == "turn" and not self.rotation_gated_at_execution:
                 blocked_by = self._entry_rotation_blocker(st)
                 if blocked_by is not None:
                     other, node = blocked_by
@@ -1305,6 +1377,35 @@ class DispatchAdvisor:
                 st, f"depot lane: {other} has not cleared {node} yet",
                 conflicts=[{"type": "depot_lane", "robot": robot,
                             "with": other, "node": str(node)}])
+
+        exit_block = self._bay_exit_blocker(robot, item)
+        if exit_block is not None:
+            other, why = exit_block
+            self.wait_for[robot] = other
+            return self._wait_decision(
+                st, f"bay exit: {why}",
+                conflicts=[{"type": "bay_exit", "robot": robot,
+                            "with": other, "node": str(item.to_node)}])
+
+        head_on = self._lane_head_on_blocker(robot, item)
+        if head_on is not None:
+            other, why = head_on
+            self.wait_for[robot] = other
+            return self._wait_decision(
+                st, f"lane head-on: {why}",
+                conflicts=[{"type": "lane_head_on", "robot": robot,
+                            "with": other, "node": str(item.to_node)}])
+
+        squeeze = self._entry_squeeze_blocker(robot, item)
+        if squeeze is not None:
+            other, why = squeeze
+            # Registered like every other wait, so a cycle that still forms
+            # is visible to deadlock_cycles() and the resolver.
+            self.wait_for[robot] = other
+            return self._wait_decision(
+                st, f"entry squeeze: {why}",
+                conflicts=[{"type": "entry_squeeze", "robot": robot,
+                            "with": other, "node": str(item.to_node)}])
 
         swap_with = self._opposite_edge_swap(robot, request)
         if swap_with is not None:
@@ -1411,6 +1512,323 @@ class DispatchAdvisor:
         return None
 
 
+    # -- entry squeeze (2026-10-16) -------------------------------------------
+    #
+    # A bay entry sits 5.00in from both neighbouring lattice nodes and 4.99in
+    # from its workstation, against a 5.625in turning circle, so a robot on
+    # the entry and a robot on any of those three cannot turn while the other
+    # is there. The rotation gate makes that SAFE; it cannot make it
+    # PROGRESS. When both robots still have a turn to make, or one has to
+    # turn and the other needs its spot, they hold for each other forever --
+    # Alvik1/Alvik5 at 18/122 ended a run on 2026-10-16 exactly that way.
+    #
+    # So the pair is refused BEFORE it forms: a move onto a footprint node is
+    # held while that would pair the mover with a robot that is there, or
+    # already granted it, in a combination that cannot unwind. The robot
+    # already in place goes first -- the operator's rule: "the robot at the
+    # workstation entry should move first and clear the workstation entry
+    # node before the other robot begins to move to the adjacent
+    # intersection node". A robot that drives straight through without
+    # turning is NOT stopped ("it should continue while Alvik2 waits in
+    # place"), unless it needs the other robot's spot.
+    SQUEEZE_TURN_DEG = 20.0
+
+    def _heading_deg(self, a, b):
+        ca = label_to_cell(a, self.rows, self.cols)
+        cb = label_to_cell(b, self.rows, self.cols)
+        if ca is None or cb is None or tuple(ca) == tuple(cb):
+            return None
+        return math.degrees(math.atan2(cb[1] - ca[1], cb[0] - ca[0]))
+
+    def _turns_between(self, arrive, depart) -> bool:
+        """Must a robot arriving along `arrive` (a, b) and leaving along
+        `depart` (b, c) turn at b? Unknown geometry counts as a turn."""
+        if arrive is None or depart is None:
+            return False
+        h1 = self._heading_deg(*arrive)
+        h2 = self._heading_deg(*depart)
+        if h1 is None or h2 is None:
+            return True
+        return abs((h2 - h1 + 180.0) % 360.0 - 180.0) > self.SQUEEZE_TURN_DEG
+
+    @staticmethod
+    def _moves_after(st, index: int, count: int = 2) -> list:
+        """The next `count` move items strictly after plan position `index`."""
+        out = []
+        for it in st.plan[index + 1:]:
+            if it.kind == "move":
+                out.append(it)
+                if len(out) >= count:
+                    break
+        return out
+
+    def _move_nodes(self, items) -> set:
+        """Every node the given moves physically occupy, entry nodes lying
+        mid-edge included (18->19 also occupies entry 122)."""
+        nodes = set()
+        for item in items:
+            for frm, to, _d in movement_segments(item):
+                nodes |= {str(frm), str(to)}
+                en = self._entry_on_edge(frm, to)
+                if en is not None:
+                    nodes.add(str(en))
+        return nodes
+
+    def _entries_around(self, label) -> list:
+        """Bay entries whose turning circle contains node `label`."""
+        s = str(label)
+        if entry_edge_nodes(s, self.rows, self.cols) is not None:
+            return [s]
+        try:
+            n = int(s)
+        except (TypeError, ValueError):
+            return []
+        nodes = self.rows * self.cols
+        bays = (self.rows - 1) * (self.cols - 1)
+        if nodes < n <= nodes + bays:
+            return [str(n + bays)]                    # workstation -> entry
+        if 1 <= n <= nodes:
+            out = []
+            for m in (n - 1, n + 1, n - self.cols, n + self.cols):
+                en = self._entry_on_edge(n, m)
+                if en is not None:
+                    out.append(str(en))
+            return out
+        return []
+
+    def _squeeze_state(self, robot: str):
+        """(spot, turns_there, next_nodes) for a robot that is on, or already
+        granted a move onto, a node; None if unknown.
+
+        turns_there: it still has a turn to make at that spot. A robot whose
+        move is still in flight turns at the END of it (vision mode: the
+        move's own square-up / turn toward the next leg), and a workstation
+        arrival always squares up 180. A robot already RECORDED at its node
+        has made that turn -- record_done runs after it -- unless a dwell
+        comes first, after which it turns again.
+        next_nodes: what its next two moves need.
+        """
+        st = self.robots.get(robot)
+        if st is None:
+            return None
+        rows, cols = self.rows, self.cols
+        if robot in self.__dict__.get("stranded_robots", ()):
+            # Never moving again: an obstacle, not a participant.
+            return ((str(st.current_node), False, set())
+                    if st.current_node is not None else None)
+        if robot in self.yielding_robots:
+            res = self.reservations.get(robot)
+            dest = (sorted(res.request.destination_nodes)
+                    if res is not None else [])
+            spot = dest[0] if dest else st.current_node
+            return (str(spot), True, set()) if spot is not None else None
+        if st.pending and st.pending[0] == "plan":
+            idx = st.pending[1]
+            item = st.plan[idx]
+            if item.kind == "move":
+                nxt = self._moves_after(st, idx)
+                spot = str(item.to_node)
+                turns = is_workstation_node(spot, rows, cols) or (
+                    bool(nxt) and self._turns_between(
+                        (item.from_node, item.to_node),
+                        (nxt[0].from_node, nxt[0].to_node)))
+                return spot, turns, self._move_nodes(nxt)
+        if st.current_node is None:
+            return None
+        spot = str(st.current_node)
+        nxt = self._moves_after(st, st.next_index - 1)
+        turns = False
+        upto = st.plan[st.next_index:]
+        if nxt:
+            upto = st.plan[st.next_index:st.plan.index(nxt[0])]
+        if (any(it.kind == "dwell" for it in upto)
+                and not is_workstation_node(spot, rows, cols) and nxt):
+            prev = next((it for it in reversed(st.plan[:st.next_index])
+                         if it.kind == "move" and str(it.to_node) == spot),
+                        None)
+            turns = prev is not None and self._turns_between(
+                (prev.from_node, prev.to_node),
+                (nxt[0].from_node, nxt[0].to_node))
+        return spot, turns, self._move_nodes(nxt)
+
+    def _bay_exit_blocker(self, robot: str, item):
+        """(other, reason) if `robot` would leave its workstation while the
+        lane beside the bay entry is occupied.
+
+        Operator's rule, 2026-10-21: a robot in a workstation may sit there
+        as long as it likes without blocking anyone -- robots drive past the
+        bay freely -- but before it LEAVES it waits until both lattice nodes
+        beside its entry are clear. Leaving onto the entry while a robot
+        stands at one of them puts two robots inside one turning circle (the
+        entry is 5.00 in from each), and the exiting robot always has to turn
+        on the entry.
+        """
+        if item.kind != "move":
+            return None
+        rows, cols = self.rows, self.cols
+        if not is_workstation_node(item.from_node, rows, cols):
+            return None
+        flank = entry_edge_nodes(item.to_node, rows, cols)
+        if flank is None:
+            return None
+        flanks = {str(n) for n in flank}
+        for other in list(self.robots):
+            if other == robot:
+                continue
+            state = self._squeeze_state(other)
+            if state is None:
+                continue
+            spot = state[0]
+            if spot in flanks:
+                return other, (f"leaving the workstation needs {sorted(flanks)[0]} "
+                               f"and {sorted(flanks)[1]} clear; {other} is at "
+                               f"{spot}")
+            # 2026-10-30, ALNS24_joint shakedown: Alvik4 left bay 30 onto
+            # 143 while Alvik5, at 35, was turning toward 43 -- clear by the
+            # test above, since 43 was still empty. Alvik5 drove onto 43 a
+            # second later and the two stood 4.8in apart, each needing to
+            # turn. Operator: the robot in the workstation waits; it blocks
+            # nobody there. So a robot whose very next move is onto a flank
+            # counts as on it -- unless its route goes on over this bay's
+            # entry: into the bay needs this robot gone first (the squeeze
+            # rule's dead-end case orders that), and those are left as before.
+            nxt = self._next_move_of(other)
+            if nxt is None or str(nxt.to_node) not in flanks:
+                continue
+            if {str(item.from_node), str(item.to_node)} & state[2]:
+                continue                  # its route crosses this bay's entry
+            return other, (f"leaving the workstation needs {sorted(flanks)[0]} "
+                           f"and {sorted(flanks)[1]} clear; {other} is about "
+                           f"to drive onto {nxt.to_node}")
+        return None
+
+    def _next_move_of(self, robot: str):
+        """The move `robot` makes after the one it is on (in flight or just
+        recorded), or None. Stranded and yielding robots have none."""
+        st = self.robots.get(robot)
+        if st is None or robot in self.__dict__.get("stranded_robots", ()):
+            return None
+        if robot in self.yielding_robots:
+            return None
+        if st.pending and st.pending[0] == "plan":
+            nxt = self._moves_after(st, st.pending[1], count=1)
+        else:
+            nxt = self._moves_after(st, st.next_index - 1, count=1)
+        return nxt[0] if nxt else None
+
+    def _lane_head_on_blocker(self, robot: str, item):
+        """(other, reason) if moving `robot` onto a bay entry would face
+        another robot across the lattice node between two entries.
+
+        Run 2026-10-30 (ALNS24_joint shakedown): Alvik6 left bay 9 onto 122
+        heading 122->19->123 while Alvik1 sat in bay 10; Alvik1 then left
+        onto 123 heading 123->19. With both entries taken, whoever enters 19
+        can neither turn there (the other entry is inside its turning
+        circle) nor go on (the other robot holds the next spot), so no
+        order unwinds it -- deadlock abort. Neither the bay-exit rule (19
+        and 20 were clear) nor the squeeze rule (122 is outside 123's
+        footprint) looks one entry further along the lane.
+
+        So a move onto entry E whose next step is lattice node N is held
+        while another robot is on, or granted, an entry E' on the far side
+        of N and still needs N. The robot already in place goes first; the
+        held one waits where it is (its workstation, which blocks nobody,
+        or the lattice node before E).
+        """
+        if item.kind != "move":
+            return None
+        rows, cols = self.rows, self.cols
+        dest = str(item.to_node)
+        flank = entry_edge_nodes(dest, rows, cols)
+        if flank is None:
+            return None
+        st = self.robots.get(robot)
+        if st is None:
+            return None
+        nxt = self._moves_after(st, st.next_index, count=1)
+        if not nxt or str(nxt[0].from_node) != dest:
+            return None
+        n = str(nxt[0].to_node)
+        if n not in {str(f) for f in flank}:
+            return None                       # into the workstation
+        far_entries = [str(e) for e in self._entries_around(n) if str(e) != dest
+                       and entry_edge_nodes(e, rows, cols) is not None]
+        for other in list(self.robots):
+            if other == robot:
+                continue
+            state = self._squeeze_state(other)
+            if state is None:
+                continue
+            ospot, _o_turns, o_next = state
+            if n not in o_next:
+                continue
+            if ospot in far_entries:
+                return other, (f"{other} is on {ospot} heading into {n}, "
+                               f"which {robot} needs after {dest} "
+                               f"-- {other} goes first")
+        return None
+
+    def _entry_squeeze_blocker(self, robot: str, item):
+        """(other, reason) if moving `robot` along `item` would pair it with
+        another robot around a bay entry in a way that cannot unwind."""
+        st = self.robots.get(robot)
+        if st is None or item.kind != "move":
+            return None
+        dest = str(item.to_node)
+        entries = self._entries_around(dest)
+        if not entries:
+            return None
+        rows, cols = self.rows, self.cols
+        nxt = self._moves_after(st, st.next_index)
+        r_turns = is_workstation_node(dest, rows, cols) or (
+            bool(nxt) and self._turns_between(
+                (item.from_node, item.to_node),
+                (nxt[0].from_node, nxt[0].to_node)))
+        r_next = self._move_nodes(nxt)
+        for entry in entries:
+            foot = entry_rotation_footprint(entry, rows, cols) or set()
+            ws = next((n for n in foot if is_workstation_node(n, rows, cols)),
+                      None)
+            bay = {str(entry)} | ({str(ws)} if ws is not None else set())
+            for other in list(self.robots):
+                if other == robot:
+                    continue
+                state = self._squeeze_state(other)
+                if state is None:
+                    continue
+                ospot, o_turns, o_next = state
+                if ospot not in foot or ospot == dest:
+                    continue
+                tight = str(entry) in (dest, ospot)   # entry + a neighbour
+                why = None
+                if tight and r_turns and o_turns:
+                    why = (f"{robot} would have to turn at {dest} beside "
+                           f"{other}, which still has to turn at {ospot}")
+                elif tight and o_turns and ospot in r_next:
+                    why = (f"{other} has to turn at {ospot} before it can "
+                           f"leave, and {robot} needs {ospot} next")
+                elif tight and r_turns and dest in o_next:
+                    why = (f"{robot} would have to turn at {dest}, and "
+                           f"{other} needs {dest} next")
+                elif ospot in r_next and dest in o_next:
+                    why = (f"{robot} and {other} would each need the "
+                           f"other's spot ({dest} <-> {ospot})")
+                elif (ospot in bay and dest in o_next and ws is not None
+                      and str(ws) in (r_next | {dest})):
+                    # The bay is a dead end: its robot can only leave
+                    # through the entry, and here through `dest`. Only a
+                    # robot going INTO the workstation is held. A lane
+                    # through-route passes over the entry as a waypoint
+                    # (19 -> 123 -> 20), and testing "touches the entry"
+                    # held Alvik2 at node 18 for Alvik5's entire 30 s of
+                    # processing at node 74, which can never touch the lane
+                    # while it stands still (operator, 2026-10-21).
+                    why = (f"{other} has to leave bay {entry} through {dest}, "
+                           f"and {robot} wants into that bay")
+                if why is not None:
+                    return other, f"{why} -- {other} goes first"
+        return None
+
     def _depot_lane_blocker(self, robot: str, request):
         """Who, if anyone, is still on a depot-lane node this move wants.
 
@@ -1484,14 +1902,25 @@ class DispatchAdvisor:
         segments = tuple(
             (str(frm), str(to), float(duration))
             for frm, to, duration in movement_segments(item))
+        edge_keys = {corridor_key(frm, to, self.rows, self.cols)
+                     for frm, to, _dur in segments}
+        # LEAVING A BAY ENDS IN THE MIDDLE OF A LANE. workstation -> entry is
+        # keyed as the bay stub (73<>122), but the robot finishes standing on
+        # entry 122, which sits ON grid edge 18<>19. Without claiming that
+        # lane too, a robot driving 18->19 and a robot backing out of bay 73
+        # held disjoint resources and were both let go: Alvik1/Alvik2
+        # collision, 2026-10-19 16:07, 85 ms after the squeeze rule had
+        # (correctly) said Alvik2 goes first.
+        for frm, to, _dur in segments:
+            flank = entry_edge_nodes(to, self.rows, self.cols)
+            if flank is not None and str(frm) not in {str(f) for f in flank}:
+                edge_keys.add(edge_key(*flank))
         return MovementRequest(
             segments=segments,
             destination_nodes=frozenset(to for _frm, to, _dur in segments),
             directed_edges=frozenset(
                 directed_edge_key(frm, to) for frm, to, _dur in segments),
-            edge_keys=frozenset(
-                corridor_key(frm, to, self.rows, self.cols)
-                for frm, to, _dur in segments),
+            edge_keys=frozenset(edge_keys),
             shared_depot_entrance=any(
                 _uses_shared_depot_entrance(frm, to)
                 for frm, to, _dur in segments),
@@ -2106,6 +2535,10 @@ class DispatchAdvisor:
         return path[start:] + [current]
 
     YIELD_HOP_SEC = 4.0
+    # How many of the blocked robot's next nodes a yield must stay off.
+    YIELD_LOOKAHEAD = 4
+    # Extra cost, in hops, of parking on a node a third robot needs next.
+    YIELD_THIRD_PARTY_COST = 3
 
     def begin_yield(self, plan, now_sec: float):
         """Reserve a yield maneuver and return the two PlanItems to drive.
@@ -2132,12 +2565,32 @@ class DispatchAdvisor:
         if holder is not None and holder != plan.robot:
             return None
 
-        out_item = PlanItem(command="YIELD_OUT", kind="move",
-                            duration_sec=self.YIELD_HOP_SEC,
-                            from_node=here, to_node=target)
-        back_item = PlanItem(command="YIELD_BACK", kind="move",
-                             duration_sec=self.YIELD_HOP_SEC,
-                             from_node=target, to_node=here)
+        via = getattr(plan, "via", None)
+        # YIELD_OUT_REV: the worker backs the FIRST hop tail first. The way
+        # home is forward -- having backed out, the robot faces home.
+        out_cmd = "YIELD_OUT_REV" if getattr(plan, "reverse", False) else "YIELD_OUT"
+        if via is not None:
+            # Two hops, one item each way: the first hop rides as an
+            # implicit segment, so the reservation covers the whole path
+            # and the worker drives (and gates the turn at) each hop.
+            if occupied.get(str(via)) not in (None, plan.robot):
+                return None
+            hop = self.YIELD_HOP_SEC
+            out_item = PlanItem(command=out_cmd, kind="move",
+                                duration_sec=hop, from_node=via,
+                                to_node=target,
+                                implicit_segs=[(here, via, hop)])
+            back_item = PlanItem(command="YIELD_BACK", kind="move",
+                                 duration_sec=hop, from_node=via,
+                                 to_node=here,
+                                 implicit_segs=[(target, via, hop)])
+        else:
+            out_item = PlanItem(command=out_cmd, kind="move",
+                                duration_sec=self.YIELD_HOP_SEC,
+                                from_node=here, to_node=target)
+            back_item = PlanItem(command="YIELD_BACK", kind="move",
+                                 duration_sec=self.YIELD_HOP_SEC,
+                                 from_node=target, to_node=here)
 
         # Detach whatever the plan thought this robot was doing, then take a
         # real reservation on the leg. Without the release, the standing
@@ -2151,6 +2604,27 @@ class DispatchAdvisor:
         st.current_edge = (str(here), str(target))
         self.yielding_robots.add(plan.robot)
         return out_item, back_item
+
+    def begin_yield_return(self, robot: str, back_item, now_sec: float) -> bool:
+        """Reserve the yield's way home, exactly as begin_yield() reserves
+        the way out. False (nothing changed) if another robot holds it.
+
+        The return used to be driven on a "home looks free" check alone, with
+        no reservation, so the model still showed home free while the robot
+        drove there. 2026-10-22 WAIT shakedown: Alvik3 returning 10->2 from
+        a sidestep, Alvik4 granted 3->2 0.8s later ("immediate movement
+        resources clear"); the guard stopped them at a predicted -0.02in.
+        """
+        st = self.robots.get(robot)
+        if st is None:
+            return False
+        request = self._movement_request(back_item)
+        if self._reservation_blocker(robot, request) is not None:
+            return False
+        self._release_reservation(robot)
+        self._grant_reservation(robot, -1, request, now_sec)
+        st.current_edge = (str(back_item.from_node), str(back_item.to_node))
+        return True
 
     def finish_yield_leg(self, robot: str, at_node, now_sec: float) -> None:
         """Called after each yield leg lands, to move the reservation with
@@ -2213,6 +2687,9 @@ class DispatchAdvisor:
         self.cancel_dispatch(robot)
         self.wait_for.pop(robot, None)
         self.yielding_robots.discard(robot)
+        # The entry-squeeze rule treats it as a fixed obstacle with no next
+        # move, so no live robot waits for it to "go first".
+        self.__dict__.setdefault("stranded_robots", set()).add(robot)
         if st.current_node is not None:
             self._grant_reservation(
                 robot, -1, self._standing_request(st.current_node), now_sec)
@@ -2260,19 +2737,48 @@ class DispatchAdvisor:
             out.append(n + self.cols)
         return out
 
+    def needs_node_soon(self, robot: str, node) -> bool:
+        """Is `node` among the next few nodes `robot` still has to reach?
+
+        The same horizon _yield_move() keeps a yielder out of, so a robot
+        standing aside does not go home while the robot it let through still
+        has to pass that way.
+        """
+        return str(node) in self._planned_nodes(robot, horizon=3)
+
     def _planned_nodes(self, robot: str, horizon: int = 6) -> list:
-        """The next few nodes on a robot's remaining plan."""
+        """The next `horizon` NODES on a robot's remaining plan, in order,
+        bay entries crossed mid-edge included (18->19 passes entry 122).
+
+        Counted in nodes, not plan items. Until 2026-10-30 this sliced
+        `horizon` ITEMS, and a vision plan puts a turn item between moves,
+        so "the next 3" was really the next 2 nodes. That hid entry 122 from
+        _yield_move() when Alvik1 needed 123 -> 19 -> 122: the resolver
+        backed Alvik6 out of 122 to 18, inside the turn Alvik1 then had to
+        make at 122, and the pair stood for the 30 s yield timeout.
+        """
         st = self.robots.get(robot)
         if st is None:
             return []
         nodes = []
-        for item in st.plan[st.next_index:st.next_index + horizon]:
+        for item in st.plan[st.next_index:]:
+            if getattr(item, "kind", "move") != "move":
+                continue
+            frm = getattr(item, "from_node", None)
+            to = None
             for attr in ("to_node", "to", "node"):
-                value = getattr(item, attr, None)
-                if value is not None:
-                    nodes.append(str(value))
+                to = getattr(item, attr, None)
+                if to is not None:
                     break
-        return nodes
+            if to is None:
+                continue
+            en = self._entry_on_edge(frm, to) if frm is not None else None
+            for node in ([str(en)] if en is not None else []) + [str(to)]:
+                if not nodes or nodes[-1] != node:
+                    nodes.append(node)
+            if len(nodes) >= horizon:
+                break
+        return nodes[:horizon]
 
     def _next_grid_waypoint(self, robot: str):
         """The next lattice node the robot still has to reach, or None."""
@@ -2348,7 +2854,8 @@ class DispatchAdvisor:
         makespan = max(sim.end_sec for sim in fleet.values())
         return {name: makespan - sim.end_sec for name, sim in fleet.items()}
 
-    def resolve_deadlock(self, cycle: list, now_sec: float):
+    def resolve_deadlock(self, cycle: list, now_sec: float, can_yield=None,
+                         drives_straight=None):
         """Pick ONE robot to step aside so a wait-for cycle unwinds.
 
         One is provably enough for any cycle length: a wait-for cycle is a
@@ -2364,7 +2871,13 @@ class DispatchAdvisor:
         reproducibility matters more here than fairness. Returns
         None when no member has a legal move, in which case the caller's
         existing abort is the correct fallback.
+
+        drives_straight(robot, node): the supervisor's answer to "is this
+        robot already pointing at `node`, with a clear drive there?" -- it
+        knows headings, the advisor does not. A robot with no room to turn
+        where it stands may still leave straight ahead (see _yield_move).
         """
+        self.__dict__["_drives_straight"] = drives_straight
         members = [r for r in cycle if r in self.robots]
         if len(members) < 2:
             return None
@@ -2383,11 +2896,23 @@ class DispatchAdvisor:
         homeward = {r: self.is_returning_to_depot(r) for r in members}
         order = sorted(members,
                        key=lambda r: (not homeward[r], -slack.get(r, 0.0), r))
-        for robot in order:
-            blocked = self._cycle_successor(cycle, robot)
-            plan = self._yield_move(robot, blocked, occupied, slack)
-            if plan is not None:
-                return plan
+        # Reversing is the LAST resort (operator, 2026-10-30: "if there are
+        # no other available movements"): every member is tried forwards
+        # first, and only then may a robot with no room to turn back out.
+        for allow_reverse in (False, True):
+            self.__dict__["_yield_reverse"] = allow_reverse
+            for robot in order:
+                # The supervisor's veto: a robot not physically on the node
+                # the plan has it on cannot "step from its node" -- a yield
+                # from there is a diagonal drive across the grid (2026-10-16).
+                if can_yield is not None and not can_yield(robot):
+                    continue
+                blocked = self._cycle_successor(cycle, robot)
+                plan = self._yield_move(robot, blocked, occupied, slack)
+                if plan is not None:
+                    return plan
+            if drives_straight is None:
+                break
         return None
 
     @staticmethod
@@ -2417,44 +2942,136 @@ class DispatchAdvisor:
         if st is None or st.current_node is None:
             return None
         here = st.current_node
-        avoid = set(self._planned_nodes(blocked, horizon=3))
+        rows, cols = self.rows, self.cols
+        # The blocked robot's next YIELD_LOOKAHEAD nodes...
+        avoid = set(self._planned_nodes(blocked, horizon=self.YIELD_LOOKAHEAD))
+        # ...and every node inside the turning circle of a bay entry on that
+        # path. Standing there does not block the blocked robot's PATH, it
+        # blocks the TURN it has to make at the entry, so the yield just
+        # relocates the standoff. 2026-10-16: Alvik2 backed out of entry 137
+        # to 36 (5.00in away) to let Alvik3 through 137 into bay 88 -- which
+        # needs a turn at 137, inside a 5.625in sweep of 36. Refused here,
+        # the resolver falls through to the robot that CAN step clear.
+        # A bay's workstation only matters if the blocked robot is going INTO
+        # that bay: a robot parked there is 4.99in from the entry, and a
+        # lane robot passes over the entry with 0.99in to spare.
+        swept = set()
+        for node in avoid:
+            swept |= {str(n) for n in (entry_rotation_footprint(node, rows, cols)
+                                       or ()) if not is_workstation_node(n, rows, cols)
+                      or str(n) in avoid}
+        avoid |= swept
+        others = {o: set(self._planned_nodes(o, horizon=3))
+                  for o in self.robots if o not in (robot, blocked)}
 
-        flank = entry_edge_nodes(here, self.rows, self.cols)
-        if flank is not None:
-            # On a bay entry. The blocked robot may want this very corridor,
-            # or the bay behind it; either way the entry must be vacated
-            # completely rather than shuffled along.
-            for target in flank:
-                key = str(target)
-                if key in occupied:
+        def edge_clear(a, b) -> bool:
+            en = self._entry_on_edge(a, b)
+            return en is None or str(en) not in occupied
+
+        def can_turn_at(node) -> bool:
+            # A yield turns at every node it stands on (out, mid, and the
+            # 180 home). Inside a bay entry's 5.625in sweep there is no room
+            # if anyone else is there -- the rotation gate would hold the
+            # turn and the yield would fail on its short deadline.
+            near = set(entry_rotation_footprint(node, rows, cols) or ())
+            near |= set(self._entries_around(node))
+            return not any(occupied.get(str(n)) not in (None, robot)
+                           for n in near)
+
+        on_entry = entry_edge_nodes(here, rows, cols) is not None
+        firsts = (list(entry_edge_nodes(here, rows, cols)) if on_entry
+                  else self._grid_neighbours(here))
+        # NO ROOM TO TURN HERE (a robot within 5.625in -- typically the pair
+        # entry + flank, 5.00in apart). There is no reverse gear, but a
+        # robot already POINTING at a free node can drive straight out with
+        # no rotation at all: along the lane, or from an entry into its own
+        # workstation, which blocks nobody. Operator, 2026-10-30: such a pair
+        # must be resolved, not left to the abort. Only if neither robot
+        # faces anywhere free is the abort the answer.
+        straight_only = not can_turn_at(here)
+        reverse = bool(self.__dict__.get("_yield_reverse")) and straight_only
+        if straight_only:
+            drives = self.__dict__.get("_drives_straight")
+            if drives is None:
+                return None
+            if on_entry:
+                ws = next((n for n in (entry_rotation_footprint(here, rows, cols)
+                                       or ()) if is_workstation_node(n, rows, cols)),
+                          None)
+                if ws is not None:
+                    firsts = firsts + [ws]
+
+            def straight(f) -> bool:
+                if not reverse:
+                    return bool(drives(robot, f))
+                # Second pass: straight BACK to a free node behind it.
+                try:
+                    return bool(drives(robot, f, reverse=True))
+                except TypeError:            # a caller without reverse support
+                    return False
+
+            firsts = [f for f in firsts if straight(f)]
+            if not firsts:
+                return None
+        elif self.__dict__.get("_yield_reverse"):
+            return None      # the forward pass already judged this robot
+        # Compare EVERY spot within two hops, on both robots' routes:
+        #   * a spot must be free, off the blocked robot's next nodes and
+        #     out of the turns it makes there, and somewhere this robot can
+        #     turn back from;
+        #   * a two-hop spot passes THROUGH a node the blocked robot will
+        #     need -- fine, it is waiting -- as long as nobody stands there;
+        #   * cost = hops out and back + how far the spot leaves this robot
+        #     from its own next waypoint + a penalty for parking on a node a
+        #     third robot needs next.
+        # 2026-10-30: the only one-hop spots for Alvik6 on entry 122 were 18
+        # and 19, both inside Alvik1's path or turn; 122 -> 19 -> 11 (or 27)
+        # clears both, and was never considered.
+        goal = self._next_grid_waypoint(robot)
+        options = []
+        for first in firsts:
+            f = str(first)
+            if f in occupied or not edge_clear(here, first):
+                continue
+            if f not in avoid and can_turn_at(first):
+                options.append(((first,), 1))
+            if not can_turn_at(first):
+                continue
+            for second in self._grid_neighbours(first):
+                s = str(second)
+                if (s in occupied or s in avoid or s == str(here)
+                        or not edge_clear(first, second)
+                        or not can_turn_at(second)):
                     continue
-                if key in avoid:
-                    # Backing into the blocked robot's own path just moves
-                    # the conflict one node along.
-                    continue
-                return YieldPlan(
-                    robot=robot, kind="backtrack", from_node=here,
-                    to_node=target, blocked_robot=blocked,
-                    reason=(f"{robot} holds bay entry {here} that {blocked} "
-                            f"needs; backing out to {target} "
-                            f"(slack {slack.get(robot, 0.0):.1f}s)"))
+                options.append(((first, second), 2))
+        if not options:
             return None
 
-        # Among the legal neighbours, take the one that costs the yielder
-        # least: fewest extra steps back to where it was already going. A
-        # free neighbour in the wrong direction resolves the deadlock just as
-        # well but pays for it twice, once stepping out and again coming back.
-        legal = [t for t in self._grid_neighbours(here)
-                 if str(t) not in occupied and str(t) not in avoid]
-        goal = self._next_grid_waypoint(robot)
-        legal.sort(key=lambda t: (self._lattice_distance(t, goal), int(t)))
-        for target in legal:
-            return YieldPlan(
-                robot=robot, kind="sidestep", from_node=here,
-                to_node=target, blocked_robot=blocked,
-                reason=(f"{robot} steps aside {here}->{target} to clear "
-                        f"{blocked} (slack {slack.get(robot, 0.0):.1f}s)"))
-        return None
+        def cost(option):
+            hops, n = option
+            target = hops[-1]
+            third = sum(1 for nodes in others.values()
+                        if any(str(h) in nodes for h in hops))
+            return (2 * n + self._lattice_distance(target, goal)
+                    + self.YIELD_THIRD_PARTY_COST * third, n, int(target))
+
+        hops, n = min(options, key=cost)
+        target = hops[-1]
+        via = f" via {hops[0]}" if n == 2 else ""
+        if straight_only:
+            via += (" (no room to turn: REVERSING out)" if reverse
+                    else " (no room to turn: straight out)")
+        if on_entry:
+            kind = "backtrack"
+            reason = (f"{robot} holds bay entry {here} that {blocked} needs; "
+                      f"backing out to {target}{via}")
+        else:
+            kind = "sidestep"
+            reason = f"{robot} steps aside {here}->{target}{via} to clear {blocked}"
+        return YieldPlan(robot=robot, kind=kind, from_node=here,
+                         to_node=target, blocked_robot=blocked,
+                         reason=f"{reason} (slack {slack.get(robot, 0.0):.1f}s)",
+                         via=hops[0] if n == 2 else None, reverse=reverse)
 
     def deadlock_cycles(self) -> list[list[str]]:
         """Every distinct wait-for cycle currently held, each as a sorted

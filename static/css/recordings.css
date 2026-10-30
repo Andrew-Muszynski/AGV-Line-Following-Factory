@@ -1,0 +1,297 @@
+/* Page 6 · Recordings — saved run videos and their player, plus the
+   Recording row on Run & Monitor. Same visual language as the rest of the
+   app: white panels, #d8deea borders, blue for selection, the dispatch
+   log's #10151d for the video stage. */
+
+/* ---- view switching: the same pure-CSS pattern as Pages 4 and 5 -------- */
+body[data-view="setup"] .v-recordings,
+body[data-view="plan"] .v-recordings,
+body[data-view="run"] .v-recordings,
+body[data-view="metrics"] .v-recordings,
+body[data-view="definitions"] .v-recordings { display: none !important; }
+body[data-view="recordings"] .v-setup,
+body[data-view="recordings"] .v-plan,
+body[data-view="recordings"] .v-run,
+body[data-view="recordings"] .v-plan-run,
+body[data-view="recordings"] .v-metrics,
+body[data-view="recordings"] .v-definitions,
+body[data-view="recordings"] .grid-panel { display: none !important; }
+body[data-view="recordings"] main { grid-template-columns: 1fr; }
+#recordings-page {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+/* ---- Run & Monitor: Recording row --------------------------------------- */
+input.rec-label-input {
+  width: 260px;
+  max-width: 100%;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+#rec-status.rec-live { color: #b91c1c; font-weight: 600; }
+#rec-status.rec-warn { color: #b45309; }
+.rec-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #dc2626;
+  vertical-align: middle;
+  animation: rec-blink 1.2s steps(2, start) infinite;
+}
+@keyframes rec-blink { to { visibility: hidden; } }
+@media (prefers-reduced-motion: reduce) {
+  .rec-dot { animation: none; }
+}
+
+/* ---- layout --------------------------------------------------------------- */
+.rec-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .rec-layout { grid-template-columns: 1fr; }
+}
+
+/* ---- library -------------------------------------------------------------- */
+.rec-library {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: sticky;
+  top: 64px;
+  max-height: calc(100vh - 80px);
+}
+@media (max-width: 900px) {
+  .rec-library { position: static; max-height: 420px; }
+}
+.rec-library-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.rec-library-head h2 { margin: 0; font-size: 18px; }
+.rec-library-head button { padding: 5px 10px; font-size: 12px; }
+.rec-count {
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.rec-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 120px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+button.rec-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #e0e6f0;
+  border-radius: 6px;
+  background: #fff;
+  color: #172033;
+  font-size: 12px;
+  font-weight: 400;
+  text-align: left;
+}
+button.rec-item:hover { border-color: #94a3b8; }
+button.rec-item:focus-visible { outline: 2px solid #2563eb; outline-offset: 1px; }
+button.rec-item.active { border-color: #2563eb; background: #eff4ff; }
+.rec-item-title { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.rec-item-sub,
+.rec-item-meta {
+  grid-column: 1 / -1;
+  color: #516070;
+  font-variant-numeric: tabular-nums;
+}
+.rec-item-meta { color: #64748b; font-size: 11px; }
+.rec-pill {
+  align-self: start;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.rec-pill-recording { background: #fee2e2; color: #b91c1c; }
+.rec-pill-failed,
+.rec-pill-interrupted { background: #fef3c7; color: #92400e; }
+.rec-storage { margin: 0; font-size: 11px; overflow-wrap: anywhere; }
+.rec-live-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #fca5a5;
+  border-radius: 6px;
+  background: #fef2f2;
+  color: #7f1d1d;
+  font-size: 12px;
+}
+.rec-live-banner[hidden] { display: none; }
+.rec-live-banner button { padding: 4px 9px; font-size: 12px; }
+
+/* ---- viewer --------------------------------------------------------------- */
+.rec-viewer { min-width: 0; }
+.rec-viewer [hidden] { display: none !important; }
+.rec-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.rec-head button { padding: 6px 11px; font-size: 13px; }
+input.rec-title-input {
+  flex: 1 1 280px;
+  width: auto;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  font-size: 18px;
+  font-weight: 700;
+}
+input.rec-title-input:hover { border-color: #d8deea; }
+input.rec-title-input:focus {
+  border-color: #2563eb;
+  background: #fff;
+  outline: none;
+  box-shadow: 0 0 0 2px #dbeafe;
+}
+button.rec-delete:hover { background: #fee2e2; color: #b42318; }
+.rec-stage {
+  position: relative;
+  aspect-ratio: 960 / 568;
+  overflow: hidden;
+  border-radius: 6px;
+  background: #10151d;
+}
+.rec-stage video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #10151d;
+}
+/* Side by side: the two cameras share the stage width. */
+.rec-stage.cam-both {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  aspect-ratio: auto;
+}
+.rec-stage.cam-both video { height: auto; aspect-ratio: 16 / 9; object-fit: contain; }
+.rec-stage-note {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 24px;
+  color: #e2e8f0;
+  font-size: 14px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+/* Timeline: the run's span as a band, events as ticks, a playhead. */
+.rec-timeline {
+  position: relative;
+  height: 26px;
+  margin-top: 8px;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  background: #f1f5f9;
+  cursor: pointer;
+}
+.rec-run-span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: #dbe4f3;
+}
+.rec-tick {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  width: 3px;
+  margin-left: -1px;
+  border-radius: 1px;
+}
+.rec-tick-safety { background: #b42318; }
+.rec-tick-progress { top: 8px; bottom: 8px; background: #2563eb; opacity: 0.6; }
+.rec-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: #172033;
+  pointer-events: none;
+}
+.rec-controls { margin-top: 8px; }
+.rec-controls button { padding: 5px 10px; font-size: 12px; }
+.rec-gap { margin-left: 12px; }
+.rec-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #334155;
+  font-size: 12px;
+}
+.rec-check input { width: auto; margin: 0; }
+.rec-key {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+.rec-key-safety { background: #b42318; }
+.rec-key-progress { background: #2563eb; opacity: 0.6; }
+
+/* Run + recording facts. */
+.rec-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 10px 16px;
+  margin: 14px 0;
+}
+.rec-meta div { min-width: 0; }
+.rec-meta dt {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.rec-meta dd {
+  margin: 2px 0 0;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.rec-meta dd.rec-bad { color: #b42318; font-weight: 600; }
+
+/* Event list: click a row to jump there. */
+.rec-events-wrap { max-height: 320px; }
+.rec-events-wrap td { padding-top: 4px; padding-bottom: 4px; font-size: 12px; }
+#rec-events tr { cursor: pointer; }
+#rec-events tr:hover td { background: #f8fafc; }
+#rec-events tr.rec-now td { background: #eff4ff; }
+#rec-events tr.rec-ev-safety td:nth-child(3) { color: #b42318; font-weight: 600; }

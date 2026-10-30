@@ -15,17 +15,31 @@ def _vision_execute_method() -> ast.FunctionDef:
     raise AssertionError("VisionLegWorker._execute not found")
 
 
-def test_live_supervisor_uses_fast_rotate_rel_at_all_turn_sites():
-    method = _vision_execute_method()
-    called_methods = [
-        node.func.attr
-        for node in ast.walk(method)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-    ]
+def _worker_methods() -> dict:
+    tree = ast.parse((ROOT / "fleet" / "fleetSupervisor.py").read_text())
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "VisionLegWorker":
+            return {c.name: c for c in node.body if isinstance(c, ast.FunctionDef)}
+    raise AssertionError("VisionLegWorker not found")
 
-    # Departure-after-dwell, arrival square-up, and turn-toward-next-leg.
-    assert called_methods.count("turn_to_heading_rotate_rel") == 3
-    assert "turn_to_heading" not in called_methods
+
+def _calls(fn) -> list:
+    return [n.func.attr for n in ast.walk(fn)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+
+
+def test_live_supervisor_uses_fast_rotate_rel_at_all_turn_sites():
+    # Every turn goes through VisionLegWorker._turn() (2026-10-16: it also
+    # releases the rotation claim), and _turn() is the fast rotate path.
+    # Sites in _execute: turn after dwell, yield departure, arrival square-up,
+    # turn toward the next leg; _ready_to_depart() adds the departure turn
+    # for a robot not pointed down its leg.
+    methods = _worker_methods()
+    assert _calls(methods["_turn"]).count("turn_to_heading_rotate_rel") == 1
+    assert _calls(_vision_execute_method()).count("_turn") == 4
+    assert "_turn" in _calls(methods["_ready_to_depart"])
+    for name, fn in methods.items():
+        assert "turn_to_heading" not in _calls(fn), name
 
 
 def test_live_supervisor_accepts_four_degree_turn_tolerance():

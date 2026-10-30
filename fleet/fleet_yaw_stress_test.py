@@ -735,7 +735,7 @@ def main() -> None:
                           "assignment table after the run)")
     ap.add_argument("--outdir", default=None,
                      help="output directory for per-robot CSVs + SUMMARY.md "
-                          "(default: fleet_yaw_stress_<timestamp>/)")
+                          "(default: data/yaw_stress/fleet_yaw_stress_<timestamp>/)")
     args = ap.parse_args()
 
     robots = [r.strip() for r in args.robots.split(",") if r.strip()]
@@ -747,7 +747,12 @@ def main() -> None:
 
     robot_modes = {robot: LATIN_SQUARE[i] for i, robot in enumerate(robots)}
 
-    outdir = args.outdir or f"fleet_yaw_stress_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    # Runs land under data/yaw_stress/ rather than the working directory, so
+    # repeated stress tests do not litter the repo root. Relative to the CWD,
+    # matching how camera_grid_navigate.py writes runs_linux/.
+    outdir = args.outdir or os.path.join(
+        "data", "yaw_stress",
+        f"fleet_yaw_stress_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
     os.makedirs(outdir, exist_ok=True)
     print(f"Output directory: {outdir}")
     print(f"Robots: {', '.join(robots)}")

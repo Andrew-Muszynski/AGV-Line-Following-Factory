@@ -116,9 +116,26 @@ case "$role" in
       echo "LLM advisor: ON  -> $OLLAMA_URL"
     fi
     echo "metrics -> $METRICS_URL"
+    # TURN METHOD. Inherited from this shell, so an A/B needs no code edit:
+    #   AGV_TURN_METHOD=rotate_rel bash tools/run_role_linux.sh supervisor
+    # Announced loudly because the one unrecoverable mistake in a paired
+    # comparison is running an arm and not knowing which arm it was. The
+    # value is also captured into the run row (fleet/tuning_snapshot.py),
+    # and a typo is rejected here rather than silently falling through to
+    # the code default.
+    if [ -n "${AGV_TURN_METHOD:-}" ]; then
+      case "$AGV_TURN_METHOD" in
+        staged|rotate_rel|wheel) ;;
+        *) die "AGV_TURN_METHOD='$AGV_TURN_METHOD' is not one of: staged, rotate_rel, wheel" ;;
+      esac
+      echo "turn method -> $AGV_TURN_METHOD   (ENV OVERRIDE, fleet-wide)"
+    else
+      echo "turn method -> staged   (code default)"
+    fi
     echo
     # No exec: the tee pipeline has to stay in this shell.
     OLLAMA_URL="$OLLAMA_URL" METRICS_URL="$METRICS_URL" \
+      AGV_TURN_METHOD="${AGV_TURN_METHOD:-}" \
       python3 -u fleetSupervisor.py --listen $llm_flag 2>&1 \
       | tee -a "$SUPERVISOR_LOG"
     ;;

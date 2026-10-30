@@ -281,7 +281,12 @@ function metricsMaybeCloseFinishedRun() {
   const note = String(live.note || "");
   const erroredMatch = note.match(/errored=\[(.*?)\]/);
   const hadErrors = erroredMatch ? erroredMatch[1].trim().length > 0 : false;
-  const status = hadErrors ? "failed" : "completed";
+  // "Nobody errored" is not "everybody finished": a collision abort ends with
+  // complete=[] errored=[] (2026-10-23). Completed needs robots that
+  // completed; the server also refuses to override a logged abort/failure.
+  const completeMatch = note.match(/complete=\[(.*?)\]/);
+  const anyComplete = completeMatch ? completeMatch[1].trim().length > 0 : false;
+  const status = (!hadErrors && anyComplete) ? "completed" : "failed";
   const runId = _mSessionRunId;
   (async () => {
     try {
@@ -327,11 +332,14 @@ async function metricsViewShown() {
 
 // ---- run registration from the dispatch flow ------------------------------
 
-function metricsConditionTag(schedule, driveMode) {
+function metricsConditionTag(schedule, driveMode, trafficMethod) {
   const ws = (schedule.workstations || []).length;
   const rpd = schedule.rpd && schedule.rpd.enabled
     ? `-rpd${schedule.rpd.process_sec}s` : "";
-  return `${schedule.agents}r-${ws}ws-${driveMode}${rpd}`;
+  // A DOE traffic planner is part of the condition; the page's own plan keeps
+  // the tag it always had, so earlier runs still group with it.
+  const traffic = trafficMethod && trafficMethod !== "page" ? `-${trafficMethod}` : "";
+  return `${schedule.agents}r-${ws}ws-${driveMode}${rpd}${traffic}`;
 }
 
 async function metricsCreateRunForMission(mission) {
@@ -339,7 +347,11 @@ async function metricsCreateRunForMission(mission) {
   const jobCount = (schedule.routes || []).reduce(
     (sum, r) => sum + ((r.visits || []).length), 0);
   const payload = {
-    experimental_condition: metricsConditionTag(schedule, mission.drive_mode),
+    experimental_condition: metricsConditionTag(schedule, mission.drive_mode,
+                                                mission.traffic_method),
+    // Which traffic planner produced the dispatched routes -- the DOE's
+    // treatment, kept in its own column (runs.traffic_method).
+    traffic_method: mission.traffic_method || "page",
     algorithm: state.planSource ||
       (document.getElementById("route-mode") || {}).value || "built-in",
     drive_mode: mission.drive_mode,
@@ -356,9 +368,19 @@ async function metricsCreateRunForMission(mission) {
   // arming twice otherwise leaves the first row orphaned, and telemetry that
   // arrives between the two arms attaches to a run nothing will ever finish.
   if (_mSessionRunId) payload.reuse_run_id = _mSessionRunId;
+  // The saved plan these routes came from, if they are still on screen.
+  if (state.loadedPlanFile && state.routes === state.loadedPlanRoutes) {
+    payload.plan_file = state.loadedPlanFile;
+  }
+  // Name for this run's video (Run & Monitor > Recording). The backend's
+  // recorder holds it until the run starts; cleared here once it is sent.
+  const recLabel = document.getElementById("rec-label");
+  if (recLabel && recLabel.value.trim()) payload.video_label = recLabel.value.trim();
   const data = await metricsFetch("/api/runs", { method: "POST", body: payload });
   _mSessionRunId = data.run_id;
   _mSelectedRunId = data.run_id;
+  if (recLabel && payload.video_label) recLabel.value = "";
+  if (typeof recorderPoll === "function") recorderPoll();
   return { run_id: data.run_id, metrics_url: METRICS_SUPERVISOR_URL };
 }
 
@@ -429,6 +451,11 @@ async function metricsLoadSelectedRun() {
     return;
   }
   const run = _mRuns.find((r) => r.run_id === _mSelectedRunId) || {};
+  const watch = document.getElementById("metrics-watch-video");
+  if (watch) {
+    watch.style.display = run.video_id ? "" : "none";
+    watch.dataset.video = run.video_id || "";
+  }
   if (badge) badge.innerHTML = mStatusBadge(_mMetrics.run_status, _mMetrics.provisional);
   if (hint) {
     hint.textContent =
@@ -498,6 +525,7 @@ function metricsRenderKpis() {
   const makespan = val("actual_makespan_sec");
   const observed = val("observed_duration_sec");
   const jc = v("job_completion_rate");
+  const wc = v("workstation_completion_rate");
   const bothBatt = val("battery_drain_per_job_pct");
   const energyJob = val("energy_per_job_wh");
   const livePhase = metricsIsLiveSelectedRun() ? metricsLiveSupervisorPhase() : null;
@@ -510,8 +538,13 @@ function metricsRenderKpis() {
     { label: "actual makespan", value: makespan !== null ? mFmtSec(makespan)
         : observed !== null ? `${mFmtSec(observed)} observed` : "—",
       sub: makespan === null && observed !== null ? "incomplete run — not a makespan" : "" },
-    { label: "completed jobs",
-      value: jc && jc.denominator ? `${mFmt(jc.numerator)}/${mFmt(jc.denominator)}` : "—" },
+    // Workstations, not jobs, lead: with pickup-and-delivery each bay is two
+    // jobs (drop + pick-up), so "48/48 jobs" read as 48 bays (2026-10-30).
+    { label: "workstations completed",
+      value: wc && wc.denominator ? `${mFmt(wc.numerator)}/${mFmt(wc.denominator)}`
+        : jc && jc.denominator ? `${mFmt(jc.numerator)}/${mFmt(jc.denominator)} jobs` : "—",
+      sub: wc && wc.denominator && jc && jc.denominator
+        ? `${mFmt(jc.numerator)}/${mFmt(jc.denominator)} jobs (drop + pick-up visits)` : "" },
     { label: "throughput", value: val("throughput_jobs_per_min") !== null
         ? `${mFmt(val("throughput_jobs_per_min"))} jobs/min` : "—" },
     { label: "fleet productive utilization",
@@ -564,6 +597,7 @@ function metricsBuildFilters() {
     <label>Drive mode <select id="mf-drive_mode"><option value="">any</option>
       <option value="vision">vision (camera only)</option>
       <option value="color">color sensor</option></select></label>
+    <label>Traffic planner <select id="mf-traffic_method"><option value="">any</option></select></label>
     <label>Fleet size <input id="mf-robot_count" type="number" min="1" max="6"></label>
     <label>Robot <select id="mf-robot"><option value="">any</option>${robotOptions}</select></label>
     <label>Run status <select id="mf-status"><option value="">any</option>
@@ -590,6 +624,7 @@ function metricsBuildFilters() {
       <option value="experimental_condition">condition</option>
       <option value="algorithm">algorithm</option>
       <option value="drive_mode">drive mode</option>
+      <option value="traffic_method">traffic planner</option>
       <option value="robot_count">fleet size</option>
       <option value="random_seed">seed</option></select></label>`;
 }
@@ -597,7 +632,8 @@ function metricsBuildFilters() {
 function metricsFilterQuery() {
   const params = new URLSearchParams();
   const fields = ["run_id", "date_from", "date_to", "experimental_condition",
-                  "algorithm", "drive_mode", "robot_count", "robot", "status",
+                  "algorithm", "drive_mode", "traffic_method", "robot_count",
+                  "robot", "status",
                   "outcome", "workstation_count", "process_sec", "random_seed"];
   for (const f of fields) {
     const el = document.getElementById(`mf-${f}`);
@@ -631,6 +667,22 @@ async function metricsLoadHistory() {
   metricsRenderHistory();
 }
 
+// Planned vs actual makespan. The planner's own prediction is stored on
+// every run (runs.planned_makespan_sec), so the sim-to-real error is already
+// in the database -- it was simply never shown next to the measured number.
+// Null unless BOTH exist: an attempt that never finished has no makespan to
+// compare, and showing a delta against the attempt duration would invent a
+// result.
+function mPlanDelta(run) {
+  const planned = run.planned_makespan_sec;
+  const mv = run.metrics ? run.metrics.actual_makespan_sec : null;
+  const actual = mv && mv.value !== null && mv.value !== undefined ? mv.value : null;
+  if (planned === null || planned === undefined || !planned || actual === null) {
+    return null;
+  }
+  return { sec: actual - planned, pct: 100.0 * (actual - planned) / planned };
+}
+
 function metricsRenderHistory() {
   const box = document.getElementById("metrics-history");
   if (!box || !_mHistory) return;
@@ -646,6 +698,14 @@ function metricsRenderHistory() {
       return r.attempt_sec === null || r.attempt_sec === undefined
         ? -Infinity : r.attempt_sec;
     }
+    if (_mSort.key === "planned_makespan_sec") {
+      const v = r.planned_makespan_sec;
+      return v === null || v === undefined ? -Infinity : v;
+    }
+    if (_mSort.key === "plan_delta_pct") {
+      const d = mPlanDelta(r);
+      return d === null ? -Infinity : d.pct;
+    }
     return r[_mSort.key] ?? "";
   };
   runs.sort((a, b) => {
@@ -653,53 +713,96 @@ function metricsRenderHistory() {
     return (va < vb ? -1 : va > vb ? 1 : 0) * _mSort.dir;
   });
 
+  // [key, label, align] -- the align is emitted on the HEADER as well as the
+  // cell. They used to disagree: every th was centred while the body cells
+  // were left, centred or right by class, so no header sat over its own
+  // column.
   const cols = [
-    ["created_at_utc", "Created (ET)"], ["run_id", "Run"],
-    ["status", "Status"], ["experimental_condition", "Condition"],
-    ["algorithm", "Algorithm"], ["drive_mode", "Drive"],
-    ["robot_count", "Robots"],
+    ["created_at_utc", "Created (ET)", "left"],
+    ["run_id", "Run", "left"],
+    ["video_id", "Video", "center"],
+    ["status", "Status", "center"],
+    ["experimental_condition", "Condition", "left"],
+    ["algorithm", "Algorithm", "left"],
+    ["drive_mode", "Drive", "center"],
+    ["traffic_method", "Traffic", "center"],
+    ["robot_count", "Robots", "center"],
     // Next to makespan on purpose: for a completed run the two agree, and
     // for every other run makespan is blank while this says how far it got.
-    ["attempt_sec", "Attempt (s)"],
-    ["m:actual_makespan_sec", "Makespan (s)"],
-    ["m:throughput_jobs_per_min", "Jobs/min"],
-    [`m:${chartKey}`, mTitleCase(chartKey.replace(/_/g, " "))],
+    ["attempt_sec", "Attempt (s)", "num"],
+    // Planned, measured and the gap between them, adjacent and in that
+    // order, because the gap is the sim-to-real result and reading it off
+    // two distant columns is what made the discrepancy easy to miss.
+    ["planned_makespan_sec", "Planned (s)", "num"],
+    ["m:actual_makespan_sec", "Makespan (s)", "num"],
+    ["plan_delta_pct", "\u0394 vs plan", "num"],
+    ["m:throughput_jobs_per_min", "Jobs/min", "num"],
+    // Time lost to deadlock is the cost this testbed's coordination layer
+    // exists to avoid, so it belongs in the comparison table rather than
+    // three clicks down a tab.
+    ["m:total_deadlock_sec", "Deadlock (s)", "num"],
+    [`m:${chartKey}`, mTitleCase(chartKey.replace(/_/g, " ")), "num"],
   ];
   const seen = new Set();
   const uniqueCols = cols.filter(([k]) => !seen.has(k) && seen.add(k));
-  const head = uniqueCols.map(([key, label]) => {
-    const cls = _mSort.key === key ? (_mSort.dir > 0 ? "sorted-asc" : "sorted-desc") : "";
-    return `<th class="${cls}" data-sort="${escapeHtml(key)}">${escapeHtml(label)}</th>`;
+  const head = uniqueCols.map(([key, label, align]) => {
+    const sorted = _mSort.key === key ? (_mSort.dir > 0 ? " sorted-asc" : " sorted-desc") : "";
+    return `<th class="col-${align}${sorted}" data-sort="${escapeHtml(key)}" `
+      + `scope="col">${escapeHtml(label)}</th>`;
   }).join("");
   const body = runs.map((r) => {
-    const cells = uniqueCols.map(([key]) => {
-      if (key === "created_at_utc") return `<td>${escapeHtml(mFmtEastern(r.created_at_utc))}</td>`;
-      if (key === "run_id") return `<td title="${escapeHtml(r.run_id)}">${escapeHtml(mShortId(r.run_id))} `
+    const cells = uniqueCols.map(([key, , align]) => {
+      const ac = `col-${align}`;
+      if (key === "created_at_utc") return `<td class="${ac}">${escapeHtml(mFmtEastern(r.created_at_utc))}</td>`;
+      if (key === "run_id") return `<td class="${ac}" title="${escapeHtml(r.run_id)}">${escapeHtml(mShortId(r.run_id))} `
         + `<a href="/api/export/run/${escapeHtml(r.run_id)}.json" download title="download full run JSON">⇩</a> `
         + `<a href="#" class="run-csv-link" data-run="${escapeHtml(r.run_id)}" title="read this run's CSV here">CSV</a></td>`;
+      if (key === "video_id") {
+        return r.video_id
+          ? `<td class="${ac}"><a href="#" class="run-video-link" data-video="${escapeHtml(String(r.video_id))}" title="Play this run's video on the Recordings page">Watch</a></td>`
+          : `<td class="${ac} muted">—</td>`;
+      }
       if (key === "status") {
         const st = String(r.status || "unknown");
-        return `<td class="center"><span class="run-status run-status-${escapeHtml(st)}">`
+        return `<td class="${ac}"><span class="run-status run-status-${escapeHtml(st)}">`
           + `${escapeHtml(st)}</span></td>`;
       }
       if (key === "attempt_sec") {
         const v = r.attempt_sec;
-        return `<td class="num">${v === null || v === undefined ? "—" : escapeHtml(v.toFixed(1))}</td>`;
+        return `<td class="${ac}">${v === null || v === undefined ? "—" : escapeHtml(v.toFixed(1))}</td>`;
+      }
+      if (key === "planned_makespan_sec") {
+        const v = r.planned_makespan_sec;
+        return `<td class="${ac} plan-cell">`
+          + `${v === null || v === undefined ? "—" : escapeHtml(v.toFixed(1))}</td>`;
+      }
+      if (key === "plan_delta_pct") {
+        const d = mPlanDelta(r);
+        if (d === null) return `<td class="${ac} muted">—</td>`;
+        // Over the prediction is the interesting direction, so it is the one
+        // that gets colour; under-plan is good news and stays quiet.
+        const cls = d.pct > 10 ? "plan-over" : d.pct < -10 ? "plan-under" : "";
+        const sign = d.sec >= 0 ? "+" : "\u2212";
+        return `<td class="${ac} ${cls}" title="${escapeHtml(sign + Math.abs(d.sec).toFixed(1))} s vs plan">`
+          + `${sign}${escapeHtml(Math.abs(d.pct).toFixed(1))}%</td>`;
       }
       if (key === "algorithm") {
         const v = String(r.algorithm ?? "—");
-        return `<td class="algo" title="${escapeHtml(v)}">${escapeHtml(v)}</td>`;
+        return `<td class="${ac} algo" title="${escapeHtml(v)}">${escapeHtml(v)}</td>`;
       }
-      if (key === "drive_mode" || key === "robot_count") {
-        return `<td class="center">${escapeHtml(String(r[key] ?? "—"))}</td>`;
+      if (key === "drive_mode" || key === "robot_count" || key === "traffic_method") {
+        return `<td class="${ac}">${escapeHtml(String(r[key] ?? "—"))}</td>`;
       }
       if (key.startsWith("m:")) {
         const mv = r.metrics[key.slice(2)];
         const text = mv && mv.value !== null ? mFmt(mv.value) : "—";
-        const cls = mv && mv.status === "missing" ? "metrics-value-missing" : "";
-        return `<td class="num ${cls}">${escapeHtml(text)}</td>`;
+        const cls = !mv ? ""
+          : mv.status === "missing" ? "metrics-value-missing"
+          : mv.status === "n/a" || mv.status === "not_instrumented"
+            ? "metrics-value-na" : "";
+        return `<td class="${ac} ${cls}">${escapeHtml(text)}</td>`;
       }
-      return `<td>${escapeHtml(String(r[key] ?? "—"))}</td>`;
+      return `<td class="${ac}">${escapeHtml(String(r[key] ?? "—"))}</td>`;
     }).join("");
     const sel = r.run_id === _mSelectedRunId ? " selected" : "";
     return `<tr class="run-row${sel}" data-run="${escapeHtml(r.run_id)}" `
@@ -709,12 +812,12 @@ function metricsRenderHistory() {
   const aggHtml = metricsAggregatesHtml(chartKey);
   box.innerHTML = `
     <h3 style="margin:14px 0 6px; font-size:14px;">Run history (${runs.length})</h3>
-    <div class="metrics-table-wrap"><table>
+    <div class="metrics-table-wrap scroll"><table>
       <thead><tr>${head}</tr></thead><tbody>${body ||
         `<tr><td colspan="${uniqueCols.length}" class="muted">No runs match these filters.</td></tr>`}</tbody>
     </table></div>
     ${metricsHiddenNoteHtml()}
-    <p class="metrics-note">Click a column to sort; click a row to load that run into the cards above and keep it highlighted. ⇩ downloads the full run JSON; CSV opens that run's CSV in a window.</p>
+    <p class="metrics-note">Click a column to sort; click a row to load that run into the cards above and keep it highlighted. ⇩ downloads the full run JSON; CSV opens that run's CSV in a window; Watch plays the run's video on the Recordings page.</p>
     <div class="metrics-chart-grid">
       <div class="metrics-chart-box"><h4>${escapeHtml(chartKey.replace(/_/g, " "))} over time</h4>
         <canvas id="metrics-chart-time"></canvas></div>
@@ -741,6 +844,14 @@ function metricsRenderHistory() {
       window.scrollTo({ top: 0, behavior: "smooth" });
     });
   }
+  for (const a of box.querySelectorAll("a.run-video-link")) {
+    a.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      if (typeof recordingsOpenVideo === "function") {
+        recordingsOpenVideo(Number(a.dataset.video));
+      }
+    });
+  }
   for (const a of box.querySelectorAll("a.run-csv-link")) {
     a.addEventListener("click", (ev) => {
       ev.preventDefault();
@@ -764,24 +875,27 @@ function metricsAggregatesHtml(chartKey) {
     const success = aggs[g].run_success_rate;
     if (!forKey) continue;
     rows.push(`<tr>
-      <td>${escapeHtml(g)}</td>
-      <td class="num">${forKey.n}</td>
-      <td class="num">${mFmt(forKey.mean)}</td>
-      <td class="num">${mFmt(forKey.std)}</td>
-      <td class="num">${forKey.ci95_low !== null ? `${mFmt(forKey.ci95_low)} … ${mFmt(forKey.ci95_high)}` : "—"}</td>
-      <td class="num">${mFmt(forKey.min)} / ${mFmt(forKey.max)}</td>
-      <td class="num">${forKey.missing_n}</td>
-      <td class="num">${success ? `${success.numerator}/${success.denominator}` : "—"}</td>
-      <td class="num">${success ? `${success.failed_n} / ${success.aborted_n}` : "—"}</td>
-      <td><a href="#" class="agg-runs-link" data-runs="${escapeHtml(forKey.contributing_run_ids.join(","))}">${forKey.contributing_run_ids.length} run(s)</a></td>
+      <td class="col-left">${escapeHtml(g)}</td>
+      <td class="col-num">${forKey.n}</td>
+      <td class="col-num">${mFmt(forKey.mean)}</td>
+      <td class="col-num">${mFmt(forKey.std)}</td>
+      <td class="col-num">${forKey.ci95_low !== null ? `${mFmt(forKey.ci95_low)} … ${mFmt(forKey.ci95_high)}` : "—"}</td>
+      <td class="col-num">${mFmt(forKey.min)} / ${mFmt(forKey.max)}</td>
+      <td class="col-num">${forKey.missing_n}</td>
+      <td class="col-num">${success ? `${success.numerator}/${success.denominator}` : "—"}</td>
+      <td class="col-num">${success ? `${success.failed_n} / ${success.aborted_n}` : "—"}</td>
+      <td class="col-left"><a href="#" class="agg-runs-link" data-runs="${escapeHtml(forKey.contributing_run_ids.join(","))}">${forKey.contributing_run_ids.length} run(s)</a></td>
     </tr>`);
   }
   return `
     <h3 style="margin:14px 0 6px; font-size:14px;">Aggregate: ${escapeHtml(chartKey.replace(/_/g, " "))}</h3>
     <div class="metrics-table-wrap"><table>
-      <thead><tr><th>group</th><th>n</th><th>mean</th><th>std</th>
-        <th>95% CI</th><th>min / max</th><th>missing</th>
-        <th>success</th><th>failed / aborted</th><th>contributing</th></tr></thead>
+      <thead><tr><th class="col-left">group</th><th class="col-num">n</th>
+        <th class="col-num">mean</th><th class="col-num">std</th>
+        <th class="col-num">95% CI</th><th class="col-num">min / max</th>
+        <th class="col-num">missing</th><th class="col-num">success</th>
+        <th class="col-num">failed / aborted</th>
+        <th class="col-left">contributing</th></tr></thead>
       <tbody>${rows.join("")}</tbody></table></div>
     <p class="metrics-note">valid n, missing counts, and the exact contributing runs are shown for every
       aggregate — failed runs are never silently dropped. Success-rate CI is a Wilson interval.</p>`;
@@ -914,7 +1028,10 @@ const METRICS_TABS = [
   ["routing", "Routing & Capacity"],
   ["localization", "Localization & Control"],
   ["energy", "Energy & Reliability"],
-  ["definitions", "Metric Definitions"],
+  ["tuning", "Control Tuning"],
+  // Metric Definitions used to sit here. It is long enough that opening it
+  // pushed the run under inspection off screen, so it is now Page 5 of the
+  // top navigation -- see definitionsViewShown().
   ["quality", "Data Quality"],
 ];
 
@@ -946,7 +1063,7 @@ function metricsRenderActiveTab() {
     summary: metricsTabSummary, robots: metricsTabRobots,
     jobs: metricsTabJobs, coordination: metricsTabKeyed,
     routing: metricsTabKeyed, localization: metricsTabKeyed,
-    energy: metricsTabKeyed, definitions: metricsTabDefinitions,
+    energy: metricsTabKeyed, tuning: metricsTabTuning,
     quality: metricsTabQuality,
   };
   (renderers[_mActiveTab] || metricsTabSummary)(box);
@@ -1008,18 +1125,30 @@ function metricsRowHtml(v) {
     v.denominator !== null && v.denominator !== undefined
     ? `${mFmt(v.numerator)} / ${mFmt(v.denominator)}` : "—";
   const statusCls = v.status === "missing" ? "metrics-value-missing"
-    : v.status === "error" ? "metrics-value-error" : "";
-  const shown = v.value === null || v.value === undefined ? "null"
+    : v.status === "error" ? "metrics-value-error"
+    : v.status === "n/a" ? "metrics-value-na"
+    : v.status === "not_instrumented" ? "metrics-value-nosource" : "";
+  // A blank with a known reason says so instead of reading "null".
+  const blankWord = v.status === "n/a" ? "n/a"
+    : v.status === "not_instrumented" ? "not recorded" : "null";
+  const statusWord = v.status === "not_instrumented" ? "not instrumented" : v.status;
+  const statusTitle = v.status === "n/a"
+    ? "Not applicable to this run — the thing it measures did not occur."
+    : v.status === "not_instrumented"
+      ? "The supervisor never emits the source for this metric, so no "
+        + "recomputation can fill it in."
+      : "";
+  const shown = v.value === null || v.value === undefined ? blankWord
     : v.metric_key.endsWith("_m") && typeof v.value === "number"
       ? mFmtMeters(v.value) : mFmt(v.value);
   return `<tr>
-    <td title="${escapeHtml(v.metric_key)} v${v.definition_version}">${escapeHtml(name)}${v.scope_id ? ` <span class="muted">[${escapeHtml(v.scope_id)}]</span>` : ""}</td>
-    <td class="num ${statusCls}">${escapeHtml(shown)}</td>
-    <td>${escapeHtml(unit)}</td>
-    <td class="num">${escapeHtml(frac)}</td>
-    <td class="num">${v.valid_n ?? "—"}</td>
-    <td class="num">${v.missing_n ?? "—"}</td>
-    <td class="${statusCls}">${escapeHtml(v.status)}</td>
+    <td class="col-left" title="${escapeHtml(v.metric_key)} v${v.definition_version}">${escapeHtml(name)}${v.scope_id ? ` <span class="muted">[${escapeHtml(v.scope_id)}]</span>` : ""}</td>
+    <td class="col-num ${statusCls}">${escapeHtml(shown)}</td>
+    <td class="col-left">${escapeHtml(unit)}</td>
+    <td class="col-num">${escapeHtml(frac)}</td>
+    <td class="col-num">${v.valid_n ?? "—"}</td>
+    <td class="col-num">${v.missing_n ?? "—"}</td>
+    <td class="col-center ${statusCls}" title="${escapeHtml(statusTitle)}">${escapeHtml(statusWord)}</td>
   </tr>`;
 }
 
@@ -1033,9 +1162,11 @@ function metricsKeyedTableHtml(keys, title) {
   }
   const table = (rows) => `
     <div class="metrics-table-wrap"><table>
-      <thead><tr><th>metric</th><th>value</th><th>unit</th>
-        <th>numerator / denominator</th><th>valid n</th><th>missing n</th>
-        <th>status</th></tr></thead>
+      <thead><tr><th class="col-left">metric</th>
+        <th class="col-num">value</th><th class="col-left">unit</th>
+        <th class="col-num">numerator / denominator</th>
+        <th class="col-num">valid n</th><th class="col-num">missing n</th>
+        <th class="col-center">status</th></tr></thead>
       <tbody>${rows.map(metricsRowHtml).join("")}</tbody></table></div>`;
   let html = `<h3>${escapeHtml(title)}</h3>`;
   html += runRows.length ? table(runRows)
@@ -1075,7 +1206,7 @@ async function metricsTabRobots(box) {
     <td class="mid">${r.completion_elapsed_ms !== null ? mFmtSec(r.completion_elapsed_ms / 1000) : "—"}</td>
     <td class="mid">${r.start_battery_pct ?? "—"} → ${r.end_battery_pct ?? "—"}</td>
     <td class="mid">${r.terminal_yaw_deg !== null ? `${mFmt(r.terminal_yaw_deg)}°` : "—"}</td>
-    <td>${escapeHtml(r.failure_reason || "")}</td>
+    <td class="col-left">${escapeHtml(r.failure_reason || "")}</td>
   </tr>`).join("");
   const perRobotKeys = ["robot_productive_utilization_pct",
     "occupied_utilization_pct", "state_fraction_pct", "robot_distance_m",
@@ -1086,8 +1217,10 @@ async function metricsTabRobots(box) {
   box.innerHTML = `
     <h3>Robots in this run</h3>
     <div class="metrics-table-wrap"><table>
-      <thead><tr><th>Robot</th><th>Status</th><th>Completed At</th>
-        <th>Battery %</th><th>Final Yaw</th><th>Failure Reason</th></tr></thead>
+      <thead><tr><th class="col-center">Robot</th>
+        <th class="col-center">Status</th><th class="col-center">Completed At</th>
+        <th class="col-center">Battery %</th><th class="col-center">Final Yaw</th>
+        <th class="col-left">Failure Reason</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="6" class="muted">No robots registered for this run.</td></tr>'}</tbody>
     </table></div>
     ${metricsKeyedTableHtml(perRobotKeys, "Per-robot metrics")}`;
@@ -1109,7 +1242,7 @@ async function metricsTabJobs(box) {
     <td class="mid">${t(j.delivery_elapsed_ms)}</td>
     <td class="mid">${t(j.pickup_elapsed_ms)}</td>
     <td class="mid">${t(j.completion_elapsed_ms)}</td>
-    <td>${escapeHtml(j.failure_reason || "")}</td>
+    <td class="col-left">${escapeHtml(j.failure_reason || "")}</td>
   </tr>`).join("");
   const wsKeys = ["workstation_processing_utilization_pct",
     "workstation_starvation_pct", "workstation_blocked_pct",
@@ -1117,9 +1250,11 @@ async function metricsTabJobs(box) {
   box.innerHTML = `
     <h3>Jobs in this run</h3>
     <div class="metrics-table-wrap"><table>
-      <thead><tr><th>job</th><th>robot</th><th>workstation</th><th>status</th>
-        <th>released</th><th>delivered</th><th>picked up</th><th>completed</th>
-        <th>failure</th></tr></thead>
+      <thead><tr><th class="col-center">job</th><th class="col-center">robot</th>
+        <th class="col-center">workstation</th><th class="col-center">status</th>
+        <th class="col-center">released</th><th class="col-center">delivered</th>
+        <th class="col-center">picked up</th><th class="col-center">completed</th>
+        <th class="col-left">failure</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="9" class="muted">No jobs recorded for this run (job events come from the supervisor stream).</td></tr>'}</tbody>
     </table></div>
     ${metricsKeyedTableHtml(wsKeys, "Workstation metrics")}`;
@@ -1145,6 +1280,18 @@ async function metricsEnsureDefinitions() {
   }
 }
 
+// ---- Page 5: definitions --------------------------------------------------
+// Rendered once on first visit; the registry is static for a session.
+let _mDefsRendered = false;
+
+async function definitionsViewShown() {
+  if (_mDefsRendered) return;
+  const box = document.getElementById("definitions-content");
+  if (!box) return;
+  _mDefsRendered = true;
+  await metricsTabDefinitions(box);
+}
+
 async function metricsTabDefinitions(box) {
   box.innerHTML = '<p class="muted">Loading definitions…</p>';
   await metricsEnsureDefinitions();
@@ -1168,10 +1315,121 @@ async function metricsTabDefinitions(box) {
     </div>`;
   }).join("");
   box.innerHTML = `
-    <h3>Metric definition registry (${_mDefinitions.length} definitions)</h3>
-    <p class="muted">Definitions are versioned and immutable — a formula change adds a new
-      version; historical runs keep resolving to the version they were computed under.</p>
-    ${cards}`;
+    <p class="muted" style="margin:0 0 8px;">Definitions are versioned and immutable — a
+      formula change adds a new version; historical runs keep resolving to the version they
+      were computed under.</p>
+    <label class="field" style="max-width:420px;">Filter ${_mDefinitions.length} definitions
+      <input id="defs-filter" type="search" placeholder="name, key, unit or source field">
+    </label>
+    <p id="defs-count" class="muted" style="font-size:11px; margin:4px 0 8px;"></p>
+    <div id="defs-cards">${cards}</div>`;
+
+  const input = document.getElementById("defs-filter");
+  const count = document.getElementById("defs-count");
+  const setCount = (n) => {
+    count.textContent = `showing ${n} of ${_mDefinitions.length}`;
+  };
+  setCount(_mDefinitions.length);
+  if (input) {
+    input.addEventListener("input", () => {
+      const q = input.value.trim().toLowerCase();
+      let shown = 0;
+      for (const card of document.querySelectorAll("#defs-cards .metrics-def-card")) {
+        const hit = !q || card.textContent.toLowerCase().includes(q);
+        card.style.display = hit ? "" : "none";
+        if (hit) shown += 1;
+      }
+      setCount(shown);
+    });
+  }
+}
+
+// ---- Control tuning -------------------------------------------------------
+// What the fleet was tuned to for THIS run, captured by the supervisor at
+// mission configure. ~127 constants across four layers.
+//
+// Deliberately shows only what was captured. A run recorded before capture
+// existed gets a plain statement that its configuration is unknown, NOT
+// today's constants -- the motion controller changed twice inside the
+// existing run history (staged turn 2026-09-24, approach taper reverted
+// 2026-09-25), so rendering current values against an August run would
+// assert something false about it.
+const TUNING_SECTIONS = [
+  ["motion", "Motion control", "Handed to each robot's navigator — turn, drive and settle."],
+  ["coordination", "Coordination", "Advisor clearances, headways and dwell bounds."],
+  ["supervisor", "Vision & collision guard", "Proximity, emergency-brake and recovery limits."],
+  ["localization", "Localization filters", "Pose fusion, staleness and jump rejection."],
+  ["env_overrides", "Environment overrides", "Set at launch; absent means the code default was live."],
+];
+
+//: The values worth seeing first — the ones that get retuned.
+const TUNING_HEADLINE = ["turn_method", "kp_yaw", "cruise_rpm", "brake_lead_in",
+  "staged_fast_rpm", "staged_slow_rpm", "staged_final_rpm", "staged_lead_deg",
+  "staged_approach_kp", "final_yaw_tol_deg"];
+
+function metricsTuningRows(obj) {
+  return Object.keys(obj).sort().map((k) => {
+    const v = obj[k];
+    const hot = TUNING_HEADLINE.includes(k) ? " tuning-headline" : "";
+    return `<tr class="${hot.trim()}">
+      <td class="col-left">${escapeHtml(k)}</td>
+      <td class="col-num">${escapeHtml(String(v))}</td></tr>`;
+  }).join("");
+}
+
+function metricsTabTuning(box) {
+  const t = _mMetrics && _mMetrics.tuning;
+  if (!t) {
+    box.innerHTML = `
+      <h3>Control tuning</h3>
+      <p class="muted">No tuning was captured for this run.</p>
+      <p class="metrics-note">Per-run capture of the control constants began
+        2026-10-14. Earlier runs do not record what they executed under, and
+        this page will not substitute today's values for them — the motion
+        controller changed twice within the existing run history (staged turn
+        2026-09-24, approach taper reverted 2026-09-25), so a substituted
+        value would be wrong more often than right.</p>`;
+    return;
+  }
+  const headline = [];
+  const motion = t.motion || {};
+  for (const k of TUNING_HEADLINE) {
+    if (k in motion) headline.push([k, motion[k]]);
+  }
+  let html = "<h3>Control tuning</h3>";
+  if (headline.length) {
+    html += `<div class="tuning-headline-grid">${headline.map(([k, v]) =>
+      `<div class="tuning-chip"><span>${escapeHtml(k)}</span><b>${escapeHtml(String(v))}</b></div>`
+    ).join("")}</div>`;
+  }
+  let total = 0;
+  for (const [key, title, blurb] of TUNING_SECTIONS) {
+    const section = t[key];
+    if (!section || typeof section !== "object") continue;
+    const unavailable = section._unavailable;
+    if (unavailable) {
+      html += `<h3>${escapeHtml(title)}</h3>
+        <p class="metrics-value-missing">Not captured — ${escapeHtml(unavailable)}</p>`;
+      continue;
+    }
+    const keys = Object.keys(section);
+    if (!keys.length) continue;
+    total += keys.length;
+    html += `<h3>${escapeHtml(title)} <span class="muted"
+      style="font-weight:400; font-size:12px;">${keys.length} values</span></h3>
+      <p class="muted" style="margin:0 0 6px; font-size:12px;">${escapeHtml(blurb)}</p>
+      <div class="metrics-table-wrap"><table>
+        <thead><tr><th class="col-left">parameter</th>
+          <th class="col-num">value</th></tr></thead>
+        <tbody>${metricsTuningRows(section)}</tbody></table></div>`;
+  }
+  html += `<p class="metrics-note">${total} tuned values captured at mission
+    configure, read from the live modules rather than a maintained list, so a
+    renamed or retuned constant cannot drift out of the record. These are what
+    the design of experiments holds constant while the traffic planner
+    varies — with this captured per run, a later comparison can prove the
+    arms matched rather than assume it.</p>`;
+  box.innerHTML = html;
 }
 
 async function metricsTabQuality(box) {
@@ -1197,9 +1455,11 @@ async function metricsTabQuality(box) {
     ${issues}
     <h3>Attempt accounting</h3>
     <div class="metrics-table-wrap"><table>
-      <thead><tr><th>family</th><th>attempted</th><th>valid</th>
-        <th>completed</th><th>failed</th><th>aborted</th><th>missing</th>
-        <th>excluded (with reason)</th></tr></thead>
+      <thead><tr><th class="col-left">family</th><th class="col-num">attempted</th>
+        <th class="col-num">valid</th><th class="col-num">completed</th>
+        <th class="col-num">failed</th><th class="col-num">aborted</th>
+        <th class="col-num">missing</th>
+        <th class="col-left">excluded (with reason)</th></tr></thead>
       <tbody>${accRows}</tbody></table></div>
     <h3>Coverage & thresholds</h3>
     <div class="metrics-table-wrap"><table><tbody>
@@ -1349,14 +1609,31 @@ function metricsRenderCsv() {
   }
   const blocks = metricsCsvBlocks(metricsParseCsv(_mCsvText));
   body.innerHTML = blocks.map((rows) => {
-    const head = rows[0].map((h) => `<th>${escapeHtml(h)}</th>`).join("");
     const cols = rows[0].length;
+    // Alignment is decided PER COLUMN, not per cell. Judging each cell on
+    // its own left-aligned the odd blank or text value inside an otherwise
+    // numeric column, and left every header centred over whatever it
+    // happened to sit above. A column counts as numeric when most of its
+    // non-empty values parse as numbers.
+    const numericCol = [];
+    for (let i = 0; i < cols; i += 1) {
+      let seen = 0, nums = 0;
+      for (const r of rows.slice(1)) {
+        const v = r[i];
+        if (v === undefined || v === "") continue;
+        seen += 1;
+        if (!Number.isNaN(Number(v))) nums += 1;
+      }
+      numericCol.push(seen > 0 && nums / seen >= 0.6);
+    }
+    const colCls = (i) => (numericCol[i] ? "col-num" : "col-left");
+    const head = rows[0].map((h, i) =>
+      `<th class="${colCls(i)}">${escapeHtml(h)}</th>`).join("");
     const trs = rows.slice(1).map((r) => {
       const tds = [];
       for (let i = 0; i < cols; i += 1) {
         const v = r[i] === undefined ? "" : r[i];
-        const num = v !== "" && !Number.isNaN(Number(v));
-        tds.push(`<td class="${num ? "num" : ""}">${escapeHtml(v)}</td>`);
+        tds.push(`<td class="${colCls(i)}">${escapeHtml(v)}</td>`);
       }
       return `<tr>${tds.join("")}</tr>`;
     }).join("");
@@ -1388,7 +1665,7 @@ async function metricsLoadFacets() {
 
 function metricsFillFacetSelects() {
   if (!_mFacets) return;
-  for (const col of ["experimental_condition", "algorithm"]) {
+  for (const col of ["experimental_condition", "algorithm", "traffic_method"]) {
     const sel = document.getElementById(`mf-${col}`);
     if (!sel) continue;
     const keep = sel.value;
@@ -1411,7 +1688,7 @@ function metricsFillFacetSelects() {
     // full value goes in the tooltip.
     sel.title = sel.value || "any";
   }
-  for (const col of ["experimental_condition", "algorithm"]) {
+  for (const col of ["experimental_condition", "algorithm", "traffic_method"]) {
     const sel = document.getElementById(`mf-${col}`);
     if (sel && !sel.dataset.titleBound) {
       sel.dataset.titleBound = "1";
@@ -1428,9 +1705,17 @@ function metricsFillFacetSelects() {
 // -- a shorter list with no explanation is how the phantom rows went
 // unnoticed until 2026-09-22 in the first place.
 function metricsHiddenNoteHtml() {
+  // Never a silently shorter list: say so if the server returned fewer runs
+  // than match (it returns all of them unless a limit was asked for).
+  const shown = (_mHistory && _mHistory.runs) ? _mHistory.runs.length : 0;
+  const total = (_mHistory && _mHistory.total) || shown;
+  const cut = total > shown
+    ? `<p class="metrics-note"><strong>Showing ${shown} of ${total} runs.</strong> `
+      + `The summary rows cover only the runs shown.</p>`
+    : "";
   const n = (_mHistory && _mHistory.nonexecuted_hidden) || 0;
-  if (!n) return "";
-  return `<p class="metrics-note"><strong>${n} non-executed record`
+  if (!n) return cut;
+  return cut + `<p class="metrics-note"><strong>${n} non-executed record`
     + `${n === 1 ? "" : "s"} hidden.</strong> These were armed but never `
     + `started, or carry no telemetry. They are still in the database; `
     + `choose <em>Outcome &rarr; include non-executed records</em> to see `

@@ -33,6 +33,13 @@ const state = {
   view: "setup",      // workflow view: "setup" | "plan" | "run" (CSS-only)
   decisionLog: [],    // Run & Monitor event feed from /fleet_events
   decisionLogSeen: new Set(),  // event seqs already logged (dedupe re-delivery)
+  // Real workstation state from the supervisor's "bay" events, keyed by
+  // bayId: { readyAtMs, picked, delivered }. Live/Real mode colours bays
+  // from this, never from the plan's clock -- see liveBayStatus().
+  liveBays: new Map(),
+  // True from START (or the supervisor's "run started") until another plan
+  // is loaded: the bay colours then show the real run, never the plan clock.
+  liveRun: false,
   timelineToggles: { dropoff: true, pickup: true, depotLeave: true, depotReturn: true },
   // Latest /fleet_status lifecycle state from the supervisor (loaded/armed/
   // running/finished/aborted/error), set by renderSupervisorStatus() --
@@ -50,11 +57,19 @@ const state = {
   // mode actually being tested/used; color mode remains fully available
   // via the toggle.
   driveMode: "vision",
-  // Turn-then-drive fusion (Camera only mode) -- skip the brake/settle
-  // between a turn and the following drive when heading is already within
-  // tolerance. Supervisor forces this off for missions with 2+ robots
-  // regardless of this flag (see run_advised_vision()'s docstring).
-  fuseTurns: false,
+  // How a "vision" mission turns, sent with it as turn_method so the arm is
+  // chosen here rather than on START_TESTBED.bat's command line. "staged"
+  // is the Camera only button (camera-fed wheel-speed turns, the code
+  // default); "rotate_rel" is Camera + Encoder (the motor MCU's encoder
+  // rotate, sized and corrected from the camera). Ignored in color mode.
+  turnMethod: "staged",
+  // Run & Monitor "Traffic planner": which method made the routes on screen,
+  // the page plan it was re-planned from, and the routes it produced (so a
+  // later Solve/Import, which replaces state.routes, reads as "page" again).
+  trafficMethod: "page",
+  trafficBase: null,
+  trafficRoutesRef: null,
+  supState: null,
 };
 
 const palette = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c", "#0f766e", "#be185d", "#475569", "#ca8a04", "#0891b2", "#7c3aed", "#db2777"];
@@ -2000,6 +2015,48 @@ function bayStatusAt(info, tSec) {
   return "complete";
 }
 
+// What a workstation is ACTUALLY doing, from the supervisor's bay events.
+// Operator, 2026-10-30: in Real mode the plan's clock turned bays PROC
+// before any robot had reached them. A bay is AWAIT until its processing
+// really starts (the end of the drop's DWELL), PROC for process_sec from
+// that moment, READY until the collecting robot leaves, then DONE.
+function liveBayStatus(id) {
+  const info = state.liveBays.get(id);
+  if (!info) return "awaiting_delivery";
+  if (info.picked || info.delivered) return "complete";
+  if (info.readyAtMs == null) return "awaiting_delivery";
+  return Date.now() < info.readyAtMs ? "processing" : "awaiting_pickup";
+}
+
+// Real state whenever a real run is (or was just) under way -- in EVERY view
+// and mode, not only Real/Live. 2026-10-30, second report: bays still went
+// PROC before any robot arrived and DONE before the pick-up -- exactly the
+// plan clock running ahead of robots that were 21 s behind schedule (328 s
+// against 307 s planned), because the page was drawing outside Real/Live.
+// Cleared when a different plan is loaded (see state.liveRun).
+function bayStatusNow(id, times, clockSec) {
+  return (liveDataMode() || state.liveRun)
+    ? liveBayStatus(id) : bayStatusAt(times && times.get(id), clockSec);
+}
+
+// Supervisor "bay" event -> state.liveBays. Timed from when the page
+// receives it, not from the supervisor's clock, so the two laptops' clocks
+// never have to agree.
+function ingestBayEvent(data) {
+  if (!data || data.bay == null) return;
+  const { r, c } = bayFromNumber(Number(data.bay));
+  const id = bayId(r, c);
+  const info = state.liveBays.get(id) || {};
+  if (data.state === "processing") {
+    info.readyAtMs = Date.now() + 1000 * (Number(data.process_sec) || 0);
+  } else if (data.state === "picked") {
+    info.picked = true;
+  } else if (data.state === "delivered") {
+    info.delivered = true;
+  }
+  state.liveBays.set(id, info);
+}
+
 function statusClockSec() {
   if (liveDataMode() && state.missionStartMs) {
     return (Date.now() - state.missionStartMs) / 1000;
@@ -2099,7 +2156,7 @@ function drawGrid() {
       let stroke = selected ? "#22c55e" : "#d9e2ee";
       let textFill = selected ? "#166534" : "#94a3b8";
       if (selected && bayTimesForBoxes) {
-        const style = BAY_STATUS_STYLE[bayStatusAt(bayTimesForBoxes.get(id), statusClockForBoxes)];
+        const style = BAY_STATUS_STYLE[bayStatusNow(id, bayTimesForBoxes, statusClockForBoxes)];
         fill = style.boxFill;
         stroke = style.boxStroke;
         textFill = style.text;
@@ -2150,7 +2207,7 @@ function drawGrid() {
     svg.appendChild(el("text", { x: work.x, y: work.y + 3, "text-anchor": "middle", fill: "#854d0e", "font-size": 9, "font-weight": 700 }, workstationNodeNumber(bay)));
     if (bayTimes) {
       // tiny part-status badge along the bay cell's bottom edge
-      const style = BAY_STATUS_STYLE[bayStatusAt(bayTimes.get(id), statusClock)];
+      const style = BAY_STATUS_STYLE[bayStatusNow(id, bayTimes, statusClock)];
       const p = pt(bay.r, bay.c);
       const cx = p.x + g.cell / 2;
       const by = p.y + g.cell - 20;
@@ -2649,8 +2706,10 @@ function solve(openModal = true) {
   refreshScheduleStatus();
   state.timestep = 0;
   render();
-  // successful solve: collapse setup and put the plan front and center
-  if (state.routes.length) setView("plan");
+  // successful solve: collapse setup and put the plan front and center.
+  // Only for a user-initiated solve -- the startup solve(false) pre-computes
+  // a plan but leaves the page on 1 · Setup.
+  if (openModal && state.routes.length) setView("plan");
   if (openModal) showReport();
 }
 
@@ -2781,6 +2840,8 @@ function renderMetrics() {
   document.getElementById("metric-agents").textContent = state.agents;
   document.getElementById("metric-distance").textContent = state.routes.length ? fmtSec(makespan()) : "0.0s";
   document.getElementById("download-json").disabled = state.routes.length === 0;
+  const saveBtn = document.getElementById("save-plan");
+  if (saveBtn) saveBtn.disabled = state.routes.length === 0;
   document.getElementById("open-report").disabled = state.routes.length === 0;
 
   let hotspot = "None";
@@ -2867,10 +2928,12 @@ function renderAgentControls() {
   document.getElementById("real-status").textContent = state.realStatus;
   document.getElementById("drive-mode-color").className =
     state.driveMode === "color" ? "secondary active" : "secondary";
-  document.getElementById("drive-mode-vision").className =
-    state.driveMode === "vision" ? "secondary active" : "secondary";
-  document.getElementById("drive-mode-status").textContent =
-    state.driveMode === "vision" ? "camera-only (no color sensor)" : "color sensor + camera safety";
+  const camOnly = state.driveMode === "vision" && state.turnMethod !== "rotate_rel";
+  const camEnc = state.driveMode === "vision" && state.turnMethod === "rotate_rel";
+  document.getElementById("drive-mode-vision").className = camOnly ? "secondary active" : "secondary";
+  document.getElementById("drive-mode-encoder").className = camEnc ? "secondary active" : "secondary";
+  document.getElementById("drive-mode-status").textContent = driveModeLabel();
+  if (typeof renderTrafficButtons === "function") renderTrafficButtons();
   document.getElementById("edit-hint").textContent = state.editMode
     ? `Editing AGV ${state.editAgent + 1}: click intersections to add waypoints. Clear edits removes this AGV's manual path.`
     : "Select an AGV, turn on Edit path, then click intersections to add route waypoints.";

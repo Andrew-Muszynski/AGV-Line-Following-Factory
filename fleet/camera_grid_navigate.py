@@ -75,6 +75,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import os
 import threading
 import time
@@ -127,6 +128,32 @@ ODOM_STALE_SEC = 0.75
 # observations pull accumulated position/yaw drift back toward table truth.
 CAMERA_ASSIST_POSITION_ALPHA = 0.20
 CAMERA_ASSIST_YAW_ALPHA = 0.20
+# 2026-10-23: a 2.35 s network stall cut every robot's camera poses at once.
+# camera_assist drive_leg() kept steering on odometry alone, then trusted the
+# backlog that arrived afterwards, and drove Alvik2 3.3in off the path.
+#   VISION_BACKLOG_SEC        a pose arriving this much later than the usual
+#                             arrival delay is old, not current -- dropped.
+#   CAMERA_ASSIST_MAX_BLIND_SEC  no fresh camera pose for this long mid-leg:
+#                             stop and hold instead of driving on odometry.
+#   CAMERA_OUTAGE_HOLD_SEC    give up (fail the leg) only after this long.
+VISION_BACKLOG_SEC = 0.25
+#   VISION_BACKLOG_MAX_RUN    this many "late" poses in a row is a clock or
+#                             delay shift, not a backlog: re-baseline and use
+#                             them (~0.1-0.2 s of poses at most is dropped).
+VISION_BACKLOG_MAX_RUN = 5
+#   LEG_OVERSHOOT_ABORT_IN    got close, then the target fell this far further
+#                             away again: overshot -- stop, never U-turn back.
+LEG_OVERSHOOT_ABORT_IN = 1.5
+CAMERA_ASSIST_MAX_BLIND_SEC = 0.3
+#   WHEEL_FOLLOW_ACK_TIMEOUT_SEC  how long drive_leg waits for the robot to
+#                             acknowledge WHEEL_FOLLOW_MODE (watchdog fed
+#                             throughout). A late command is not a lost one.
+WHEEL_FOLLOW_ACK_TIMEOUT_SEC = 8.0
+#   CAMERA_ASSIST_BLIND_FINISH_SEC  a leg may be FINISHED on encoder odometry
+#                             for up to this long (a 10in leg takes ~3 s at
+#                             60 RPM); past it the robot stops where it is.
+CAMERA_ASSIST_BLIND_FINISH_SEC = 3.0
+CAMERA_OUTAGE_HOLD_SEC = 8.0
 CAPTURE_SETTLE_SEC = 1.0
 # Confirmed 2026-07-27 (near-collision on the 8->16 leg): a FIXED jump cap
 # compared only against the last ACCEPTED pose is a lockout trap. A dropped
@@ -143,9 +170,15 @@ POSE_JUMP_MAX_SPEED_IN_PER_SEC = 20.0  # generous vs. the ~2.5in/s bench speed
 POSE_JUMP_MARGIN_IN = 3.0              # slack for a single-tick measurement wobble
 YAW_JUMP_REJECT_DEG = 45.0
 
-# Grid <-> world calibration, mirrors apriltag_localize.py.
-GRID_NODE1_WORLD_IN = (13.5, 16.75)
-GRID_PITCH_IN = 10.0
+# Every node position -- grid anchor, measured workstations, depot slots and
+# entries, node 0 -- lives in ONE file, testbed_coordinates.json, shared with
+# apriltag_localize.py through testbed_coordinates.py (2026-10-22). Until then
+# both programs carried their own literal copies, kept equal by hand. Edit the
+# JSON, not this file.
+from testbed_coordinates import (  # noqa: E402
+    COORDINATES_ID, DEPOT_ENTRY_WORLD_IN, DEPOT_SLOT_WORLD_IN, GRID_COLS,
+    GRID_NODE1_WORLD_IN, GRID_PITCH_IN, GRID_ROWS, NODE0_WORLD_IN,
+    NODE_WORLD_IN, WORKSTATION_WORLD_IN)
 
 # MEASURED workstation (bay) positions, world inches, replacing the derived
 # grid_y = (row_up + 1) - 0.44 offset for workstation nodes ONLY.
@@ -174,60 +207,8 @@ GRID_PITCH_IN = 10.0
 # would separate the two; until then up to ~0.4in of the x component
 # may be robot mount, not bay.
 #
-# REGENERATE with: calibrate_workstations.py --emit-python
-# (paste into BOTH apriltag_localize.py and fleet/camera_grid_navigate.py
-# -- they run on different machines and cannot import each other.)
-WORKSTATION_WORLD_IN: dict[int, tuple[float, float]] = {
-    65: (18.30, 21.76),  # row 0 col 0, Alvik1
-    66: (28.12, 21.81),  # row 0 col 1, Alvik2
-    67: (38.19, 21.88),  # row 0 col 2, Alvik3
-    68: (48.19, 21.86),  # row 0 col 3, Alvik4
-    69: (58.29, 21.85),  # row 0 col 4, Alvik5
-    70: (68.25, 21.76),  # row 0 col 5, Alvik6
-    71: (77.73, 21.74),  # row 0 col 6, tag7
-    72: (18.42, 31.90),  # row 1 col 0, Alvik1
-    73: (28.25, 31.78),  # row 1 col 1, Alvik2
-    74: (38.32, 31.72),  # row 1 col 2, Alvik3
-    75: (48.07, 31.76),  # row 1 col 3, Alvik4
-    76: (58.28, 31.73),  # row 1 col 4, Alvik5
-    77: (68.08, 31.90),  # row 1 col 5, Alvik6
-    78: (78.23, 31.90),  # row 1 col 6, tag7
-    79: (18.61, 41.69),  # row 2 col 0, Alvik1
-    80: (28.49, 41.75),  # row 2 col 1, Alvik2
-    81: (38.30, 41.82),  # row 2 col 2, Alvik3
-    82: (48.18, 41.86),  # row 2 col 3, Alvik4
-    83: (58.26, 41.83),  # row 2 col 4, Alvik5
-    84: (68.03, 41.79),  # row 2 col 5, Alvik6
-    85: (78.04, 41.86),  # row 2 col 6, tag7
-    86: (18.62, 51.70),  # row 3 col 0, Alvik1
-    87: (28.58, 51.55),  # row 3 col 1, Alvik2
-    88: (37.98, 51.46),  # row 3 col 2, Alvik3
-    89: (48.10, 51.52),  # row 3 col 3, Alvik4
-    90: (58.40, 51.54),  # row 3 col 4, Alvik5
-    91: (68.19, 51.62),  # row 3 col 5, Alvik6
-    92: (78.14, 51.71),  # row 3 col 6, tag7
-    93: (18.88, 61.55),  # row 4 col 0, Alvik1
-    94: (28.78, 61.67),  # row 4 col 1, Alvik2
-    95: (38.48, 61.67),  # row 4 col 2, Alvik3
-    96: (48.32, 61.91),  # row 4 col 3, Alvik4
-    97: (58.40, 61.80),  # row 4 col 4, Alvik5
-    98: (68.38, 61.77),  # row 4 col 5, Alvik6
-    99: (78.24, 61.78),  # row 4 col 6, tag7
-    100: (18.68, 71.56),  # row 5 col 0, Alvik1
-    101: (28.65, 71.38),  # row 5 col 1, Alvik2
-    102: (38.22, 71.51),  # row 5 col 2, Alvik3
-    103: (48.45, 71.61),  # row 5 col 3, Alvik4
-    104: (58.61, 71.53),  # row 5 col 4, Alvik5
-    105: (68.30, 71.79),  # row 5 col 5, Alvik6
-    106: (78.01, 71.98),  # row 5 col 6, tag7
-    107: (18.44, 81.80),  # row 6 col 0, Alvik1
-    108: (28.46, 81.69),  # row 6 col 1, Alvik2
-    109: (38.44, 81.60),  # row 6 col 2, Alvik3
-    110: (48.44, 81.65),  # row 6 col 3, Alvik4
-    111: (58.54, 81.50),  # row 6 col 4, Alvik5
-    112: (68.56, 81.65),  # row 6 col 5, Alvik6
-    113: (78.49, 81.81),  # row 6 col 6, tag7
-}
+# REGENERATE with: calibrate_workstations.py --apply (writes the JSON).
+# WORKSTATION_WORLD_IN: from testbed_coordinates.json (imported above).
 
 # Table bounds safety stop (2026-08-19, real hardware failure: Alvik4 was
 # commanded ROTATE_REL -84deg at DE4 -- a depot-entry node near the table's
@@ -289,9 +270,7 @@ TABLE_BOUNDS_MARGIN_IN = 6.0
 # tight enough to sequence them if anything else is marginal, but no longer
 # negative-clearance.
 #
-# Regenerate with: calibrate_workstations.py --emit-python
-# (paste into BOTH this file and the other one -- they run on different
-# machines and cannot import each other.)
+# Regenerate with: calibrate_workstations.py --apply (writes the JSON).
 # RE-MEASURED 2026-09-30 after the depot row was shifted. 42 vision samples
 # per robot with the fleet parked and stationary; every slot moved the same
 # way (y down 0.25-0.40in, mean -0.34; x within +/-0.20in), which is the
@@ -302,28 +281,8 @@ TABLE_BOUNDS_MARGIN_IN = 6.0
 # same value on all 42 samples). And they record where each robot CAME TO
 # REST, so any consistent parking bias is baked in -- which is what you want
 # for "drive here and stop", but is not the same as measuring the tape.
-DEPOT_SLOT_WORLD_IN: dict[str, tuple[float, float]] = {
-    "D1": (19.60, 10.58),  # Alvik1
-    "D2": (25.90, 10.70),  # Alvik2
-    "D3": (32.40, 10.70),  # Alvik3
-    "D4": (38.72, 10.90),  # Alvik4
-    "D5": (45.10, 10.80),  # Alvik5
-    "D6": (51.40, 10.80),  # Alvik6
-    # NOT re-measured 2026-09-30 -- there is no 7th robot to park on it, so
-    # this is still the 2026-08-26 figure and is ~0.34in stale in y if the
-    # whole row moved together. Re-measure before using D7.
-    "D7": (57.34, 11.23),  # tag7
-}
-DEPOT_ENTRY_WORLD_IN: dict[str, tuple[float, float]] = {
-    "DE1": (19.71, 2.94),  # Alvik1
-    "DE2": (25.93, 3.07),  # Alvik2
-    "DE3": (32.09, 3.15),  # Alvik3
-    "DE4": (38.56, 3.21),  # Alvik4
-    "DE5": (45.07, 3.27),  # Alvik5
-    "DE6": (51.47, 3.36),  # Alvik6
-    "DE7": (57.51, 3.46),  # tag7
-}
-NODE0_WORLD_IN = (13.3, 2.9)
+# DEPOT_SLOT_WORLD_IN: from testbed_coordinates.json (imported above).
+# DEPOT_ENTRY_WORLD_IN: from testbed_coordinates.json (imported above).
 
 DEPOT_NODE_TOKENS: dict[str, str] = {"0": "0"}
 DEPOT_NODE_TOKENS.update({k: k for k in DEPOT_SLOT_WORLD_IN})
@@ -358,6 +317,11 @@ def node_to_world(n: int | str, rows: int, cols: int) -> tuple[float, float]:
         n = int(n)
     if n in DEPOT_WORLD_IN:
         return DEPOT_WORLD_IN[n]
+    # The testbed's own grid: every node is listed explicitly in
+    # testbed_coordinates.json. Other grid sizes (simulation, tests) fall
+    # through to the formula below.
+    if (rows, cols) == (GRID_ROWS, GRID_COLS) and n in NODE_WORLD_IN:
+        return NODE_WORLD_IN[n]
     nodes = rows * cols
     bays = (rows - 1) * (cols - 1)
     if 1 <= n <= nodes:
@@ -415,6 +379,7 @@ FAIL_VISION_LOST     = "VISION_LOST"      # no usable pose
 FAIL_ROBOT_ERROR     = "ROBOT_ERROR"      # firmware reported an ERROR
 FAIL_DWELL           = "DWELL_FAILED"
 FAIL_UNKNOWN         = "UNKNOWN"
+FAIL_OVERSHOT        = "OVERSHOT"         # passed the target; stopped, not U-turned
 
 
 def settle_floor_update(prev_err, err, stiction_rpm, last_pass_rpm,
@@ -517,6 +482,51 @@ def heading_to_target_deg(dx: float, dy: float) -> float:
     return math.degrees(math.atan2(dx, -dy)) % 360.0
 
 
+def arrival_kind(label) -> str | None:
+    """'depot_slot' (D1..Dn), 'workstation' (65..113 on the 8x8), else None."""
+    s = str(label).strip().upper()
+    if re.fullmatch(r"D\d+", s):
+        return "depot_slot"
+    if s.isdigit() and 64 < int(s) <= 113:
+        return "workstation"
+    return None
+
+
+def aim_corrected_target(x0: float, y0: float, tx: float, ty: float,
+                         leg_label: str, aim: dict | None,
+                         along: dict | None = None):
+    """(tx', ty', kind, bias) or None.
+
+    Feed-forward for a robot's REPEATABLE sideways resting error, measured
+    per robot and per kind of arrival (tools/analyze_stops.py, stored as
+    aim_lateral_in in robot_drive_calibration.json). bias is where the robot
+    comes to rest, + = to its LEFT of the target along this leg; aiming the
+    same distance to its right puts it on the node. 2026-10-22: Alvik3 rested
+    0.80in left of D3 on every return (sd 0.15) -- before AND after D3 moved
+    -- and close enough to Alvik2 that both turning would touch.
+
+    Only for the final approach into a depot slot or workstation: those are
+    the places a robot stays, turns, and has neighbours."""
+    # `along` (aim_along_in): the same idea along the approach, + = this
+    # robot comes to rest PAST the node. 2026-10-23 shakedowns: Alvik3 ended
+    # 0.57-0.81in past D3 toward row 1 (others within 0.3in), and its
+    # square-up there came within 0.2in of a robot on row 1.
+    if not aim and not along:
+        return None
+    m = re.search(r"->(\S+?)(?::|$)", leg_label)
+    kind = arrival_kind(m.group(1)) if m else None
+    bias = float((aim or {}).get(kind, 0.0) or 0.0) if kind else 0.0
+    past = float((along or {}).get(kind, 0.0) or 0.0) if kind else 0.0
+    ux, uy = tx - x0, ty - y0
+    length = math.hypot(ux, uy)
+    if not kind or (abs(bias) < 1e-3 and abs(past) < 1e-3) or length < 1.0:
+        return None
+    ux, uy = ux / length, uy / length
+    left_x, left_y = -uy, ux
+    return (tx - bias * left_x - past * ux, ty - bias * left_y - past * uy,
+            kind, bias)
+
+
 def parse_route_token(tok: str) -> int | str:
     """"9" -> 9, "D3"/"DE5"/"0" -> the matching DEPOT_NODE_TOKENS label
     (passed through as a string; node_to_world() resolves it)."""
@@ -547,6 +557,12 @@ class CameraGridNavigator(Node):
         self.args = args
         self.localization_mode = normalize_localization_mode(
             getattr(args, "localization_mode", "camera_assist"))
+        # apriltag_localize.py prints the same id; differing ids mean the two
+        # machines hold different node tables.
+        self.get_logger().info(
+            f"node coordinates id {COORDINATES_ID}; brake_lead="
+            f"{getattr(args, 'brake_lead_in', float('nan')):.2f}in, "
+            f"steer_trim={getattr(args, 'steer_trim_rpm', 0.0):+.2f}RPM")
 
         # Own dedicated executor (added for fleetSupervisor.py's vision drive
         # mode, 2026-07-30): every internal wait/control loop below spins via
@@ -813,6 +829,11 @@ class CameraGridNavigator(Node):
                     f"brake: {text}")
         elif text == "POSE_RESET":
             self.pose_reset_seen = True
+        elif text == "STOPPED":
+            # The firmware's reply to every STOP it receives. Counted so a
+            # STOP that "did not take" can be told apart: never received
+            # (no ack) versus received while the wheels kept turning.
+            self.stopped_acks = getattr(self, "stopped_acks", 0) + 1
 
     def _on_vision_pose(self, msg: String) -> None:
         try:
@@ -823,6 +844,40 @@ class CameraGridNavigator(Node):
         except (ValueError, KeyError, TypeError):
             return
         now = time.monotonic()
+        # BACKLOG REJECTION (2026-10-23). After a network stall the camera
+        # node's queued poses arrive in a burst, seconds old, and stamping
+        # them with arrival time made them look current: Alvik2's estimate
+        # was dragged back to where it had been ~2 s earlier, it "had not
+        # reached" node 12 yet, and it overshot 3.3in off the path. The
+        # payload's "ms" is the camera node's wall clock at capture; the two
+        # laptops' clocks differ by an unknown but steady offset, so judge
+        # each pose against the smallest (arrival - capture) seen recently.
+        try:
+            lag = time.time() - float(d["ms"]) / 1000.0
+        except (KeyError, TypeError, ValueError):
+            lag = None
+        if lag is not None:
+            lags = self.__dict__.setdefault("_vision_lags", [])
+            lags.append(lag)
+            if len(lags) > 150:       # ~3-5 s per robot: follows clock drift
+                del lags[:-150]
+            if lag > min(lags) + VISION_BACKLOG_SEC:
+                # A backlog is a short burst of OLD poses. Poses that stay
+                # "late" for more than a few in a row mean the clock or the
+                # normal delay shifted -- re-learn at once and use them.
+                # 2026-10-23 Round 1 run 1: without this, a shift past the
+                # threshold dropped Alvik3's current poses for ~6 s (the
+                # supervisor received every one), it drove past node 38 on a
+                # rarely corrected estimate and arced 20in into a bay.
+                late = self.__dict__.get("_vision_late_run", 0) + 1
+                self._vision_late_run = late
+                if late < VISION_BACKLOG_MAX_RUN:
+                    self.vision_backlog_dropped = getattr(
+                        self, "vision_backlog_dropped", 0) + 1
+                    return
+                del lags[:-1]          # re-baseline on the current delay
+                self.vision_rebaselines = getattr(self, "vision_rebaselines", 0) + 1
+            self._vision_late_run = 0
         self.vision_msgs += 1
         if self.last_pose is not None:
             self.vision_max_age = max(self.vision_max_age,
@@ -1762,11 +1817,51 @@ class CameraGridNavigator(Node):
         WINDOW_SEC = 0.25
         POS_TOL_IN = 0.15
         YAW_TOL_DEG = 1.0
+        # The robot's own encoders, from the odometry it already publishes
+        # every 50 ms (alvik.get_pose(): x, y, yaw integrated from the wheel
+        # encoders). Still wheels give a constant odometry pose, so this is
+        # the same evidence as alvik.get_wheels_speed() == 0 with no firmware
+        # change. Tighter tolerances than vision: no camera noise to absorb.
+        ENC_POS_TOL_IN = 0.05
+        ENC_YAW_TOL_DEG = 0.5
+        acks0 = getattr(self, "stopped_acks", 0)
         self.send_cmd("STOP")
         sends = 1
         t0 = time.monotonic()
         last_send = t0
         window: list[tuple[float, float, float, float]] = []  # (t, x, y, yaw)
+        enc: list[tuple[float, float, float, float]] = []     # (t, x, y, yaw)
+        enc_still = False
+
+        def enc_summary() -> str:
+            """Encoder view of the same window, for every STOP log line."""
+            if len(enc) < 2:
+                return "encoders: no odometry samples"
+            yaw_travel = sum(abs(normalize_deg(b[3] - a[3]))
+                             for a, b in zip(enc, enc[1:]))
+            pos_travel = sum(math.hypot(b[1] - a[1], b[2] - a[2])
+                             for a, b in zip(enc, enc[1:]))
+            span = max(1e-3, enc[-1][0] - enc[0][0])
+            return (f"encoders: {'STILL' if enc_still else 'MOVING'}, yaw "
+                    f"travel {yaw_travel:.1f}deg ({yaw_travel / span:.1f}deg/s), "
+                    f"path {pos_travel:.2f}in over {span:.2f}s; STOPPED acks "
+                    f"{getattr(self, 'stopped_acks', 0) - acks0} of {sends} sent")
+
+        def enc_update() -> None:
+            nonlocal enc_still
+            o = self.fresh_odom_pose()
+            if o is None or (enc and o.t == enc[-1][0]):
+                return
+            enc.append((o.t, o.x, o.y, o.yaw))
+            recent = [s for s in enc if s[0] >= o.t - WINDOW_SEC]
+            if len(recent) >= 3 and recent[-1][0] - recent[0][0] >= 0.8 * WINDOW_SEC:
+                _t, x0, y0, yaw0 = recent[0]
+                yd = [normalize_deg(s[3] - yaw0) for s in recent]
+                enc_still = (max(math.hypot(s[1] - x0, s[2] - y0) for s in recent)
+                             <= ENC_POS_TOL_IN
+                             and max(yd) - min(yd) <= ENC_YAW_TOL_DEG)
+            else:
+                enc_still = False
         # DIAGNOSTICS -- same rationale as wait_for_yaw_settled()'s (see
         # there). "STOP NOT verified" previously said nothing about HOW the
         # robot failed to stop, which is the single most important fact
@@ -1787,8 +1882,16 @@ class CameraGridNavigator(Node):
                 self.send_cmd("STOP")
                 sends += 1
                 last_send = now
+            enc_update()
             p = self.fresh_pose()
             if p is None:
+                # No camera frame: the encoders alone may confirm the stop.
+                if enc_still:
+                    self.get_logger().info(
+                        f"{leg_label}: STOP verified stationary after "
+                        f"{now - t0:.2f}s by the robot's encoders (no fresh "
+                        f"camera pose) ({sends} STOP send(s)); {enc_summary()}")
+                    return True
                 continue
             if window and p.t == window[-1][0]:
                 continue
@@ -1813,15 +1916,20 @@ class CameraGridNavigator(Node):
                 best_pos_spread = min(best_pos_spread, pos_spread)
                 best_yaw_spread = min(best_yaw_spread, yaw_spread)
                 if pos_spread <= POS_TOL_IN and yaw_spread <= YAW_TOL_DEG:
+                    # A camera-still window while the encoders still count is
+                    # worth flagging: one of the two is wrong.
+                    disagree = len(enc) >= 3 and not enc_still
                     self.get_logger().info(
                         f"{leg_label}: STOP verified stationary after "
-                        f"{now - t0:.2f}s ({sends} STOP send(s))")
+                        f"{now - t0:.2f}s ({sends} STOP send(s))"
+                        + (f" -- camera still but {enc_summary()}"
+                           if disagree else ""))
                     return True
         if n_samples == 0:
             self.get_logger().error(
                 f"{leg_label}: STOP NOT verified within {timeout_sec:.1f}s "
                 f"({sends} STOP send(s)) -- NO vision samples at all, robot "
-                "motion UNKNOWN (treat as moving)")
+                f"motion UNKNOWN (treat as moving); {enc_summary()}")
             return False
         net_in = math.hypot(last_s[0] - first_s[0], last_s[1] - first_s[1])
         net_yaw = normalize_deg(last_s[2] - first_s[2])
@@ -1834,7 +1942,7 @@ class CameraGridNavigator(Node):
             f"{yaw_path_deg:.2f}deg (net {net_yaw:+.2f}deg); best window "
             f"pos spread {best_pos_spread:.2f}in vs tol {POS_TOL_IN:.2f}in, "
             f"best yaw spread {best_yaw_spread:.2f}deg vs tol "
-            f"{YAW_TOL_DEG:.2f}deg")
+            f"{YAW_TOL_DEG:.2f}deg; {enc_summary()}")
         return False
 
     # -- stopping-distance measurement (2026-07-28) -----------------------
@@ -3001,8 +3109,53 @@ class CameraGridNavigator(Node):
         return True
 
     # -- one leg: drive from current position to (target_x, target_y) -----
-    def drive_leg(self, target_x: float, target_y: float, leg_label: str) -> bool:
+    def _wait_for_camera(self, leg_label: str) -> bool:
+        """Before a leg or turn starts in camera_assist: if the camera is
+        out, wait on the spot for it (the robot is already stationary).
+        True immediately when the camera is fine or not used."""
+        if self.localization_mode != "camera_assist":
+            return True
+        p = self.last_pose
+        if p is not None and time.monotonic() - p.t <= CAMERA_ASSIST_MAX_BLIND_SEC:
+            return True
+        return self._hold_for_camera(leg_label, stop=False)
+
+    def _hold_for_camera(self, leg_label: str, stop: bool = True) -> bool:
+        """Stop (if moving) and wait for the camera to come back. True once
+        three fresh (non-backlog) poses have arrived; False, with the leg
+        failed, after CAMERA_OUTAGE_HOLD_SEC."""
+        t0 = time.monotonic()
+        age = (t0 - self.last_pose.t) if self.last_pose is not None else math.inf
+        self.get_logger().warning(
+            f"{leg_label}: no camera pose for {age:.2f}s -- "
+            + ("stopping and " if stop else "") + "waiting for the camera")
+        if stop:
+            self.stop_only()
+        seen, last_t = 0, None
+        while rclpy.ok() and time.monotonic() - t0 < CAMERA_OUTAGE_HOLD_SEC:
+            self._spin_once(0.02)
+            p = self.last_pose
+            if (p is not None and p.t != last_t
+                    and time.monotonic() - p.t <= CAMERA_ASSIST_MAX_BLIND_SEC):
+                seen += 1
+                last_t = p.t
+                if seen >= 3:
+                    self.get_logger().info(
+                        f"{leg_label}: camera back after "
+                        f"{time.monotonic() - t0 + age:.2f}s -- resuming the leg "
+                        f"from ({p.x:.1f},{p.y:.1f})")
+                    return True
+        self.stop_and_verify(leg_label, timeout_sec=1.5)
+        self.fail(FAIL_VISION_LOST,
+            f"{leg_label}: camera out for over {CAMERA_OUTAGE_HOLD_SEC:.0f}s "
+            "while holding -- aborting route")
+        return False
+
+    def drive_leg(self, target_x: float, target_y: float, leg_label: str,
+                  reverse: bool = False) -> bool:
         """Returns False on error/abort (caller should stop the route).
+
+        reverse=True: tail first, deadlock yields only (see the wheel law).
 
         Steers toward the LIVE target every tick (distance/heading
         recomputed fresh from the current camera pose each iteration) rather
@@ -3035,6 +3188,11 @@ class CameraGridNavigator(Node):
         pipeline changes again, re-measure via --stop-test before trusting
         this default (stopping distance is not necessarily linear in RPM,
         and is sensitive to real pose latency)."""
+        # Never START a leg blind: a robot that finished its last leg on the
+        # encoders waits here, on the node, for the camera.
+        if not self._wait_for_camera(leg_label):
+            return False
+        blind_logged = False
         pose = self.control_pose()
         if pose is None:
             self.get_logger().error(
@@ -3043,9 +3201,32 @@ class CameraGridNavigator(Node):
             return False
 
         self.get_logger().info(
-            f"{leg_label}: driving from ({pose.x:.1f},{pose.y:.1f}) to "
+            f"{leg_label}: {'REVERSING' if reverse else 'driving'} from "
+            f"({pose.x:.1f},{pose.y:.1f}) to "
             f"({target_x:.1f},{target_y:.1f}), cruise={self.args.cruise_rpm:.0f}RPM, "
             f"brake_lead={self.args.brake_lead_in:.2f}in")
+        # Per-robot aim correction (2026-10-22). The log line above keeps the
+        # TRUE node coordinate, so tools/analyze_stops.py goes on measuring
+        # against it; only the point steered to moves.
+        aimed = None if reverse else aim_corrected_target(
+            pose.x, pose.y, target_x, target_y, leg_label,
+            getattr(self.args, "aim_lateral_in", None),
+            getattr(self.args, "aim_along_in", None))
+        # Direction of travel for the brake test below: fixed at the start.
+        _lx, _ly = target_x - pose.x, target_y - pose.y
+        if aimed is not None:
+            _lx, _ly = aimed[0] - pose.x, aimed[1] - pose.y
+        _ll = math.hypot(_lx, _ly)
+        leg_ux, leg_uy = ((_lx / _ll, _ly / _ll) if _ll >= 1.0 else (None, None))
+        if aimed is not None:
+            target_x, target_y, kind, bias = aimed
+            past = float((getattr(self.args, "aim_along_in", None) or {})
+                         .get(kind, 0.0) or 0.0)
+            self.get_logger().info(
+                f"{leg_label}: aim corrected for this robot's measured resting "
+                f"offset at {kind.replace('_', ' ')} targets: "
+                f"{abs(bias):.2f}in {'right' if bias >= 0 else 'left'}, "
+                f"{abs(past):.2f}in {'short' if past >= 0 else 'long'}")
 
         # Re-arm WHEEL_FOLLOW_MODE HERE (2026-08-20, moved from the END of
         # the PREVIOUS drive_leg() call -- see stop_only()'s docstring for
@@ -3057,10 +3238,23 @@ class CameraGridNavigator(Node):
         # IDLE (via stop_only()) for as long as it takes to decide whether
         # a ROTATE_REL follows, instead of sitting armed in
         # STATE_WHEEL_FOLLOW while that decision is made.
-        if not self.enter_wheel_follow_mode():
+        #
+        # Waits up to WHEEL_FOLLOW_ACK_TIMEOUT_SEC (8 s), not 3 s, feeding the
+        # firmware's watchdog the whole time (enter_wheel_follow_mode does).
+        # 2026-10-26 Round 2 run 10: Alvik1's WHEEL_FOLLOW_MODE reached it ~3 s
+        # late, twice; the 3 s wait gave up just as the robot entered the
+        # mode, stopped feeding it, and the firmware's 1 s watchdog raised
+        # WHEEL_CMD_TIMEOUT -- excluding a robot whose command had arrived.
+        t_arm = time.monotonic()
+        if not self.enter_wheel_follow_mode(timeout_sec=WHEEL_FOLLOW_ACK_TIMEOUT_SEC):
             self.fail(FAIL_MODE_ACK_LOST,
-                f"{leg_label}: did not ack WHEEL_FOLLOW_MODE -- aborting route")
+                f"{leg_label}: did not ack WHEEL_FOLLOW_MODE within "
+                f"{WHEEL_FOLLOW_ACK_TIMEOUT_SEC:.0f}s -- aborting route")
             return False
+        if time.monotonic() - t_arm > 1.5:
+            self.get_logger().warning(
+                f"{leg_label}: WHEEL_FOLLOW_MODE acknowledged only after "
+                f"{time.monotonic() - t_arm:.1f}s -- this robot's link is slow")
 
         # Stall backstop -- same rationale as stop_test()'s: a watchdog trip
         # (ERROR WHEEL_CMD_TIMEOUT -> IDLE) mid-leg can land in the gap
@@ -3072,8 +3266,25 @@ class CameraGridNavigator(Node):
         t_progress0 = time.monotonic()
 
         period = 1.0 / CONTROL_HZ
+        # LOOP-GAP INSTRUMENTATION. turn_to_heading_staged() has had this
+        # since 2026-09-24; drive_leg() never did -- which left the one loop
+        # that runs for most of a mission unmeasured. It mattered on
+        # 2026-10-15: the 2026-09-29 finding that exonerated the navigator
+        # ("596 turns, worst control-loop gap 85ms") came from the staged
+        # turn, and AGV_TURN_METHOD=rotate_rel does not run that function at
+        # all, so those five missions produced no control-loop timing
+        # evidence of any kind. Tracked here so the next run answers "did
+        # this side stop sending?" directly instead of by inference.
+        max_gap = 0.0
+        prev_tick = None
+        ticks = 0
+        t_loop_start = time.monotonic()
         while rclpy.ok():
             loop_t0 = time.monotonic()
+            if prev_tick is not None:
+                max_gap = max(max_gap, loop_t0 - prev_tick)
+            prev_tick = loop_t0
+            ticks += 1
             self._spin_once(0.0)
 
             if self.errored:
@@ -3101,6 +3312,41 @@ class CameraGridNavigator(Node):
                     f"{leg_label}: {self.localization_source_label()} lost -- "
                     "STOP sent, aborting route")
                 return False
+
+            # CAMERA OUTAGE (2026-10-23). The control pose here is the robot's
+            # encoder odometry (/AlvikN_pose) plus camera corrections, so it
+            # keeps working when the camera stops. Operator's rule: finish
+            # THIS leg on the encoders and stop on its node -- a robot halted
+            # mid-edge is in nobody's plan -- then wait there for the camera
+            # (drive_leg/turn start). Odometry over one 10in leg drifts a
+            # fraction of an inch; the backlog that arrives when the camera
+            # returns is now dropped (VISION_BACKLOG_SEC), which is what drove
+            # Alvik2 3.3in off the path. Only if the camera stays out longer
+            # than a leg takes is the robot stopped where it is.
+            blind = (math.inf if self.last_pose is None
+                     else loop_t0 - self.last_pose.t)
+            if (self.localization_mode == "camera_assist"
+                    and blind > CAMERA_ASSIST_MAX_BLIND_SEC and not blind_logged):
+                blind_logged = True
+                self.get_logger().warning(
+                    f"{leg_label}: no camera pose for {blind:.2f}s -- finishing "
+                    "this leg on encoder odometry, then waiting on the node "
+                    "for the camera")
+            if (self.localization_mode == "camera_assist"
+                    and blind > CAMERA_ASSIST_BLIND_FINISH_SEC):
+                if not self._hold_for_camera(leg_label):
+                    return False
+                if not self.enter_wheel_follow_mode(
+                        timeout_sec=WHEEL_FOLLOW_ACK_TIMEOUT_SEC):
+                    self.fail(FAIL_MODE_ACK_LOST,
+                        f"{leg_label}: did not ack WHEEL_FOLLOW_MODE after a "
+                        "camera outage -- aborting route")
+                    return False
+                best_dist = math.inf
+                t_progress0 = time.monotonic()
+                prev_tick = None
+                blind_logged = False
+                continue
 
             dx = target_x - pose.x
             dy = target_y - pose.y
@@ -3131,7 +3377,29 @@ class CameraGridNavigator(Node):
                 self.stop_and_verify(leg_label)
                 return False
 
-            if dist_to_target <= self.args.brake_lead_in:
+            # OVERSHOT: the target has fallen behind. Stop -- never steer back
+            # to it nose-first, which is a wide U-turn across the grid
+            # (2026-10-23 Round 1 run 1: Alvik3 passed node 38 unbraked and
+            # arced 20in into a bay until the 5 s no-progress timeout). The
+            # supervisor's retry resyncs from where the robot really is.
+            if dist_to_target > best_dist + LEG_OVERSHOOT_ABORT_IN:
+                self.stop_only()
+                self.fail(FAIL_OVERSHOT,
+                    f"{leg_label}: overshot -- came within {best_dist:.2f}in "
+                    f"of the target, now {dist_to_target:.2f}in away; stopped "
+                    "rather than turning back")
+                return False
+
+            # BRAKE ON THE DISTANCE LEFT ALONG THE LEG, not straight-line
+            # distance. A robot that is off to one side never gets within
+            # brake_lead of the target, so the old test fired late -- or,
+            # 1.71in to the side, never: 2026-10-23 Round 1, Alvik3 started
+            # 140->38 1.85in off the lane and drove past node 38 unbraked,
+            # twice. Straight-line distance is kept as the other trigger.
+            along_left = (dx * leg_ux + dy * leg_uy) if leg_ux is not None \
+                else dist_to_target
+            if (dist_to_target <= self.args.brake_lead_in
+                    or along_left <= self.args.brake_lead_in):
                 # Log BEFORE stop_only() -- confirmed 2026-07-28: logging
                 # after made every prior "arrived" timestamp actually mark the
                 # END of the stop round trip, not the moment arrival was
@@ -3152,16 +3420,27 @@ class CameraGridNavigator(Node):
                 # root-cause writeup. WHEEL_FOLLOW_MODE is now re-armed at
                 # the START of the NEXT drive_leg() call instead (see the
                 # top of this function), not here.
+                # The loop-gap figure rides along on the arrival line so every
+                # leg carries its own timing evidence. A gap over 0.300 s is
+                # the firmware's brake threshold: past that, THIS side caused
+                # the stall. Under it, the setpoints went out on time and a
+                # reported WHEEL_CMD stall happened downstream of publish().
+                hz = ticks / max(1e-6, time.monotonic() - t_loop_start)
                 self.get_logger().info(
                     f"{leg_label}: brake fired ({dist_to_target:.2f}in short of "
-                    "target)")
+                    f"target) [loop {hz:.1f}Hz target {CONTROL_HZ:.0f}, "
+                    f"worst gap {max_gap * 1000:.0f}ms"
+                    + (" -- OVER THE 300ms FIRMWARE BRAKE WATCHDOG"
+                       if max_gap > 0.300 else "") + "]")
                 self.stop_only()
                 return True
 
             target_heading = heading_to_target_deg(dx, dy)
-            heading_err = yaw_error_deg(target_heading, pose.yaw)
+            heading_err = yaw_error_deg(
+                target_heading, (pose.yaw + 180.0) if reverse else pose.yaw)
 
-            # Always drive nose-forward -- never reverse. Confirmed
+            # Nose-forward unless the caller asked for reverse=True (a
+            # deadlock yield only, see the docstring). Confirmed
             # 2026-07-27: the reference driveTo() this was ported from
             # reverses when the target is >90deg behind (free-roaming robot,
             # no fixed path), but this robot must stay on the taped grid
@@ -3172,11 +3451,33 @@ class CameraGridNavigator(Node):
             # previous leg's own square-up turn), so heading_err should
             # rarely be large in practice; if it ever is, turn hard toward
             # the target rather than backing away from it off the tape.
+            # steer_trim_rpm: this robot's own wheel imbalance, fed forward.
+            # A proportional-only loop holds a standing heading error against
+            # a constant pull -- Alvik3 drove every lattice leg 4.5deg off its
+            # target bearing (2026-10-15..21, 2953 samples) and so finished
+            # 0.5in to its left at every stop, which is why it parked closer
+            # to Alvik2 than to Alvik4. The trim is the correction that error
+            # was already supplying (kp_yaw * standing error), so the P term
+            # is left to handle disturbances only. Outside the clamp, so the
+            # correction authority stays symmetric about it. Per robot, from
+            # robot_drive_calibration.json; tools/analyze_stops.py derives it.
             turn_adjust = max(-self.args.max_turn_adjust,
                                min(self.args.max_turn_adjust,
                                    self.args.kp_yaw * heading_err))
-            left = self.args.cruise_rpm - turn_adjust
-            right = self.args.cruise_rpm + turn_adjust
+            # REVERSE (2026-10-30, a deadlock yield by a robot with no room
+            # to turn; operator: "the wheel speed would work just the same as
+            # it does forward, but just with negative numbers"). The TAIL is
+            # the steered point: the error above is taken against yaw+180,
+            # both wheels run at -cruise, and the differential keeps its
+            # sign, because rotating the robot rotates its tail by the same
+            # angle. The per-robot aim offsets and steering trim are forward
+            # measurements, so they are left out. Braking, overshoot and
+            # stall handling are distance-based and unchanged.
+            if not reverse:
+                turn_adjust += getattr(self.args, "steer_trim_rpm", 0.0)
+            cruise = -self.args.cruise_rpm if reverse else self.args.cruise_rpm
+            left = cruise - turn_adjust
+            right = cruise + turn_adjust
             self.send_wheel(left, right)
 
             if self.args.verbose:
@@ -3534,6 +3835,10 @@ class CameraGridNavigator(Node):
         tolerance. tol_deg defaults to --turn-tol-deg; workstation and depot
         arrivals pass the tight one, because those are the orientations that
         cause collisions when they are wrong."""
+        # A robot that finished its leg on the encoders during a camera
+        # outage waits here for the camera: the turn is verified by it.
+        if not self._wait_for_camera(leg_label):
+            return False
         if not self._turn_to_heading_core(target_heading_deg, leg_label):
             return False
         tol = self.args.turn_tol_deg if tol_deg is None else tol_deg
@@ -3637,11 +3942,13 @@ class CameraGridNavigator(Node):
         (2.33deg) and speed (1.28s), so it bought nothing over odom alone
         and was not adopted -- see yaw_stress_rotation()'s docstring for
         all three modes if this needs re-litigating."""
-        # One control paradigm for the whole route, or none. Environment
-        # first so the fleet can be switched from the supervisor's launch
-        # line without touching fleetSupervisor.py, which reaches this method
-        # through four separate call sites of its own.
-        method = (os.environ.get("AGV_TURN_METHOD")
+        # One control paradigm for the whole route, or none. The mission's
+        # own choice first (the Run tab's Drive mode buttons, handed down by
+        # fleetSupervisor's VisionLegWorker), then the environment so the
+        # fleet can still be switched from the supervisor's launch line,
+        # then this navigator's argument.
+        method = (getattr(self.args, "mission_turn_method", None)
+                  or os.environ.get("AGV_TURN_METHOD")
                   or getattr(self.args, "turn_method", "rotate_rel"))
         if method == "staged":
             return self.turn_to_heading_staged(target_heading_deg, leg_label)

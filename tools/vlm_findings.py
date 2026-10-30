@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Compute the 2x2x2 findings into one JSON, so figures never retype a number.
 
-Reads analysis/vlm_master.json (produced by vlm_aggregate.py) and writes
-analysis/findings_<date>.json. Everything the figures and the write-up quote
+Reads data/vlm_analysis/vlm_master.json (produced by vlm_aggregate.py) and writes
+data/vlm_analysis/findings_<date>.json. Everything the figures and the write-up quote
 comes from here, so a number on a slide can be traced to a block-level
 difference and from there to individual answers.
 

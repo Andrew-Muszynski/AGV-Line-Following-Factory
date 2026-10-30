@@ -8,7 +8,7 @@ Usage:
     python3 build_yaw_stress_workbook.py <run_dir> [output.xlsx]
 
 Example:
-    python3 build_yaw_stress_workbook.py fleet_yaw_stress_20260818_173337 \\
+    python3 build_yaw_stress_workbook.py data/yaw_stress/fleet_yaw_stress_20260818_173337 \\
         YAW_STRESS_TEST_FINDINGS.xlsx
 
 Requires: pandas, openpyxl (pip install openpyxl if missing).

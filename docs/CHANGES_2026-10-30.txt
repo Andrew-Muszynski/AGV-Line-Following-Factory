@@ -1,0 +1,101 @@
+TESTBED CHANGES -- 2026-10-30
+Branch: alns-experiment-2026-10-30 (from full-testbed-stack-2026-10, last commit 2026-10-07)
+State: both ALNS shakedowns passed on hardware (6 robots, 24 workstations).
+       joint 328 s, sequential 357 s (5:57). The 5-pair experiment runs on this code.
+
+
+1. ROBOT FIRMWARE
+- Alvik carrier (STM32 motor board) firmware updated to 1.1.1 on all six robots.
+  Alvik5 was on an older version before the update.
+- Method: the Arduino Alvik web updater, then MicroPython update_firmware() for the carrier.
+- The testbed sketch was then restored on each Nano ESP32:
+  firmware/AGV_Factory_camera_correction_v2/AGV_Factory_camera_correction_v2.ino
+- Restoring the sketch after MicroPython: take the Nano out of the robot, jumper B1 to GND,
+  press reset (LED turns green), remove the jumper, then in the Arduino IDE choose
+  Tools > Programmer > Esptool and Sketch > Upload Using Programmer.
+- The testbed sketch itself is unchanged.
+- Why: Alvik1 kept accepting ROTATE_REL and then not moving (mostly clockwise turns).
+  After the update its turns worked through both shakedowns. That is not yet proof
+  of a fix; watch for "turn toward next leg failed" on Alvik1.
+
+
+2. JOINT vs SEQUENTIAL ALNS (new: traffic/alns.py, traffic/run_alns.py, traffic/test_alns.py)
+- Both arms run the same ALNS search: same start, operators, seed and time budget.
+  Only the score differs:
+    sequential = traffic-free A* makespan; prioritized planning routes the winner afterwards
+    joint      = prioritized-planning makespan inside the search
+- Plans are made offline before each run. ALNS does not re-plan during a run.
+- Workload: 24 workstations (the 12 DOE bays plus 12 more), 6 robots, capacity 2
+  (parts must be redeployed), any robot may pick up any READY bay.
+- Drop rule: the robot turns, waits the 2 s DWELL, and leaves. The workstation then
+  processes for 30 s and becomes READY. The robot does not wait for processing.
+- Frozen experiment plans: generated_plans/ALNS24_joint.json and ALNS24_seq.json.
+- Run order for the 5 pairs: J/S, S/J, S/J, J/S, S/J.
+
+
+3. SUPERVISOR FIXES (fleet/fleetSupervisor.py, fleet/dispatch_advisor.py, fleet/camera_grid_navigate.py)
+Deadlocks seen in today's shakedowns, each fixed and covered by a test:
+- Lane head-on: two robots on neighbouring bay entries both heading into the lattice
+  node between them. A robot may no longer move onto an entry while another robot on
+  the far entry needs that node. (test_lane_head_on.py)
+- Leaving a workstation: a robot in a workstation now also waits while another robot's
+  next move is onto a node beside its entry, not only while one is standing there.
+  (test_exit_approach_trim.py)
+- Small heading trims: a robot going straight through a node may skip a blocked trim
+  of 10 deg or less when the exact footprints stay at least 0.25 in apart.
+  (test_exit_approach_trim.py)
+- Step-aside choice: the deadlock resolver looked 2 nodes ahead instead of 3 (it counted
+  plan items, and turn items sit between moves), so it parked robots inside the other
+  robot's turn. It now compares every spot within one or two moves against both robots'
+  next nodes and other robots' routes. (test_yield_choice.py)
+- No room to turn: a robot that cannot turn may leave straight ahead (along the lane or
+  into its own workstation). As a last resort it may back straight out with negative
+  wheel speeds; no firmware change was needed. (test_yield_choice.py, test_reverse_yield.py)
+  Reversing has not yet happened on the robots.
+- Switching between 4 and 6 robots no longer stalls the supervisor. A status message from
+  a robot outside the current mission raised an error that ended the ROS spin thread.
+  The supervisor now runs run after run without a restart. (test_mission_switch.py)
+- Drop rule above implemented in the supervisor's pick-up gate. (test_pickup_gate.py)
+
+
+4. DASHBOARD (static/js/*, templates/index.html, app.py, metrics_engine.py)
+- Workstation colours now follow the robots: AWAIT until a real drop, PROC for 30 s from
+  the end of the drop's DWELL, READY until the collecting robot leaves, then DONE. They
+  used to follow the plan's clock, which ran ahead of the robots. The supervisor sends a
+  "bay" event at each real change. (fleet/test_bay_events.py)
+- Events survive a supervisor restart (they were dropped as duplicates).
+- Script links carry a version number, so the browser cannot run stale page code.
+- Metrics page: new "workstations completed" (24/24), with jobs (48/48 = drop + pick-up
+  per workstation) shown underneath. Job and throughput metrics are unchanged.
+- The page passes the ALNS drop rule through to the supervisor.
+
+
+5. ALSO INCLUDED (uncommitted work since 2026-10-07)
+- traffic/: the DOE traffic planners (A*, prioritized planning, CBS, wait insertion,
+  SIPP), plan export and validation.
+- One shared coordinate file for all programs: fleet/testbed_coordinates.json.
+- Per-robot drive calibration: fleet/robot_drive_calibration.json.
+- Run video recording (page 6) and the overhead camera recorder (overhead_cam/).
+- Whole-table camera accuracy capture tool: tools/grab_clean_frames.py.
+- About 30 new fleet test files; repository tidy-up (firmware/, docs/, tests/).
+
+
+6. NOT INCLUDED
+- Collected data: run logs, recordings, metrics database, camera frames, VLM samples.
+- Thesis documents, slide decks, planning notes.
+
+
+TESTS
+- fleet/: all 38 test files pass.
+- traffic/test_alns.py: 10 pass.
+- tests/test_metrics.py: 19 pass, 2 fail. Both failures were already there before these
+  changes (aborted-run makespan status reads "n/a", and a definition-version endpoint
+  returns 409).
+
+
+NOTES
+The deadlock fixes came from watching real runs, one failure at a time. Each fix holds
+or moves only the robots involved and uses the exact robot footprint geometry already
+used by the collision guard, so none of them loosens a safety margin. The supervisor
+must not change between the experiment pairs: joint and sequential have to be compared
+on the same code.

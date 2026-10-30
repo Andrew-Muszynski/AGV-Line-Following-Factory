@@ -193,6 +193,16 @@ VISION_PROX_CELLS = 0.75    # proximity warning threshold on the lattice
 VISION_EMERGENCY_CELLS = 0.40
 EMERGENCY_BRAKE_COOLDOWN_SEC = 3.0   # don't re-STOP the same pair every tick
 VISION_TARGET_BLOCK_CELLS = 0.6  # another robot this close to a move target = hold
+#: Inside those radii, a hold now needs the footprints to actually come
+#: within this of each other along the move (FleetSupervisor._path_clears).
+#: Square-on robots 5.0in apart have 1.0in; this allows for lane tracking
+#: error and arrival offset, and still holds beside a robot that is turning.
+CORRIDOR_FOOTPRINT_MARGIN_IN = 0.5
+#: A robot PARKED off the lane (bay spur, depot slot) holds a move only if its
+#: real footprint comes within this of the move's path. A correctly parked
+#: robot leaves ~1in; 0.25in fires only when it rests ~0.8in+ too deep (2 of
+#: 304 workstation stops, 2026-10-15..23).
+PARKED_INTRUSION_MARGIN_IN = 0.25
 # Corridor-gate radius: how close another robot must be to a node in this move's
 # path to count as physically occupying it. Catches a robot ROTATING in place on
 # a shared node (2026-07-21 depot collision: Alvik2 turning at node 1 blocked
@@ -256,6 +266,37 @@ COLLISION_CONTACT_IN = 5.625
 # clears (5.80in). BOTH 0.5in off toward each other closes to 5.30in and is
 # refused -- which is right, that overlaps by 0.325in.
 ROTATION_SWEEP_IN = 5.625
+# How long await_rotation_clearance() will hold a rotation before failing the
+# leg. Matches RECOVERY_STAGE_TIMEOUT_SEC: long enough for a neighbour to
+# finish a leg and move on, short enough that a genuine standoff surfaces as
+# a failed leg rather than a silent stall.
+ROTATION_CLEAR_TIMEOUT_SEC = 20.0
+#: How long a rotation the gate has just allowed is treated as in progress
+#: before the yaw rate can show it (see VisionMonitor.claim_rotation). A turn
+#: and its settle take ~1.3-2.5s; past that the measured yaw rate takes over.
+ROTATION_CLAIM_SEC = 3.0
+#: A drive leg starting more than this off its own line is refused rather
+#: than driven -- see VisionLegWorker._ready_to_depart(). Legs brake 1.0-1.4in
+#: short ALONG the line; sideways a robot on the tape is within ~0.5in.
+LEG_START_LATERAL_IN = 3.0
+#: A drive leg starting more than this off its heading turns first.
+DEPART_ALIGN_DEG = 20.0
+#: A robot going STRAIGHT ON through a node whose only "turn" there is a
+#: trim of arrival drift no bigger than this may skip it while the rotation
+#: gate is blocked, and let drive_leg() steer it out -- if the exact
+#: footprints say the drive stays clear (straight_trim_clear). 2026-10-30:
+#: Alvik5 reached 43 5.1deg off on a straight 35->43->51, was held for that
+#: trim by Alvik4 4.8in away at entry 143, and Alvik4's real 90deg turn was
+#: held by Alvik5 -- deadlock abort. Well inside DEPART_ALIGN_DEG.
+STRAIGHT_TRIM_SKIP_MAX_DEG = 10.0
+#: How far along the leg straight_trim_clear() checks: a robot side (4in)
+#: plus the 5in entry spacing clears anything on a neighbouring node.
+STRAIGHT_TRIM_CHECK_IN = 9.0
+ROTATION_CLEAR_POLL_SEC = 0.10
+# A yield is the deadlock resolver's own escape move, so it cannot afford to
+# wait out a 20 s hold -- if its departure turn is blocked, the sidestep was
+# the wrong choice and failing fast returns control to the resolver.
+YIELD_ROTATION_CLEAR_TIMEOUT_SEC = 3.0
 # Everything here is measured in INCHES, deliberately. The lattice-only
 # proximity_pairs() works in cells and filters to GRID_LO..GRID_HI, which
 # excludes the depot lane entirely -- and the depot lane is exactly where
@@ -266,8 +307,34 @@ ROTATION_SWEEP_IN = 5.625
 # continuously on two correctly parked robots. It is therefore based on
 # CLOSING SPEED -- two robots sitting 6.2in apart are not closing and are
 # fine, two robots closing at 6in/s at the same separation are not.
-COLLISION_REACTION_SEC = 0.35   # stop latency to allow for, measured-ish:
-                                # ~4deg of turn coast at 6 RPM is ~0.37s
+# 0.35 -> 0.56 after the 2026-10-15 contact (Alvik1/Alvik3, run 9ab100ec).
+#
+# THE OLD VALUE BUDGETED ONLY THE ROBOT'S STOPPING TIME, NOT THE SYSTEM'S
+# TIME TO NOTICE. 0.35 came from turn coast (~4deg at 6 RPM is ~0.37s),
+# which is how long the CHASSIS takes to stop once told. But the guard can
+# only act on a pose sample it has received, and the measured pose cadence
+# in that run was 209ms median (p90 219ms, max 233ms). So the earliest the
+# guard can possibly react is one sample interval after the threshold is
+# crossed, and that interval was nowhere in the budget.
+#
+# What it cost, from the recorded trace:
+#     88.65s  sep 7.29in  closing ~3.0in/s  trigger 6.59  -> no fire
+#     88.86s  sep 6.28in                    trigger 6.29  -> fires (0.49in
+#                                            of braking still to come)
+#     89.27s  sep 5.31in  stopped
+#   true contact for their actual orientation was 5.32in, so they stopped
+#   0.04in inside it -- inside the 0.06in vision rms, i.e. touching.
+#
+# 0.56 = 0.35 stopping + 0.21 measured sensing interval. On this trace it
+# fires at 88.65 (trigger 7.31 >= sep 7.29) and, with the same 0.49in of
+# braking, stops near 6.8in -- 1.5in clear.
+#
+# COST, measured over 42 six-robot vision runs / 561 fleet-minutes: avoid
+# episodes rise from 0.69 to 0.97 per fleet-minute, 1.39x. An avoid is a
+# brief mutual stop that resumes; a contact aborts the run. 0.70 was also
+# tried (1.72x) and is not justified by the measured cadence.
+COLLISION_REACTION_SEC = 0.56   # robot stop latency (0.35) + one pose
+                                # interval (0.21), both measured
 COLLISION_MIN_CLOSING_IN_S = 0.5  # below this, treat as not closing (noise)
 # Closing rate is measured over AT LEAST this long. Consecutive vision frames
 # are ~20ms apart and the two robots in a pair do not update on the same
@@ -284,6 +351,20 @@ COLLISION_MIN_CLOSING_IN_S = 0.5  # below this, treat as not closing (noise)
 # the leg. A parked robot is not closing on anyone; only genuine overlap
 # counts. 4.0in is two axis-aligned robots (~3.94in across) actually touching.
 COLLISION_PARKED_CONTACT_IN = 4.0
+# ...but PARKED MEANS STOPPED, not merely located in a slot or bay spur. The
+# position-only test exempted Alvik1 while it BACKED OUT of bay 73 into
+# Alvik2's lane on 2026-10-19: the pair was judged on overlap alone, the
+# predictive stop never fired, and they touched. Above this speed (in/s) a
+# robot in a dead end is leaving it and gets the normal predictive check.
+# 1.0 sits well above vision jitter (~0.2in/s) and well below cruise (~3.2).
+PARKED_MAX_SPEED_IN_S = 1.0
+# ...and PARKED MEANS IN A SLOT, not on the depot lane. The slots sit at
+# y ~10.7in (-0.6 cells), the lane (DE1..DE7, node 0) at y ~3in (-1.37). The
+# old test, "anywhere below the grid", exempted a robot STANDING ON THE LANE:
+# 2026-10-22 Alvik1's turn at DE1 failed, it stood there, Alvik2 was sent
+# DE2->DE1 and drove into it -- 0.83in overlap -- with no predictive stop,
+# because the pair was judged on overlap alone. Midway between the rows:
+DEPOT_SLOT_MIN_Y_CELLS = -1.0
 COLLISION_MIN_DT_SEC = 0.15
 # Above this, the "closing rate" is a vision glitch, not two robots. Cruise is
 # ~3.2in/s, so two robots driving at each other close at ~6.4in/s; 10 leaves
@@ -377,6 +458,171 @@ def contact_distance_in(yaw_a_deg, yaw_b_deg, dx: float, dy: float) -> float:
     return half
 
 
+#: Yaw rate above which a robot counts as TURNING. A turning robot is judged
+#: as the disc its corners sweep, not as the square it happened to be in the
+#: last frame. Drive legs trim heading by a few deg/s; turns run 60-150.
+COLLISION_TURNING_DEG_S = 30.0
+#: The predicted gap must stay above this through the stop horizon. Covers
+#: pose noise (~0.05in) and heading noise (~1deg, ~0.05in at a corner).
+COLLISION_PREDICT_MARGIN_IN = 0.25
+
+
+def footprint_gap_in(dx: float, dy: float, yaw_a, yaw_b) -> float:
+    """Clearance between two robots' footprints, in inches; <= 0 is contact.
+
+    (dx, dy) runs from A's centre to B's. A yaw of None means that robot is
+    turning: it is the disc of its corner radius, every orientation at once.
+
+    WHY NOT contact_distance_in(). That projects onto ONE axis, the line
+    between the centres, which for two squares is only one of the candidate
+    separating axes -- and at a diagonal bearing it is the worst one, so it
+    reports contact where there is none. Two square-on robots 5.0in apart
+    side to side have exactly 1.0in between them wherever one is along the
+    other (operator, 2026-10-16), but the centre-line projection called it
+    5.20in "needed" at a 2in stagger. That is how a robot driving up the
+    east leg of a workstation cell was emergency-stopped beside a robot
+    standing at the bay entry, 5in away, on 2026-10-16.
+
+    Exact for the shapes involved: the separating-axis test over all four
+    face normals for square/square, point-to-square distance for disc/square.
+    """
+    half = ROBOT_SIDE_IN / 2.0
+    radius = ROBOT_SIDE_IN / math.sqrt(2.0)
+    if yaw_a is None and yaw_b is None:
+        return math.hypot(dx, dy) - 2.0 * radius
+    if yaw_a is None or yaw_b is None:
+        sq_yaw = yaw_b if yaw_a is None else yaw_a
+        # Vector from the square's centre to the disc's centre.
+        vx, vy = (-dx, -dy) if yaw_a is None else (dx, dy)
+        t = math.radians(sq_yaw)
+        lx = abs(vx * math.cos(t) + vy * math.sin(t)) - half
+        ly = abs(-vx * math.sin(t) + vy * math.cos(t)) - half
+        if lx > 0.0 or ly > 0.0:
+            d = math.hypot(max(lx, 0.0), max(ly, 0.0))
+        else:
+            d = max(lx, ly)
+        return d - radius
+    best = -math.inf
+    for axis in (yaw_a, yaw_a + 90.0, yaw_b, yaw_b + 90.0):
+        a = math.radians(axis)
+        proj = abs(dx * math.cos(a) + dy * math.sin(a))
+        reach = 0.0
+        for yaw in (yaw_a, yaw_b):
+            p = math.radians(yaw - axis)
+            reach += half * (abs(math.cos(p)) + abs(math.sin(p)))
+        best = max(best, proj - reach)
+    return best
+
+
+def predicted_min_gap_in(dx: float, dy: float, rvx: float, rvy: float,
+                         yaw_a, yaw_b,
+                         horizon_sec: float = None, steps: int = 10) -> float:
+    """Smallest footprint gap over the next `horizon_sec`, both robots holding
+    their current velocity. (rvx, rvy) is B's velocity relative to A.
+
+    This is what the guard should have asked all along: not "how fast is the
+    distance between centres shrinking", but "do the two footprints meet
+    before we could stop them". A robot driving PAST another closes the
+    centre distance quickly at first and then not at all; extrapolating that
+    initial rate is what stopped legal pass-bys. Excludes t=0, so a pair that
+    is close but separating is never stopped.
+    """
+    horizon = COLLISION_REACTION_SEC if horizon_sec is None else horizon_sec
+    best = math.inf
+    for k in range(1, steps + 1):
+        t = horizon * k / steps
+        best = min(best, footprint_gap_in(dx + rvx * t, dy + rvy * t,
+                                          yaw_a, yaw_b))
+    return best
+
+
+#: How far past the end of its current leg a driving robot is assumed able to
+#: run before it stops (brake lead is applied BEFORE the target; this covers
+#: the coast). See predicted_min_gap_legs_in().
+LEG_OVERSHOOT_IN = 0.75
+
+
+def predicted_min_gap_legs_in(pa, va, stop_a, pb, vb, stop_b, yaw_a, yaw_b,
+                              horizon_sec: float = None,
+                              steps: int = 10) -> float:
+    """predicted_min_gap_in(), but each robot stops where its leg ends.
+
+    pa/pb: positions (in); va/vb: velocities (in/s); stop_a/stop_b: seconds
+    until that robot reaches the end of its current leg (math.inf if it is
+    not driving a known leg). A robot braking onto its target is not going
+    to keep going. 2026-10-21: Alvik2 braking at DE1 while Alvik1 pulled off
+    node 0 northbound -- 2.52 in apart -- was extrapolated 2.9 in past DE1
+    into Alvik1's footprint and both were emergency-stopped; Alvik1 then
+    failed its leg. The same false stop hit Alvik3/Alvik4 in the depot
+    funnel that morning.
+    """
+    horizon = COLLISION_REACTION_SEC if horizon_sec is None else horizon_sec
+    best = math.inf
+    for k in range(1, steps + 1):
+        tau = horizon * k / steps
+        ta, tb = min(tau, stop_a), min(tau, stop_b)
+        dx = (pb[0] + vb[0] * tb) - (pa[0] + va[0] * ta)
+        dy = (pb[1] + vb[1] * tb) - (pa[1] + va[1] * ta)
+        best = min(best, footprint_gap_in(dx, dy, yaw_a, yaw_b))
+    return best
+
+
+#: Margin for two robots sliding past each other in neighbouring parallel
+#: lanes (see lane_passby()). Only their sideways gap matters there, and it
+#: does not shrink by itself; pose noise is ~0.05in. 2026-10-22 SHAKE PP:
+#: Alvik2 driving south into bay 1 (x 18.5) and Alvik3 north up the west
+#: column (x 13.6), 4.8in centre to centre, 0.8in apart square-on, were
+#: emergency-stopped at a predicted 0.25in because both were tilted 5-7deg;
+#: neither could resume, Alvik3 was excluded, and the run deadlocked.
+COLLISION_PASSBY_MARGIN_IN = 0.10
+#: How square to a lane both robots and their relative motion must be.
+PASSBY_ALIGN_DEG = 12.0
+
+
+def lane_passby(yaw_a, yaw_b, rvx: float, rvy: float,
+                dx: float, dy: float) -> bool:
+    """True when two robots are passing each other in DIFFERENT parallel
+    lanes: neither turning, both within PASSBY_ALIGN_DEG of the grid axes,
+    their relative motion along one axis, and their centres at least a
+    robot's width apart across it (so they are not in the same lane)."""
+    if yaw_a is None or yaw_b is None:
+        return False
+    for yaw in (yaw_a, yaw_b):
+        m = yaw % 90.0
+        if min(m, 90.0 - m) > PASSBY_ALIGN_DEG:
+            return False
+    along, across, off = ((rvy, rvx, dx) if abs(rvy) >= abs(rvx)
+                          else (rvx, rvy, dy))
+    if abs(along) < 1e-6:
+        return False
+    if math.degrees(math.atan2(abs(across), abs(along))) > PASSBY_ALIGN_DEG:
+        return False
+    return abs(off) >= ROBOT_SIDE_IN
+
+
+def motion_verdict(gap_now: float, min_gap: float, rel_speed: float,
+                   sep_in: float, parked_pair: bool = False,
+                   margin: float | None = None) -> str | None:
+    """'collision' | 'avoid' | None, from footprints and relative motion.
+
+    collision: the footprints overlap now.
+    avoid:     they will come within `margin` (COLLISION_PREDICT_MARGIN_IN by
+               default) of each other inside COLLISION_REACTION_SEC, and are
+               getting closer.
+    A parked pair keeps its own rule -- see COLLISION_PARKED_CONTACT_IN.
+    """
+    if parked_pair:
+        return "collision" if sep_in <= COLLISION_PARKED_CONTACT_IN else None
+    if gap_now <= 0.0:
+        return "collision"
+    if rel_speed < COLLISION_MIN_CLOSING_IN_S:
+        return None
+    m = COLLISION_PREDICT_MARGIN_IN if margin is None else margin
+    if min_gap <= m and min_gap < gap_now:
+        return "avoid"
+    return None
+
+
 def collision_verdict(sep_in: float, closing_in_s: float,
                       parked_pair: bool = False,
                       contact_in: float | None = None) -> str | None:
@@ -409,6 +655,55 @@ def collision_verdict(sep_in: float, closing_in_s: float,
         return "avoid"
     return None
 VISION_OFFROUTE_CELLS = 0.75     # own vision vs expected node farther than this = hold
+#: A failed leg counts as having ARRIVED (and is banked) only this close to
+#: its destination. Legs brake 1.0-1.4in short by design; 2.5in covers that,
+#: and a robot stopped mid-leg (4.69in short on 2026-10-16) is not "there".
+ARRIVAL_BANK_CELLS = 0.25
+
+
+def depot_label(label) -> bool:
+    """D1..Dn, DE1..DEn or node 0: the nodes below the grid."""
+    return bool(re.fullmatch(r"(D|DE)\d+|0", str(label).strip().upper()))
+
+
+def _depot_world():
+    from camera_grid_navigate import (DEPOT_ENTRY_WORLD_IN,
+                                      DEPOT_SLOT_WORLD_IN, NODE0_WORLD_IN)
+    out = {"0": NODE0_WORLD_IN}
+    out.update(DEPOT_SLOT_WORLD_IN)
+    out.update(DEPOT_ENTRY_WORLD_IN)
+    return out
+
+
+def arrived_world_in(vision, name: str, label) -> bool:
+    """`name`'s fresh pose is within ARRIVAL_BANK_CELLS of depot node `label`."""
+    pose = vision.snapshot_in().get(name)
+    target = _depot_world().get(str(label).strip().upper())
+    if pose is None or target is None or pose[3] > VISION_STALE_SEC:
+        return False
+    return (math.hypot(pose[0] - target[0], pose[1] - target[1])
+            <= ARRIVAL_BANK_CELLS * GRID_PITCH_WORLD_IN)
+
+
+def nearest_depot_label(vision, name: str):
+    """The depot node `name` is standing on (within ARRIVAL_BANK_CELLS), or
+    None."""
+    pose = vision.snapshot_in().get(name)
+    if pose is None or pose[3] > VISION_STALE_SEC:
+        return None
+    best = None
+    for label, (x, y) in _depot_world().items():
+        d = math.hypot(pose[0] - x, pose[1] - y)
+        if d <= ARRIVAL_BANK_CELLS * GRID_PITCH_WORLD_IN and (
+                best is None or d < best[1]):
+            best = (label, d)
+    return best[0] if best else None
+#: A yield is only started from a robot standing within this of the node the
+#: plan has it on. A yield is "drive from your node to the next one"; from
+#: anywhere else it is a diagonal drive across the grid -- on 2026-10-16 two
+#: such yields (Alvik1 "13->5" from entry 118, Alvik3 "6->5" from mid-leg)
+#: drove the pair into each other.
+YIELD_START_TOL_IN = 3.0
 VISION_EDGE_CORRIDOR_CELLS = 0.5   # projection distance from a requested edge.
 # Raised from 0.35 after the 2026-07-20 collision, where Alvik3 projected 0.43
 # cells from Alvik1's leaving-the-bay edge (entry 122 on the 18<>19 lane) and
@@ -432,6 +727,25 @@ RECOVERY_SETTLE_SEC = 1.0        # let the robot brake + vision refresh
 RECOVERY_MIN_DISP_CELLS = 0.25   # min displacement to trust a motion heading
 RUNAWAY_FACTOR = 2.5             # STOP when elapsed > factor*planned + grace
 RUNAWAY_GRACE_SEC = 3.0
+
+ROBOT_DRIVE_CALIBRATION_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "robot_drive_calibration.json")
+
+
+def robot_drive_calibration() -> dict:
+    """{robot: {"brake_lead_in", "steer_trim_rpm", ...}} from
+    robot_drive_calibration.json, read fresh on every call so a redeployed
+    file takes effect at the next mission. Missing or unreadable -> {} and
+    every robot drives on the fleet-wide defaults, said loudly once."""
+    try:
+        with open(ROBOT_DRIVE_CALIBRATION_FILE, encoding="utf-8") as fh:
+            return dict(json.load(fh).get("robots") or {})
+    except (OSError, ValueError) as exc:
+        if not getattr(robot_drive_calibration, "_warned", False):
+            robot_drive_calibration._warned = True
+            print(f"[supervisor] no per-robot drive calibration ({exc}); "
+                  "using the fleet-wide brake lead and no steering trim")
+        return {}
 RUNAWAY_MIN_CAP_SEC = 6.0
 
 # Collision/vision waits are supervisor state, not robot commands.
@@ -450,6 +764,12 @@ SUPERVISOR_WAIT_RECHECK_SEC = 0.20
 LAUNCH_CLEARANCE_IN = 5.0
 
 DEADLOCK_ABORT_SEC = 20.0
+#: A wait-for cycle must persist this long before it is declared. 2026-10-16:
+#: four of the five DEADLOCKs in one run were one-tick artefacts as each
+#: robot left the depot lane -- "deadlock cleared after 0.0s" every time --
+#: and each wrote a DEADLOCK_DETECTED row, inflating deadlock_count. A real
+#: deadlock persists by definition, so a second of patience costs nothing.
+DEADLOCK_CONFIRM_SEC = 1.0
 # How long to stand aside waiting for the blocked robot to pass, and the hard
 # ceiling on a whole yield. Beyond the ceiling the robot is off its planned
 # node with no way back, which is worse than the abort it was avoiding -- so
@@ -687,8 +1007,10 @@ def drift_corrected_command(cmd: str, vision_yaw_deg: float | None,
 # recovery math stays unit-testable without ROS.
 from dispatch_advisor import (  # noqa: E402
     STANDING_LINGER_SEC, STANDING_VACATE_IN,
-    bridge_commands, corridor_key, entry_edge_nodes, heading_between_cells,
-    is_workstation_node, label_to_cell, node_at_cell, resync_point)
+    bridge_commands, corridor_key, entry_edge_nodes, entry_rotation_footprint,
+    heading_between_cells, is_workstation_node, label_to_cell,
+    movement_segments, node_at_cell, resync_point, workstation_rotation_edges)
+from testbed_coordinates import GRID_PITCH_IN as GRID_PITCH_WORLD_IN  # noqa: E402
 
 
 class VisionMonitor:
@@ -847,6 +1169,151 @@ class VisionMonitor:
                     out.append((a, b, sep, closing, contact))
             return out
 
+    # -- motion: velocity, turning, and the footprint guard (2026-10-16) -----
+    def _update_motion(self) -> None:
+        """Per-robot velocity (in/s) and yaw rate (deg/s) from the pose
+        stream. Call with self._lock held. The baseline advances only after
+        COLLISION_MIN_DT_SEC, for the same reason as the closing rate above:
+        frame-to-frame differences at 50Hz are mostly noise."""
+        base = self.__dict__.setdefault("_motion_base", {})
+        est = self.__dict__.setdefault("_motion", {})
+        for name, (x, y, yaw) in self._poses_in.items():
+            t = self._pose_in_t.get(name, 0.0)
+            b = base.get(name)
+            if b is None or t - b[3] > 2.0:
+                base[name] = (x, y, yaw, t)
+                est.pop(name, None)
+                continue
+            dt = t - b[3]
+            if dt < COLLISION_MIN_DT_SEC:
+                continue
+            vx, vy = (x - b[0]) / dt, (y - b[1]) / dt
+            dyaw = (yaw - b[2] + 180.0) % 360.0 - 180.0
+            # A speed no Alvik can reach is a bad fix, not a velocity.
+            if math.hypot(vx, vy) <= COLLISION_MAX_CLOSING_IN_S:
+                est[name] = (vx, vy, dyaw / dt, t)
+            base[name] = (x, y, yaw, t)
+
+    def claim_rotation(self, name: str,
+                       sec: float = None) -> None:
+        """Mark `name` as about to turn, before the first frame shows it.
+
+        The rotation gate calls this the moment it lets a turn start, so the
+        guard and the corridor gate treat the robot as the disc it is about
+        to sweep, rather than waiting ~0.2s for the yaw rate to show it."""
+        hold = ROTATION_CLAIM_SEC if sec is None else sec
+        with self._lock:
+            self.__dict__.setdefault("_rot_claims", {})[name] = time.time() + hold
+
+    def release_rotation(self, name: str) -> None:
+        with self._lock:
+            self.__dict__.setdefault("_rot_claims", {}).pop(name, None)
+
+    def _turning_locked(self, name: str, now: float) -> bool:
+        if self.__dict__.get("_rot_claims", {}).get(name, 0.0) > now:
+            return True
+        m = self.__dict__.get("_motion", {}).get(name)
+        return (m is not None and now - m[3] <= COLLISION_MAX_AGE_SEC
+                and abs(m[2]) >= COLLISION_TURNING_DEG_S)
+
+    def is_turning(self, name: str) -> bool:
+        with self._lock:
+            self._update_motion()
+            return self._turning_locked(name, time.time())
+
+    def speed_in(self, name: str) -> float | None:
+        """Current speed (in/s) from the pose stream, or None if unknown."""
+        now = time.time()
+        with self._lock:
+            self._update_motion()
+            m = self.__dict__.get("_motion", {}).get(name)
+        if m is None or now - m[3] > COLLISION_MAX_AGE_SEC:
+            return None
+        return math.hypot(m[0], m[1])
+
+    def set_leg_target(self, name: str, x_in: float, y_in: float) -> None:
+        """Where the leg this robot is driving ends (world inches)."""
+        with self._lock:
+            self.__dict__.setdefault("_leg_targets", {})[name] = (x_in, y_in)
+
+    def clear_leg_target(self, name: str) -> None:
+        with self._lock:
+            self.__dict__.setdefault("_leg_targets", {}).pop(name, None)
+
+    def motion_pairs_in(self) -> list[tuple]:
+        """motion_pairs_ext() without the pass-by flag."""
+        return [p[:6] for p in self.motion_pairs_ext()]
+
+    def motion_pairs_ext(self) -> list[tuple]:
+        """[(a, b, sep_in, gap_now_in, min_gap_in, rel_speed_in_s, passby)].
+
+        passby: lane_passby() -- the pair is sliding past in parallel lanes.
+
+        gap_now_in is the real clearance between the two footprints at their
+        current headings (footprint_gap_in); min_gap_in is the smallest it
+        will get in the next COLLISION_REACTION_SEC if both hold their
+        current velocity. A robot that is turning is judged as its swept
+        disc. Feeds motion_verdict(); replaces the closing-rate model, which
+        stopped legal pass-bys on 2026-10-16.
+        """
+        now = time.time()
+        with self._lock:
+            self._update_motion()
+            est = dict(self.__dict__.get("_motion", {}))
+            fresh = {n: p for n, p in self._poses_in.items()
+                     if now - self._pose_in_t.get(n, 0.0) <= COLLISION_MAX_AGE_SEC}
+            turning = {n for n in fresh if self._turning_locked(n, now)}
+            targets = dict(self.__dict__.get("_leg_targets", {}))
+
+        def vel(n):
+            # A turning robot spins in place; it is judged as its swept
+            # disc, which already covers every orientation. Its tag sits off
+            # the rotation centre, so the pose stream shows the tag swinging
+            # at several in/s, and extrapolating that swing as travel stopped
+            # three pairs on 2026-10-22 (e.g. Alvik2 squaring up at D2 vs
+            # Alvik3 on node 2's lane, "-1.06in within 0.56s at 5.0in/s"),
+            # one of which cascaded into the WAIT run's abort.
+            if n in turning:
+                return 0.0, 0.0
+            m = est.get(n)
+            if m is None or now - m[3] > COLLISION_MAX_AGE_SEC:
+                return 0.0, 0.0
+            return m[0], m[1]
+
+        def stop_after(n, v):
+            """Seconds until n reaches the end of its leg (+ coast)."""
+            tgt = targets.get(n)
+            speed = math.hypot(v[0], v[1])
+            if tgt is None or speed < 1e-6 or n in turning:
+                return math.inf
+            x, y, _ = fresh[n]
+            dist = math.hypot(tgt[0] - x, tgt[1] - y) + LEG_OVERSHOOT_IN
+            return dist / speed
+
+        out = []
+        names = sorted(fresh)
+        for i, a in enumerate(names):
+            for b in names[i + 1:]:
+                ax, ay, ayaw = fresh[a]
+                bx, by, byaw = fresh[b]
+                dx, dy = bx - ax, by - ay
+                ya = None if a in turning else ayaw
+                yb = None if b in turning else byaw
+                (avx, avy), (bvx, bvy) = vel(a), vel(b)
+                rvx, rvy = bvx - avx, bvy - avy
+                sa, sb = stop_after(a, (avx, avy)), stop_after(b, (bvx, bvy))
+                if math.isinf(sa) and math.isinf(sb):
+                    pred = predicted_min_gap_in(dx, dy, rvx, rvy, ya, yb)
+                else:
+                    pred = predicted_min_gap_legs_in(
+                        (ax, ay), (avx, avy), sa, (bx, by), (bvx, bvy), sb,
+                        ya, yb)
+                out.append((a, b, math.hypot(dx, dy),
+                            footprint_gap_in(dx, dy, ya, yb),
+                            pred, math.hypot(rvx, rvy),
+                            lane_passby(ya, yb, rvx, rvy, dx, dy)))
+        return out
+
     def proximity_pairs(self) -> list[tuple[str, str, float]]:
         """Pairs of robots with fresh vision, both on the lattice, closer
         than VISION_PROX_CELLS (center-to-center, in cells)."""
@@ -913,6 +1380,14 @@ class RobotChannel:
 
 
 class FleetSupervisor(Node):
+    #: Set when a mission is accepted. Class-level defaults so every gate can
+    #: read them unconditionally -- the rotation gate runs on a worker thread
+    #: that may reach it before a mission has ever been configured, and
+    #: "color" is the conservative default (it keeps the old turn-item hold
+    #: active rather than silently disabling a guard).
+    advisor = None
+    drive_mode = "color"
+
     def __init__(self, robots: dict[str, list[str]], use_vision: bool = True,
                  launch_mode: str = "offsets"):
         super().__init__("fleet_supervisor")
@@ -963,6 +1438,9 @@ class FleetSupervisor(Node):
         self._event_pub = self.create_publisher(String, "fleet_events",
                                                 self._qos_status)
         self._event_seq = 0
+        # Which supervisor process sent an event: seq restarts at 1 on every
+        # restart, so the page dedupes on (boot, seq), not seq alone.
+        self._event_boot = int(time.time() * 1000)
 
         self.get_logger().info(
             "Fleet supervisor ready"
@@ -1042,11 +1520,24 @@ class FleetSupervisor(Node):
         # schedule shape must cost the job ids, not the whole metrics run.
         try:
             self._jobs = JobRegistry(mission.get("schedule"))
+            # Pickup readiness on REAL times (see _rpd_hold): bay -> mission
+            # time the drop's robot arrived at that workstation.
+            rpd = (mission.get("schedule") or {}).get("rpd") or {}
+            self._rpd_process_sec = (float(rpd.get("process_sec") or 0.0)
+                                     if rpd.get("enabled") else None)
+            self._drop_arrival = {}
+            # Plans made under the 2026-10-29 drop rule say so; older plans
+            # (the DOE's) keep processing from the drop's arrival.
+            self._rpd_after_drop = (rpd.get("processing_starts")
+                                    == "after the drop dwell")
+            self._drop_done = {}
             # 8x8 lattice, the same dimensions the navigator is built with
             # (see the argparse Namespace in the robot channel below).
             self._launch = LaunchTimer(GRID_ROWS, GRID_COLS)
         except Exception as exc:
             self._jobs, self._launch = None, None
+            self._rpd_process_sec, self._drop_arrival = None, {}
+            self._rpd_after_drop, self._drop_done = False, {}
             self.get_logger().error(
                 f"job registry not built ({exc!r}); job metrics and launch "
                 "timing are off for this run, dispatch is unaffected")
@@ -1187,26 +1678,48 @@ class FleetSupervisor(Node):
             self.get_logger().warning(f"fleet_control: unknown command '{cmd}'")
 
     def _event(self, kind: str, text: str, robot: str | None = None,
-               severity: str = "info") -> None:
+               severity: str = "info", data: dict | None = None) -> None:
         """Emit a discrete Decision-Log event to /fleet_events for the HTML.
 
         kind: vision | error | recovery | wait | llm | mission (categories the
-        Run & Monitor Decision Log filters/colours). severity: info|warn|error.
+        Run & Monitor Decision Log filters/colours), or bay (workstation state
+        for the page's bay colours, see _bay_event; not shown in the log).
+        severity: info|warn|error. `data` rides along as structured fields.
         Fire-and-forget; the terminal logging at each call site is unchanged."""
         self._event_seq += 1
         msg = String()
         msg.data = json.dumps({
             "seq": self._event_seq,
+            "boot": getattr(self, "_event_boot", 0),
             "ms": int(time.time() * 1000),
             "kind": kind,
             "severity": severity,
             "robot": robot,
             "text": text,
+            **({"data": data} if data else {}),
         })
         try:
             self._event_pub.publish(msg)
         except Exception:
             pass
+
+    def _bay_event(self, bay, state: str, robot: str | None = None) -> None:
+        """Tell the page what a workstation is ACTUALLY doing.
+
+        Operator, 2026-10-30: the page coloured bays from the plan's clock,
+        so a bay turned PROC before any robot had reached it. These events
+        come from the moments the supervisor itself acts on:
+          processing  -- the processing clock started (end of the drop's
+                         DWELL under the 2026-10-29 drop rule, else on
+                         arrival -- the same start _rpd_hold() counts from);
+                         carries process_sec so the page can turn it READY.
+          picked      -- the robot collecting the part left the workstation.
+          delivered   -- a drop with no processing (pickup-and-delivery off).
+        """
+        data = {"bay": int(bay), "state": state}
+        if state == "processing":
+            data["process_sec"] = float(self._rpd_process_sec or 0.0)
+        self._event("bay", f"bay {bay}: {state}", robot=robot, data=data)
 
     def _memit(self, event_type: str, details: dict | None = None,
                **fields) -> None:
@@ -1384,6 +1897,242 @@ class FleetSupervisor(Node):
                             f"{LAUNCH_CLEARANCE_IN:.1f}in of {node}")
         return None
 
+    def rotation_sweep_blocker(self, name: str):
+        """Who is inside `name`'s turning circle RIGHT NOW, or None.
+
+        Pure positional and free of any plan state, so the same measurement
+        can gate the REAL rotation (see await_rotation_clearance, called
+        from the worker immediately before each turn_to_heading_rotate_rel)
+        as well as the plan-level hold below. Returns (robot, separation_in).
+        """
+        if self.vision is None:
+            return None
+        snap = self.vision.snapshot_in()
+        mine = snap.get(name)
+        if mine is None or mine[3] > VISION_STALE_SEC:
+            return None          # no fresh fix: fall through to the other gates
+        worst = None
+        for other, pose in snap.items():
+            if other == name or pose[3] > VISION_STALE_SEC:
+                continue
+            d = math.hypot(mine[0] - pose[0], mine[1] - pose[1])
+            if d < ROTATION_SWEEP_IN and (worst is None or d < worst[1]):
+                worst = (other, d)
+        return worst
+
+    def workstation_lane_blocker(self, name: str, at_node):
+        """In a workstation: another robot granted a move along one of the
+        bay cell's edges, which a turn here sweeps over. (robot, "a->b") or
+        None. Operator, 2026-10-22: drive straight to the node, "then rotate
+        after they both get there". See workstation_rotation_edges()."""
+        adv = self.advisor
+        if adv is None or at_node is None:
+            return None
+        edges = workstation_rotation_edges(at_node, adv.rows, adv.cols)
+        if not edges:
+            return None
+        try:
+            for other in list(adv.robots):
+                if other == name:
+                    continue
+                res = adv.reservations.get(other)
+                if res is None:
+                    continue
+                for seg in res.request.segments:
+                    a, b = str(seg[0]), str(seg[1])
+                    if a != b and frozenset((a, b)) in edges:
+                        return other, f"{a}->{b}"
+        except RuntimeError:
+            return "(advisor busy)", str(at_node)
+        return None
+
+    def entry_inbound_blocker(self, name: str, at_node):
+        """At a bay entry: another robot already granted a move ONTO a node
+        inside this entry's turning circle. (robot, node) or None.
+
+        The positional check above only sees where robots ARE. On 2026-10-16
+        Alvik1 began a 95deg turn at entry 118 while Alvik3, 7.4in away and
+        so outside the sweep, was driving to node 14 -- 5.00in from 118 --
+        and the two met mid-turn. A turn at an entry takes ~1.5-2s; a robot
+        granted a footprint node will be there before it ends. Only entries:
+        everywhere else on the table has room to turn (entry_rotation_footprint).
+        """
+        adv = self.advisor
+        if adv is None or at_node is None:
+            return None
+        foot = entry_rotation_footprint(at_node, adv.rows, adv.cols)
+        if not foot:
+            return None
+        here = str(at_node)
+        try:
+            for other in list(adv.robots):
+                if other == name:
+                    continue
+                res = adv.reservations.get(other)
+                if res is None:
+                    continue
+                hit = ({str(x) for x in res.request.destination_nodes}
+                       & foot) - {here}
+                if hit:
+                    return other, sorted(hit)[0]
+        except RuntimeError:
+            # The main loop changed advisor state mid-read. Assume blocked;
+            # the next poll, 0.1s later, reads it again.
+            return "(advisor busy)", here
+        return None
+
+    def rotation_blocker(self, name: str, at_node) -> tuple[str, str] | None:
+        """(other, why) if a turn by `name` at `at_node` must wait right now,
+        else None. One check of the three gates await_rotation_clearance()
+        polls."""
+        worst = self.rotation_sweep_blocker(name)
+        if worst is not None:
+            other, d = worst
+            return other, (f"{other} is {d:.2f}in away, a turn sweeps "
+                           f"{ROTATION_SWEEP_IN:.3f}in")
+        inbound = self.entry_inbound_blocker(name, at_node)
+        if inbound is not None:
+            other, node = inbound
+            return other, (f"{other} is heading onto {node}, inside the "
+                           f"turning circle of entry {at_node}")
+        lane = self.workstation_lane_blocker(name, at_node)
+        if lane is not None:
+            other, edge = lane
+            return other, (f"{other} is driving {edge} beside workstation "
+                           f"{at_node}; turn after it has passed")
+        return None
+
+    def straight_trim_clear(self, name: str, nav_yaw_deg: float,
+                            length_in: float | None = None) -> bool:
+        """May `name` skip a small heading trim and drive on as it points
+        now without its footprint coming within COLLISION_PREDICT_MARGIN_IN
+        of anyone -- the margin the collision guard itself holds? False
+        whenever unknown.
+
+        Worst case, deliberately: no steering at all. The robot travels
+        STRAIGHT_TRIM_CHECK_IN along its CURRENT heading (navigator
+        convention: dx = sin(yaw), dy = -cos(yaw)), keeping its measured
+        orientation since no rotation happens; drive_leg() steering back
+        toward the line only widens the gap. A neighbour that is turning
+        counts as its full swept disc. `length_in` shortens the check to a
+        drive that ends sooner (a 5in hop to a bay entry's flank).
+        """
+        if self.vision is None:
+            return False
+        snap = self.vision.snapshot_in()
+        mine = snap.get(name)
+        if mine is None or mine[3] > VISION_STALE_SEC:
+            return False
+        mx, my, myaw = mine[0], mine[1], mine[2]
+        t = math.radians(nav_yaw_deg)
+        ux, uy = math.sin(t), -math.cos(t)
+        reach = (STRAIGHT_TRIM_CHECK_IN if length_in is None
+                 else min(STRAIGHT_TRIM_CHECK_IN, max(0.0, length_in)))
+        steps = int(reach / 0.5)
+        for other, p in snap.items():
+            if other == name:
+                continue
+            if p[3] > VISION_STALE_SEC:
+                if math.hypot(p[0] - mx, p[1] - my) < 2 * STRAIGHT_TRIM_CHECK_IN:
+                    return False     # nearby and not seen right now
+                continue
+            turning = bool(getattr(self.vision, "is_turning",
+                                   lambda _n: False)(other))
+            oyaw = None if turning else p[2]
+            for k in range(steps + 1):
+                px, py = mx + k * 0.5 * ux, my + k * 0.5 * uy
+                if footprint_gap_in(p[0] - px, p[1] - py, myaw,
+                                    oyaw) < COLLISION_PREDICT_MARGIN_IN:
+                    return False
+        return True
+
+    def await_rotation_clearance(self, name: str, leg_label: str,
+                                 timeout_sec: float | None
+                                 = ROTATION_CLEAR_TIMEOUT_SEC,
+                                 cancelled=None,
+                                 at_node=None,
+                                 idle=None) -> tuple[bool, str]:
+        """Hold until rotating here is clear of other robots.
+
+        THIS IS THE GATE THAT ACTUALLY GUARDS A ROTATION. Everything before
+        2026-10-15 gated `PlanItem.kind == "turn"` -- and in vision mode, the
+        mode every recorded run uses, a standalone turn item DOES NOTHING
+        (see _execute: "there is nothing for a bare turn/noop item to do
+        here"). The rotation is performed at the END of the preceding MOVE,
+        by its square-up and turn-toward-next-leg steps. So both the
+        symbolic gate (advisor.entry_rotation_footprint) and the positional
+        one (_rotation_clearance_hold) were guarding a no-op that runs AFTER
+        the rotation they meant to prevent.
+
+        Measured on 2026-10-15 run 5: Alvik3's rotation finished at t=88.2s
+        (yaw +14.9 -> +91.9, then sd 0.17deg from t=95s, i.e. stationary).
+        The sweep-guard refusals began at t~91s and repeated every ~3s for
+        115s. The guard spent the whole run refusing to let it START a
+        rotation it had already FINISHED, which is why the livelock could
+        never break: the held item was a no-op, so nothing it did could
+        satisfy the gate.
+
+        Waiting, not failing: a rotation that is unsafe now is usually safe
+        a second later once the neighbour moves on. The wait is registered
+        with the advisor so deadlock_cycles() can see a genuine standoff.
+
+        timeout_sec=None holds with no deadline. Use it for any rotation
+        AFTER the robot has arrived somewhere: failing there re-dispatches
+        the whole leg from its start node, which the robot has already left,
+        and the vision gate then reads it as off-route and excludes it
+        (2026-10-16, Alvik4 at node 18). The backstops for an endless hold
+        are the deadlock abort, once the standoff closes a cycle, and the
+        per-leg timeout, which calls the worker's abort() and so `cancelled`.
+
+        `cancelled` is polled like the operator abort, so an excluded or
+        aborted robot's worker thread stops waiting instead of turning
+        later, after everyone has stopped watching it.
+        """
+        deadline = (None if timeout_sec is None
+                    else time.monotonic() + timeout_sec)
+        blocked_by = None
+        while True:
+            other, why = self.rotation_blocker(name, at_node) or (None, "")
+            if other is None:
+                if blocked_by is not None and self.advisor is not None:
+                    self.advisor.clear_vision_block(name)
+                # Tell the guard and the corridor gate now, before the first
+                # frame of the turn shows a yaw rate.
+                claim = getattr(self.vision, "claim_rotation", None)
+                if claim is not None:
+                    claim(name)
+                return True, "clear"
+            if blocked_by != other:
+                blocked_by = other
+                self.get_logger().info(
+                    f"[{name}] {leg_label}: holding rotation -- {why}")
+                self._event("wait", f"{name} rotation hold: {why}",
+                            robot=name)
+            if self.advisor is not None and not other.startswith("("):
+                # Same registration the corridor gate uses, so a mutual
+                # rotation standoff is visible to the existing resolver
+                # instead of being an invisible wait.
+                self.advisor.note_vision_block(name, other)
+            # An operator ABORT must not have to wait out the deadline. This
+            # runs on a worker thread, so without the check the fleet would
+            # keep holding for up to 20 s after STOP was pressed.
+            if (getattr(self, "_abort", False)
+                    or (cancelled is not None and cancelled())):
+                if self.advisor is not None:
+                    self.advisor.clear_vision_block(name)
+                return False, "aborted while holding for rotation clearance"
+            if deadline is not None and time.monotonic() >= deadline:
+                if self.advisor is not None:
+                    self.advisor.clear_vision_block(name)
+                return False, f"rotation blocked for {timeout_sec:g}s: {why}"
+            # `idle`, not sleep, when the caller has a node to keep alive:
+            # a navigator only reads its odometry and pose topics while its
+            # worker spins it, and a turn refuses odometry older than 0.75s.
+            # Sleeping here made EVERY held turn fail the moment the hold
+            # ended (2026-10-16: D2, D3, entry 137 -- "no fresh encoder +
+            # camera-assisted odometry yaw").
+            (idle or time.sleep)(ROTATION_CLEAR_POLL_SEC)
+
     def _rotation_clearance_hold(self, advisor, name: str) -> str | None:
         """Refuse to start a turn that would sweep into another robot.
 
@@ -1391,11 +2140,12 @@ class FleetSupervisor(Node):
         no assumption about where a robot "should" be. A robot drifted off
         its node is judged on where it actually is.
 
-        This is the POSITIONAL backstop. The symbolic gate lives in the
-        advisor (entry_rotation_footprint) and is the primary mechanism --
-        it reasons about reservations and so can hold a robot BEFORE it
-        arrives somewhere contentious. This one catches whatever the plan
-        did not predict, including two robots that drifted together.
+        SCOPE, NARROWED 2026-10-15. This now applies only where a standalone
+        turn item really does turn the robot -- colour-sensor mode. In vision
+        mode the item is a no-op and the real rotation is gated at its own
+        call site by await_rotation_clearance(); holding the no-op there
+        bought nothing and produced the 115-second livelock described in
+        that method. See drive_mode below.
 
         WHY A TURN NEEDS ITS OWN GATE. Until 2026-09-30 a turn was
         dispatched with "movement gate deferred" and checked against
@@ -1405,6 +2155,8 @@ class FleetSupervisor(Node):
         guard in the system looking straight at it. That is what happened
         to Alvik3 and Alvik4.
         """
+        if self.drive_mode == "vision":
+            return None
         st = advisor.robots.get(name)
         if st is None or st.next_index >= len(st.plan):
             return None
@@ -1426,9 +2178,208 @@ class FleetSupervisor(Node):
         if worst is None:
             return None
         other, d = worst
+        # Register the hold in the wait-for graph, exactly as the corridor
+        # gate above does. THE SAME BUG, ONE GUARD LATER: the corridor hold
+        # was made visible to deadlock_cycles() on 2026-09-29 because a hold
+        # that is not a reservation left the detector looking at an empty
+        # graph; this guard was added on 2026-09-30 and never got it.
+        #
+        # Measured cost, 2026-10-15 run 5: Alvik1 hit WHEEL_CMD_TIMEOUT, went
+        # IDLE and sat motionless on node 18 for 115 s. Alvik3 refused to
+        # rotate at entry 122 about every 3 s for the whole of it, Alvik5,
+        # Alvik2, Alvik4 and Alvik6 queued behind in turn, and the run
+        # reached a five-robot standstill with deadlocks_detected = 0.
+        # Nothing was wrong with the refusal -- rotating would have struck
+        # Alvik1. What was missing is that no resolver could see the standoff.
+        #
+        # This does NOT weaken the guard: the turn is still refused. It only
+        # lets the EXISTING detector and sidestep resolver act on it.
+        advisor.note_vision_block(name, other)
         return (f"rotation clearance: {other} is {d:.2f}in away, a turn "
                 f"sweeps {ROTATION_SWEEP_IN:.3f}in "
                 f"(short by {ROTATION_SWEEP_IN - d:.2f}in)")
+
+    def _drives_straight(self, advisor, workers, robot: str, node,
+                         reverse: bool = False) -> bool:
+        """Could `robot` leave for `node` with NO rotation? It must already
+        point there (within STRAIGHT_TRIM_SKIP_MAX_DEG, which the yield's
+        drive steers out) and the straight drive there must keep the
+        guard's margin from everyone. False whenever unknown.
+
+        reverse=True: its TAIL must point there, and the drive is checked
+        backwards (camera_grid_navigate.drive_leg(reverse=True)).
+
+        The deadlock resolver asks this for a robot with no room to turn
+        where it stands (see DispatchAdvisor._yield_move)."""
+        worker = (workers or {}).get(robot)
+        st = advisor.robots.get(robot)
+        if worker is None or st is None or st.current_node is None:
+            return False
+        pose = worker.nav.control_pose()
+        if pose is None:
+            return False
+        try:
+            from camera_grid_navigate import heading_between
+            x0, y0 = nav_node_to_world(st.current_node, advisor.rows,
+                                       advisor.cols)
+            x1, y1 = nav_node_to_world(node, advisor.rows, advisor.cols)
+        except (ValueError, KeyError, TypeError, ImportError):
+            return False
+        if (x0, y0) == (x1, y1):
+            return False
+        heading = heading_between(x0, y0, x1, y1)
+        travel = (pose.yaw + 180.0) % 360.0 if reverse else pose.yaw
+        err = abs((heading - travel + 180.0) % 360.0 - 180.0)
+        if err > STRAIGHT_TRIM_SKIP_MAX_DEG:
+            return False
+        return self.straight_trim_clear(robot, travel,
+                                        length_in=math.hypot(x1 - x0, y1 - y0))
+
+    def _on_planned_node(self, advisor, robot: str) -> bool:
+        """Is `robot` physically within YIELD_START_TOL_IN of the node the
+        advisor has it on? False when that cannot be measured."""
+        st = advisor.robots.get(robot)
+        if st is None or self.vision is None:
+            return False
+        p = self.vision.snapshot_in().get(robot)
+        if p is None or p[3] > VISION_STALE_SEC:
+            return False
+        try:
+            nx, ny = nav_node_to_world(st.current_node, advisor.rows,
+                                       advisor.cols)
+        except (ValueError, KeyError, TypeError):
+            return False
+        return math.hypot(p[0] - nx, p[1] - ny) <= YIELD_START_TOL_IN
+
+    def _path_clears(self, other: str, frm, to, rows: int, cols: int,
+                     node=None, margin: float | None = None) -> bool:
+        """Would this move's footprint clear `other`'s by
+        CORRIDOR_FOOTPRINT_MARGIN_IN? Judged at `node` if given, else along
+        the whole straight segment frm->to.
+
+        THE FIFTH ENTRY-NODE FALSE HOLD (2026-10-16). Every vision hold below
+        used a flat radius of 0.6 cells, but this table puts a bay entry, its
+        two neighbouring lattice nodes and its workstation all exactly 0.50
+        cells from the next lane over. Square-on, that is 1.0in of real
+        clearance (operator: "the robots would still have an inch in between
+        them"), yet the radius called it blocked. Alvik3 was refused the east
+        leg 6->14 because Alvik1 stood at entry 118, and Alvik1 was refused
+        its own bay because Alvik3 stood on that leg -- a deadlock made of
+        two legal positions.
+
+        So: if the other robot is inside the radius, measure footprints --
+        this robot at the segment's heading, the other at its measured yaw,
+        or as its swept disc if it is turning (a robot mid-turn really does
+        block, and is still held). False whenever anything is unknown.
+        """
+        if self.vision is None:
+            return False
+        p = self.vision.snapshot_in().get(other)
+        if p is None or p[3] > VISION_STALE_SEC:
+            return False
+        try:
+            from camera_grid_navigate import heading_between
+            ax, ay = nav_node_to_world(frm, rows, cols)
+            bx, by = nav_node_to_world(to, rows, cols)
+            points = ([nav_node_to_world(node, rows, cols)] if node is not None
+                      else [(ax + (bx - ax) * k / 10.0, ay + (by - ay) * k / 10.0)
+                            for k in range(11)])
+        except (ValueError, KeyError, TypeError):
+            return False
+        if (ax, ay) == (bx, by):
+            return False
+        heading = heading_between(ax, ay, bx, by)
+        turning = bool(getattr(self.vision, "is_turning",
+                               lambda _n: False)(other))
+        other_yaw = None if turning else p[2]
+        gap = min(footprint_gap_in(p[0] - px, p[1] - py, heading, other_yaw)
+                  for px, py in points)
+        return gap >= (CORRIDOR_FOOTPRINT_MARGIN_IN if margin is None else margin)
+
+    def _ws_bay(self, node) -> int | None:
+        """Solver bay number of a WORKSTATION node label, else None."""
+        try:
+            n = int(node)
+        except (TypeError, ValueError):
+            return None
+        lattice = GRID_ROWS * GRID_COLS
+        bays = (GRID_ROWS - 1) * (GRID_COLS - 1)
+        return n - lattice if lattice < n <= lattice + bays else None
+
+    def _entry_bay(self, node) -> int | None:
+        """Solver bay number of a bay ENTRY node label, else None."""
+        try:
+            n = int(node)
+        except (TypeError, ValueError):
+            return None
+        lattice = GRID_ROWS * GRID_COLS
+        bays = (GRID_ROWS - 1) * (GRID_COLS - 1)
+        return n - lattice - bays if lattice + bays < n <= lattice + 2 * bays else None
+
+    def _rpd_hold(self, name: str, item, now: float) -> str | None:
+        """Hold a move that would break PICKUP READINESS on real times.
+
+        WORKSTATION WAITS FOLLOW THE ROBOTS, NOT THE PLAN'S CLOCK (operator,
+        2026-10-21): "the time spent waiting at a workstation must be done
+        when the robot is at the workstation". A pick-up of a part another
+        robot dropped was a fixed planned DWELL, so a late dropper meant the
+        collector left before the part was ready, and an early one meant
+        waiting for nothing. The planner's rule is: ready = the dropper's
+        arrival at the bay + processing time, and the collector may not
+        leave before it. Same rule here, on measured times. Plans made under
+        the 2026-10-29 drop rule (rpd.processing_starts == "after the drop
+        dwell") start the clock when the drop's DWELL ends instead:
+
+          * WAIT IN THE PREVIOUS BAY. A robot whose NEXT visit is a pick-up
+            stays in the workstation it is leaving until that part has been
+            dropped. The first version held it "outside the bay" instead --
+            on 2026-10-21 that parked Alvik1 on lattice node 19, the only
+            way for Alvik5 to reach bay 10 and drop the part Alvik1 was
+            waiting for: a deadlock the gate itself created. A bay is a dead
+            end nobody else needs until the part there is ready.
+          * Fallback, only for a pick-up with no previous bay (first stop):
+            no move onto the bay's entry or workstation before the drop.
+          * LEAVING the pick-up bay: not before drop arrival + processing
+            time has actually elapsed.
+
+        Service visits (drop, wait, collect by the same robot) need nothing:
+        their dwell already starts on arrival. Planner-independent: applies
+        to every traffic method alike.
+        """
+        jobs = getattr(self, "_jobs", None)
+        proc = getattr(self, "_rpd_process_sec", None)
+        if jobs is None or proc is None or item.kind != "move":
+            return None
+        job = jobs.next_pending(name)
+        if job is None:
+            return None
+        drops = getattr(self, "_drop_arrival", {})
+        from_ws = self._ws_bay(item.from_node)
+        to_ws, to_entry = self._ws_bay(item.to_node), self._entry_bay(item.to_node)
+        if from_ws is not None and int(job.workstation) == from_ws:
+            # Leaving the bay of the current visit.
+            if job.mode == "pick":
+                started = (getattr(self, "_drop_done", {}).get(from_ws)
+                           if getattr(self, "_rpd_after_drop", False)
+                           else drops.get(from_ws))
+                ready = None if started is None else started + proc
+                if ready is None or now < ready:
+                    left = "" if ready is None else f" in {ready - now:.1f}s"
+                    return (f"pick-up at bay {from_ws}: part ready{left} "
+                            f"(processing {proc:.0f}s from the measured drop)")
+            after = jobs.pending_after(name)
+            if after is not None and after.mode == "pick" and \
+                    drops.get(int(after.workstation)) is None:
+                return (f"next stop is a pick-up at bay {after.workstation}: "
+                        f"waiting in bay {from_ws} until that part has been "
+                        "dropped")
+            return None
+        if job.mode == "pick" and drops.get(int(job.workstation)) is None:
+            bay = int(job.workstation)
+            if to_ws == bay or (to_entry == bay and from_ws != bay):
+                return (f"pick-up at bay {bay}: the part has not been "
+                        "dropped there yet -- waiting outside the bay")
+        return None
 
     def _vision_hold_reason(self, advisor, name: str) -> str | None:
         """Validate an advisor-approved movement against visual state.
@@ -1478,6 +2429,7 @@ class FleetSupervisor(Node):
         # When leaving a workstation/depot dead-end, extend to the next two
         # nodes (the lane a lead robot must fully clear before we exit into it).
         corridor_nodes = set(advisor.request_corridor_nodes(request))
+        all_segments = list(request.segments)
         if advisor.is_workstation_or_depot_exit(name):
             # Two-node lookahead: also require the lane BEYOND this move to be
             # clear, so a robot exiting a dead-end waits for a passer to fully
@@ -1485,6 +2437,17 @@ class FleetSupervisor(Node):
             nxt = advisor.next_move_request(name)
             if nxt is not None:
                 corridor_nodes |= advisor.request_corridor_nodes(nxt)
+                all_segments += list(nxt.segments)
+
+        def segment_through(lbl):
+            """The segment of this move that passes through node `lbl` --
+            as an endpoint, or as the bay entry lying mid-edge on it."""
+            for frm, to, _d in all_segments:
+                if str(lbl) in (str(frm), str(to)):
+                    return frm, to
+                if str(advisor._entry_on_edge(frm, to)) == str(lbl):
+                    return frm, to
+            return None
         # The DEPOT region (node 0, node 1, and the parking lane below the grid)
         # is a dense funnel where robots legitimately sit ~0.5-0.8 cells apart —
         # the whole lane is only 1.35 cells long. Applying the wide grid margin
@@ -1521,6 +2484,26 @@ class FleetSupervisor(Node):
             if other == name or pose[3] > VISION_STALE_SEC:
                 continue
             if off_lane(other, pose):
+                # Off the lane by position -- but a robot that came to rest
+                # too deep in its bay, or out of its slot, can still reach
+                # into an edge this move drives. 2026-10-23: Alvik5 stopped
+                # 1.38in deep in workstation 81 and Alvik2 was granted the row
+                # behind it (20->19); the guard found the overlap only once
+                # contact was made. Judge by real footprints along this
+                # move. A robot parked where it should be leaves ~1in and
+                # never holds anyone; this fires only past ~0.8in deep.
+                # (Depot robots are left to the depot-lane rule: the slots sit
+                # ~6in below row 1, so they cannot reach a grid edge.)
+                if pose[1] >= DEPOT_LANE_Y_CUTOFF:
+                    for frm, to, _d in all_segments:
+                        if str(frm) == str(to):
+                            continue
+                        if not self._path_clears(other, frm, to, rows, cols,
+                                                 margin=PARKED_INTRUSION_MARGIN_IN):
+                            advisor.note_vision_block(name, other)
+                            return (f"vision corridor: {other} is parked too "
+                                    f"close to {frm}->{to} for this robot to "
+                                    "pass; waiting for it to leave")
                 continue
             for lbl, cell in gate_cells:
                 if cell is None or str(lbl) == str(st.current_node):
@@ -1531,6 +2514,13 @@ class FleetSupervisor(Node):
                 # node — a robot mid-rotation still occupies its node.
                 if math.hypot(pose[0] - cell[0],
                               pose[1] - cell[1]) <= VISION_CORRIDOR_CLEAR_CELLS:
+                    # Inside the radius is not the same as in the way: a
+                    # robot at the next lane over is 0.50 cells off with 1in
+                    # to spare. Judge by footprints. See _path_clears().
+                    seg = segment_through(lbl)
+                    if seg is not None and self._path_clears(
+                            other, seg[0], seg[1], rows, cols, node=lbl):
+                        continue
                     # Feed the wait-for graph. This gate is SYMMETRIC and has
                     # no tie-breaker, so two robots converging on one node
                     # hold for each other indefinitely -- seen live on
@@ -1620,7 +2610,8 @@ class FleetSupervisor(Node):
                 distance, along = distance_to_segment(
                     pose[0], pose[1], start, end)
                 if (distance < VISION_EDGE_CORRIDOR_CELLS
-                        and -0.05 <= along <= 1.05):
+                        and -0.05 <= along <= 1.05
+                        and not self._path_clears(other, frm, to, rows, cols)):
                     # Feed the wait-for graph. Without this the edge gate is
                     # invisible to deadlock_cycles(): on 2026-10-06 the
                     # rotation gate recorded Alvik4 -> Alvik5 while this gate
@@ -1636,7 +2627,10 @@ class FleetSupervisor(Node):
                 if cell is None:
                     continue
                 distance = math.hypot(pose[0] - cell[0], pose[1] - cell[1])
-                if distance < VISION_TARGET_BLOCK_CELLS:
+                seg = segment_through(target)
+                if (distance < VISION_TARGET_BLOCK_CELLS
+                        and not (seg is not None and self._path_clears(
+                            other, seg[0], seg[1], rows, cols, node=target))):
                     return (f"vision: {other} is {distance:.2f} cells from "
                             f"requested node {target}")
         return None
@@ -1651,7 +2645,16 @@ class FleetSupervisor(Node):
                 self.get_logger().info(line)
 
     def _on_status(self, name: str, msg: String) -> None:
-        ch = self._channels[name]
+        # A robot outside the CURRENT mission still has its status
+        # subscription (subscriptions are never torn down between missions).
+        # After a 4-robot mission, Alvik5/6 powering on or reconnecting
+        # publish IDLE here; indexing _channels raised KeyError, which killed
+        # the ROS spin thread, and every later mission/START went unheard
+        # until a restart (DOE, 2026-10-23..27). Not our robot right now:
+        # ignore it. It is picked up again when a mission names it.
+        ch = self._channels.get(name)
+        if ch is None:
+            return
         text = msg.data.strip()
         # ROBOT_STATUS capture (2026-09-22). Every string the firmware
         # publishes is recorded against the run, so a breakdown can be
@@ -2386,7 +3389,8 @@ class FleetSupervisor(Node):
     # -- position-target dispatch (drive_mode="vision") ----------------------
     def run_advised_vision(self, advisor, timeout_sec: float = 90.0,
                            fuse_turns: bool = False,
-                           localization_mode: str = "camera_assist") -> None:
+                           localization_mode: str = "camera_assist",
+                           turn_method: str | None = None) -> None:
         """Same per-robot advancement as run_advised(), but executes each
         plan item with position/heading control instead of the color-sensor
         command vocabulary — no FORWARD_UNTIL_<color>. localization_mode
@@ -2460,7 +3464,8 @@ class FleetSupervisor(Node):
         self.get_logger().info(
             f"position-target workers using localization={localization_mode}")
         workers = {
-            name: VisionLegWorker(name, self, localization_mode)
+            name: VisionLegWorker(name, self, localization_mode,
+                                  turn_method=turn_method)
             for name in self._channels
         }
         for w in workers.values():
@@ -2510,9 +3515,17 @@ class FleetSupervisor(Node):
             # every vision-drive mission with 2+ robots until now.
             launched: set[str] = set()
 
+            keepalive_at: dict[str, float] = {}
+
             def log_wait(name: str, reason: str, *, deadlock: bool = False) -> None:
-                previous, logged_at = last_hold_log[name]
-                if previous == reason and now - logged_at < HOLD_LOG_THROTTLE_SEC:
+                # ONCE per wait, not every 3 s (2026-10-22, operator: 64
+                # events in one depot launch, the same five waits repeated
+                # while Alvik1 had not moved). Logged when a wait starts or
+                # its reason changes; log_release() closes it with how long
+                # it lasted. The decision is still re-checked every tick --
+                # only the repetition in the log is gone.
+                previous, since = last_hold_log[name]
+                if previous == reason:
                     return
                 last_hold_log[name] = (reason, now)
                 text = f"[{name}] SUPERVISOR WAIT t={now:.1f}s ({reason})"
@@ -2523,6 +3536,18 @@ class FleetSupervisor(Node):
                 else:
                     self.get_logger().warning(text)
                     self._event("wait", reason, robot=name, severity="warn")
+
+            def log_release(name: str) -> None:
+                """Close an open wait with its duration, once."""
+                previous, since = last_hold_log[name]
+                if not previous:
+                    return
+                last_hold_log[name] = ("", -math.inf)
+                waited = now - since
+                self.get_logger().info(
+                    f"[{name}] wait over after {waited:.1f}s ({previous})")
+                self._event("wait", f"released after {waited:.1f}s: {previous}",
+                            robot=name, severity="info")
 
             self.get_logger().info(
                 "Advisor mode (VISION DRIVE): autonomous, per-robot "
@@ -2551,6 +3576,8 @@ class FleetSupervisor(Node):
             # main loop below.
             open_deadlocks: dict[frozenset, tuple[str, float]] = {}
             declined_at: dict = {}   # cycle -> when its last attempt was refused
+            # Cycles seen but not yet DEADLOCK_CONFIRM_SEC old -> first seen.
+            pending_cycles: dict[frozenset, float] = {}
             # Robots currently standing aside. Keyed by robot; see the
             # "yielding" branch in the main loop for the stage machine.
             yielding: dict[str, dict] = {}
@@ -2573,6 +3600,7 @@ class FleetSupervisor(Node):
                 return None
             inflight: dict[str, tuple] = {}
             last_node: dict[str, str] = {}
+            in_service: dict[str, str] = {}   # robot -> workstation node
 
             def emit_state(name: str, new_state: str | None,
                            reason: str | None = None) -> None:
@@ -2631,56 +3659,92 @@ class FleetSupervisor(Node):
                     # Same two conditions off_lane() uses in the vision gates:
                     # below the grid is the depot lane/slots, and in_bay_spur
                     # is a workstation dead end.
-                    return (p[1] < DEPOT_LANE_Y_CUTOFF
-                            or in_bay_spur(p[0], p[1]))
+                    if not (DEPOT_SLOT_MIN_Y_CELLS < p[1] < DEPOT_LANE_Y_CUTOFF
+                            or in_bay_spur(p[0], p[1])):
+                        return False
+                    # ...and actually stopped. A robot driving out of a bay
+                    # or slot is not parked (see PARKED_MAX_SPEED_IN_S). An
+                    # unknown speed (no estimate yet) keeps the old rule.
+                    speed = self.vision.speed_in(nm)
+                    return speed is None or speed <= PARKED_MAX_SPEED_IN_S
 
-                for a, b, sep, closing, contact in self.vision.closing_pairs_in():
-                    verdict = collision_verdict(
-                        sep, closing, parked_pair=parked(a) or parked(b),
-                        contact_in=contact)
+                # FOOTPRINTS AND MOTION, not centre distance and closing rate
+                # (2026-10-16). The old rule extrapolated how fast the
+                # distance between centres was shrinking and compared it with
+                # a contact distance taken along that same diagonal, so a
+                # robot driving PAST another 5in to the side -- 1.0in of real
+                # clearance -- was emergency-stopped at 7.2in. See
+                # footprint_gap_in() and predicted_min_gap_in().
+                for (a, b, sep, gap, min_gap, rel_speed,
+                     passby) in self.vision.motion_pairs_ext():
+                    margin = (COLLISION_PASSBY_MARGIN_IN if passby
+                              else COLLISION_PREDICT_MARGIN_IN)
+                    # PARKED ROBOTS ARE JUDGED BY FOOTPRINT TOO (2026-10-23).
+                    # The old exemption ("collision only at <= 4.0in centre
+                    # to centre") came from the 2026-09-29 contact model; the
+                    # exact footprints (2026-10-16) already give a robot
+                    # properly parked in a bay ~1in of real clearance to the
+                    # lane, so the exemption no longer prevents false stops --
+                    # it only hid real ones. 2026-10-23: Alvik5 came to rest
+                    # 1.38in deep in workstation 81 (its deepest stop of 304)
+                    # and Alvik2, driving the row behind the bay, was never
+                    # predicted: the overlap was found only when Alvik5 began
+                    # to leave. Parked pairs use the pass-by margin, and only
+                    # the MOVING robot is stopped -- a STOP would knock the
+                    # parked one out of its dwell.
+                    pa, pb = parked(a), parked(b)
+                    if pa or pb:
+                        margin = min(margin, COLLISION_PASSBY_MARGIN_IN)
+                    verdict = motion_verdict(gap, min_gap, rel_speed, sep,
+                                             margin=margin)
                     if verdict is None:
                         continue
                     if verdict == "collision":
                         self.get_logger().error(
-                            f"COLLISION: {a} and {b} are {sep:.2f}in apart "
-                            f"(contact {contact:.2f}in at their headings)")
+                            f"COLLISION: {a} and {b} are {sep:.2f}in apart, "
+                            f"footprints overlap by {-gap:.2f}in")
                         emergency_stop([a, b], "collision")
                         self._event("error",
                                     f"COLLISION — {a} and {b} at {sep:.1f}in "
-                                    f"(contact {contact:.1f}in); "
-                                    "run aborted",
+                                    f"(overlap {-gap:.1f}in); run aborted",
                                     severity="error")
                         self._memit("COLLISION",
                                     details={"robots": [a, b],
                                              "separation_in": round(sep, 2),
-                                             "closing_in_s": round(closing, 2),
-                                             "contact_in": COLLISION_CONTACT_IN})
+                                             "gap_in": round(gap, 2),
+                                             "rel_speed_in_s": round(rel_speed, 2)})
                         self._memit("RUN_ABORTED", reason="COLLISION",
                                     details={"robots": [a, b],
                                              "separation_in": round(sep, 2)})
                         return True
-                    trigger = (COLLISION_CONTACT_IN
-                               + closing * COLLISION_REACTION_SEC)
                     # Rate-limit: one stop per pair per second, or a pair that
                     # stays close keeps re-stopping and never recovers.
                     key = (a, b)
                     if now_sec - avoided.get(key, -99.0) < 1.0:
                         continue
                     avoided[key] = now_sec
+                    movers = [n for n, p in ((a, pa), (b, pb)) if not p] or [a, b]
                     emergency_stop(
-                        [a, b],
-                        f"closing at {closing:.1f}in/s with {sep:.2f}in left "
-                        f"(needs {trigger:.2f}in to stop)")
+                        movers,
+                        (f"{a if pa else b} is parked; " if (pa or pb) else "")
+                        + f"{gap:.2f}in between footprints now, "
+                        f"{min_gap:.2f}in within {COLLISION_REACTION_SEC:.2f}s "
+                        f"at {rel_speed:.1f}in/s relative "
+                        f"(margin {margin:.2f}in"
+                        + (", lane pass-by" if passby else "") + ")")
                     self._event("error",
-                                f"COLLISION AVOIDED — {a} and {b} closing at "
-                                f"{closing:.1f}in/s at {sep:.1f}in; both "
-                                "stopped",
+                                f"COLLISION AVOIDED — {a} and {b}: "
+                                f"{min_gap:.2f}in predicted gap at "
+                                f"{rel_speed:.1f}in/s; "
+                                + ("both stopped" if len(movers) == 2
+                                   else f"{movers[0]} stopped"),
                                 severity="error")
                     self._memit("COLLISION_AVOIDED",
                                 details={"robots": [a, b],
                                          "separation_in": round(sep, 2),
-                                         "closing_in_s": round(closing, 2),
-                                         "trigger_in": round(trigger, 2)})
+                                         "gap_in": round(gap, 2),
+                                         "min_gap_in": round(min_gap, 2),
+                                         "rel_speed_in_s": round(rel_speed, 2)})
                 return False
 
             def update_standing_holds(now_sec: float) -> None:
@@ -2853,7 +3917,25 @@ class FleetSupervisor(Node):
                 for cycle in cycles:
                     key = frozenset(cycle)
                     seen_now.add(key)
+                    # A YIELD ALREADY RESOLVING EXACTLY THIS PAIR. A robot
+                    # standing aside waits for the one it is letting through,
+                    # and that robot waits for it until it is physically
+                    # clear, so the pair reads as a cycle for as long as the
+                    # maneuver runs. Treating that as a new deadlock is what
+                    # sent BOTH robots aside on 2026-10-16: Alvik2 backed out
+                    # of 137, the "same" cycle was seen 1.2s later, and
+                    # Alvik3 was sidestepped too -- each then saw the other
+                    # gone, decided it had passed, went home, and the cycle
+                    # came straight back. The open entry stays open (it is in
+                    # seen_now), so the yield-grace abort still bounds it.
+                    if any(key == frozenset({yname, y["blocked"]})
+                           for yname, y in yielding.items()):
+                        continue
                     first_seen = key not in open_deadlocks
+                    if first_seen:
+                        t_first = pending_cycles.setdefault(key, now)
+                        if now - t_first < DEADLOCK_CONFIRM_SEC:
+                            continue
                     # A declined cycle is reconsidered rather than
                     # abandoned -- see DEADLOCK_RETRY_SEC.
                     if not first_seen:
@@ -2864,7 +3946,10 @@ class FleetSupervisor(Node):
                         conflict_id = open_deadlocks[key][0]
                     if first_seen:
                         conflict_id = f"dl-{'-'.join(cycle)}-{now:.0f}"
-                        open_deadlocks[key] = (conflict_id, now)
+                        # Timed from the first sighting, so the abort and
+                        # the recovery metric include the confirm window.
+                        open_deadlocks[key] = (conflict_id,
+                                               pending_cycles.pop(key, now))
                         self._memit("DEADLOCK_DETECTED",
                                     conflict_id=conflict_id,
                                     details={"type": "deadlock",
@@ -2887,7 +3972,15 @@ class FleetSupervisor(Node):
                     # cycle whose resolution is refused is retried rather
                     # than abandoned.
                     try:
-                        yielded = advisor.resolve_deadlock(cycle, now)
+                        # Only robots physically ON their planned node may
+                        # yield -- see YIELD_START_TOL_IN.
+                        yielded = advisor.resolve_deadlock(
+                            cycle, now,
+                            can_yield=lambda r: self._on_planned_node(
+                                advisor, r),
+                            drives_straight=lambda r, n, reverse=False:
+                                self._drives_straight(advisor, workers, r, n,
+                                                      reverse))
                     except Exception as exc:
                         yielded = None
                         self.get_logger().error(
@@ -2943,6 +4036,11 @@ class FleetSupervisor(Node):
                                 "back": back_item, "home": out_item.from_node,
                                 "blocked": yielded.blocked_robot,
                                 "blocked_at": str(blocked_at),
+                                # Plan position of the robot being let
+                                # through, so "has passed" can require it
+                                # to have actually done something.
+                                "blocked_index": advisor.robots[
+                                    yielded.blocked_robot].next_index,
                                 "conflict_id": conflict_id,
                                 "since": now, "stage_since": now,
                             }
@@ -3007,6 +4105,10 @@ class FleetSupervisor(Node):
                 # A cycle that cleared on its own is genuinely resolved --
                 # record that rather than leaving the row open, so
                 # mean_deadlock_recovery_sec has something to measure.
+                # A cycle that vanished inside its confirm window was never a
+                # deadlock: forget it without a row or a log line.
+                for key in [k for k in pending_cycles if k not in seen_now]:
+                    pending_cycles.pop(key, None)
                 for key in [k for k in open_deadlocks if k not in seen_now]:
                     conflict_id, since = open_deadlocks.pop(key)
                     self._memit("DEADLOCK_RESOLVED", conflict_id=conflict_id,
@@ -3089,14 +4191,39 @@ class FleetSupervisor(Node):
                             # moved off the node it was waiting on -- its
                             # reservation clearing is not the same as the
                             # robot being physically gone.
-                            blocked_now = str(advisor.robots[
-                                y["blocked"]].current_node)
-                            home_free = str(y["home"]) not in {
-                                k for k, holder in
-                                advisor._occupied_nodes().items()
-                                if holder != name}
-                            moved = blocked_now != y["blocked_at"]
-                            if moved and home_free:
+                            bst = advisor.robots[y["blocked"]]
+                            # A two-hop yield goes home through its middle
+                            # node too: that has to be free and not about to
+                            # be needed, exactly like home.
+                            way_home = [str(y["home"])] + [
+                                str(to) for _f, to, _d in
+                                movement_segments(y["back"])[:-1]]
+                            held = {k for k, holder in
+                                    advisor._occupied_nodes().items()
+                                    if holder != name}
+                            home_free = not any(n in held for n in way_home)
+                            # PASSED means went THROUGH, not merely "left the
+                            # node it was waiting on". That was the whole
+                            # test, and on 2026-10-16 it was satisfied by the
+                            # blocked robot stepping aside itself: both
+                            # yielders saw the other gone and went home into
+                            # the same standoff. Now the robot let through
+                            # must have completed planned work, must not be
+                            # off-plan in a yield of its own, and must no
+                            # longer be about to need our home node -- or we
+                            # walk back into its path.
+                            passed = (
+                                bst.next_index > y.get("blocked_index", -1)
+                                and str(bst.current_node) != y["blocked_at"]
+                                and y["blocked"] not in yielding
+                                and not any(advisor.needs_node_soon(
+                                    y["blocked"], n) for n in way_home))
+                            # Reserve the way home before driving it; a
+                            # "looks free" check alone let Alvik4 be granted
+                            # 3->2 while Alvik3 drove 10->2 (2026-10-22).
+                            if (passed and home_free
+                                    and advisor.begin_yield_return(
+                                        name, y["back"], now)):
                                 worker.submit(y["back"],
                                               _next_planned_move(name), False)
                                 y["stage"] = "back"
@@ -3107,7 +4234,8 @@ class FleetSupervisor(Node):
                             elif now - y["stage_since"] > YIELD_CLEAR_TIMEOUT_SEC:
                                 # Go home anyway if the node is free; the
                                 # blocked robot may have been rerouted.
-                                if home_free:
+                                if home_free and advisor.begin_yield_return(
+                                        name, y["back"], now):
                                     worker.submit(y["back"],
                                                   _next_planned_move(name),
                                                   False)
@@ -3221,6 +4349,16 @@ class FleetSupervisor(Node):
 
                         st = advisor.robots[name]
                         item = st.plan[st.next_index]
+                        rpd_hold = self._rpd_hold(name, item, now)
+                        if rpd_hold:
+                            advisor.cancel_dispatch(name)
+                            phase[name] = "waiting"
+                            next_gate_at[name] = now + SUPERVISOR_WAIT_RECHECK_SEC
+                            log_wait(name, rpd_hold)
+                            emit_state(name, "PROCESSING_HOLD"
+                                       if self._ws_bay(item.from_node) is not None
+                                       else "TRAFFIC_WAIT", rpd_hold)
+                            continue
                         vision_hold = (self._vision_hold_reason(advisor, name)
                                        if item.kind == "move" else None)
                         if vision_hold:
@@ -3343,9 +4481,49 @@ class FleetSupervisor(Node):
                                        if metrics_emitter is not None
                                        else None)
                         elif item.kind == "dwell":
-                            emit_state(name, "PROCESSING_HOLD")
-                            self._memit("PROCESSING_STARTED", robot_id=name,
-                                        workstation_id=last_node.get(name))
+                            # Only a dwell AT A WORKSTATION is service, and
+                            # only the first one of a visit starts it: a
+                            # visit is sent as several DWELLs (2 s pause +
+                            # 30 s chunks), and the delay-insertion plans add
+                            # traffic waits as DWELLs on lattice nodes too.
+                            here = last_node.get(name)
+                            if self._ws_bay(here) is not None:
+                                emit_state(name, "PROCESSING_HOLD")
+                                if in_service.get(name) != here:
+                                    in_service[name] = here
+                                    self._memit("PROCESSING_STARTED",
+                                                robot_id=name,
+                                                workstation_id=here)
+                            else:
+                                emit_state(name, "TRAFFIC_WAIT",
+                                           "planned wait")
+                        if item.kind == "move" and \
+                                self._ws_bay(item.from_node) is not None:
+                            # LEAVING A WORKSTATION ends the visit: one
+                            # PROCESSING_COMPLETED per visit, and the job
+                            # closes here -- not on every DWELL, which closed
+                            # two jobs per visit (2 s pause + 30 s chunk).
+                            here = str(item.from_node)
+                            in_service.pop(name, None)
+                            jobs = getattr(self, "_jobs", None)
+                            job = (jobs.complete_next(name)
+                                   if jobs is not None else None)
+                            self._memit("PROCESSING_COMPLETED", robot_id=name,
+                                        workstation_id=here,
+                                        job_id=job.job_id if job else None)
+                            if job is not None and job.mode in ("pick",
+                                                                "service"):
+                                self._bay_event(job.workstation, "picked",
+                                                name)
+                            if job is not None:
+                                self._memit(
+                                    "PICKUP_COMPLETED" if job.mode == "pick"
+                                    else "DROPOFF_COMPLETED",
+                                    robot_id=name, job_id=job.job_id,
+                                    workstation_id=job.workstation,
+                                    details={"mode": job.mode,
+                                             "grid_node": here})
+                        log_release(name)
                         self.get_logger().info(
                             f"[{name}] PLAN t={now:.1f}s -> {item.kind} "
                             f"{item.from_node}->{item.to_node} "
@@ -3381,7 +4559,22 @@ class FleetSupervisor(Node):
                         # safe to call directly (not via the worker thread)
                         # because phase=="waiting" means the worker is
                         # guaranteed idle, not mid-job.
-                        worker.nav.send_wheel(0.0, 0.0)
+                        #
+                        # ONLY TO A ROBOT STILL IN WHEEL_FOLLOW, AT 10 Hz
+                        # (2026-10-22). Since 2026-08-20 every leg ends in
+                        # stop_only(), so a waiting robot's firmware is IDLE
+                        # and ignores wheel_cmd entirely -- this went out on
+                        # every 20 ms loop pass to every waiting robot for
+                        # nothing: ~250 msg/s through the micro-ROS agent while
+                        # five robots queue in the depot. Alvik1's turns failed
+                        # 3.6% of the time with no robot waiting, 10% with 1-2,
+                        # 13% with 3-5 -- and Alvik1 leads every launch.
+                        nav = worker.nav
+                        if (str(getattr(nav, "last_status", "")).startswith(
+                                "BUSY WHEEL_FOLLOW")
+                                and now - keepalive_at.get(name, -1.0) >= 0.1):
+                            nav.send_wheel(0.0, 0.0)
+                            keepalive_at[name] = now
                         if now < next_gate_at[name]:
                             continue
                         phase[name] = "idle"
@@ -3475,17 +4668,53 @@ class FleetSupervisor(Node):
                                           else None)
                                 banked = False
                                 if (item_r is not None and item_r.kind == "move"
+                                        and self.vision is not None
+                                        and depot_label(item_r.to_node)):
+                                    # DEPOT NODES have no grid cell, so the
+                                    # cell test below could never bank them
+                                    # and the resync could never place the
+                                    # robot: Alvik1 arrived at DE1, its turn
+                                    # failed, the advisor kept it at D1, and
+                                    # DE1 was granted to Alvik2, which drove
+                                    # into it (2026-10-22). World inches.
+                                    if (arrived_world_in(self.vision, name,
+                                                         item_r.to_node)
+                                            and advisor.bank_completed_move(
+                                                name, now)):
+                                        banked = True
+                                        self.get_logger().warning(
+                                            f"[{name}] drive to "
+                                            f"{item_r.to_node} had completed; "
+                                            "banking it so the retry is not "
+                                            "refused as off-route")
+                                elif (item_r is not None and item_r.kind == "move"
                                         and self.vision is not None):
                                     mine = self.vision.snapshot().get(name)
                                     dest = label_to_cell(item_r.to_node,
                                                          advisor.rows,
                                                          advisor.cols)
+                                    # ARRIVED means at the node, not within
+                                    # the 0.75-cell off-route band: on
+                                    # 2026-10-16 Alvik3, guard-stopped 4.69in
+                                    # short mid-leg, was "banked" at 14.
+                                    # And bank_completed_move(), not
+                                    # record_done(): cancel_dispatch() above
+                                    # has already cleared st.pending, and
+                                    # record_done() returns at once without
+                                    # it -- so this logged "banking it" and
+                                    # recorded NOTHING, every time. The robot
+                                    # stayed on its origin node in the plan,
+                                    # was excluded as off-route (Alvik4, this
+                                    # morning) or was sent on a yield from
+                                    # the wrong node (Alvik1 13->5 from entry
+                                    # 118, ending in a collision).
                                     if (mine and mine[3] <= VISION_STALE_SEC
                                             and dest is not None
                                             and math.hypot(mine[0] - dest[0],
                                                            mine[1] - dest[1])
-                                            <= VISION_OFFROUTE_CELLS):
-                                        advisor.record_done(name, now)
+                                            <= ARRIVAL_BANK_CELLS
+                                            and advisor.bank_completed_move(
+                                                name, now)):
                                         banked = True
                                         self.get_logger().warning(
                                             f"[{name}] drive to "
@@ -3508,6 +4737,11 @@ class FleetSupervisor(Node):
                                                             advisor.rows,
                                                             advisor.cols,
                                                             tol=0.6)
+                                        if here is None:
+                                            # Below the grid: the depot lane
+                                            # and slots, by world position.
+                                            here = nearest_depot_label(
+                                                self.vision, name)
                                         if (here is not None
                                                 and str(here) != str(
                                                     st_r.current_node)):
@@ -3564,27 +4798,42 @@ class FleetSupervisor(Node):
                             if done_item.kind == "move" and \
                                     done_item.to_node is not None:
                                 last_node[name] = str(done_item.to_node)
-                            elif done_item.kind == "dwell":
-                                self._memit("PROCESSING_COMPLETED",
-                                            robot_id=name,
-                                            workstation_id=last_node.get(name))
-                                # The dwell IS the service visit. Pair it
-                                # with this robot's next pending job and
-                                # close that job out. workstation_id here is
-                                # the SOLVER's bay id, not last_node's grid
-                                # node -- see JobRegistry's docstring.
+                                # A drop (or a service visit's drop) at this
+                                # bay happens on ARRIVAL: start its part's
+                                # processing clock -- see _rpd_hold().
+                                bay = self._ws_bay(done_item.to_node)
                                 jobs = getattr(self, "_jobs", None)
-                                job = (jobs.complete_next(name)
+                                nxt = (jobs.next_pending(name)
                                        if jobs is not None else None)
-                                if job is not None:
-                                    self._memit(
-                                        "PICKUP_COMPLETED" if job.mode ==
-                                        "pickup" else "DROPOFF_COMPLETED",
-                                        robot_id=name, job_id=job.job_id,
-                                        workstation_id=job.workstation,
-                                        details={"mode": job.mode,
-                                                 "grid_node":
-                                                 last_node.get(name)})
+                                if bay is not None and nxt is not None and \
+                                        int(nxt.workstation) == bay and \
+                                        nxt.mode in ("drop", "service"):
+                                    drops = getattr(self, "_drop_arrival", {})
+                                    if bay not in drops:
+                                        drops[bay] = now
+                                        # Processing starts HERE unless the 2026-10-29
+                                        # drop rule defers it to the end of the DWELL.
+                                        if self._rpd_process_sec is None:
+                                            self._bay_event(bay, "delivered", name)
+                                        elif not (getattr(self, "_rpd_after_drop", False)
+                                                  and nxt.mode == "drop"):
+                                            self._bay_event(bay, "processing", name)
+                            elif done_item.kind == "dwell" and \
+                                    getattr(self, "_rpd_after_drop", False):
+                                # Drop rule (operator, 2026-10-29): the drop
+                                # is the DWELL after the robot squares up in
+                                # the bay; the workstation's processing clock
+                                # starts when that DWELL ends, and the robot
+                                # is then free to leave.
+                                bay = self._ws_bay(last_node.get(name))
+                                jobs = getattr(self, "_jobs", None)
+                                nxt = (jobs.next_pending(name)
+                                       if jobs is not None else None)
+                                if bay is not None and nxt is not None and \
+                                        int(nxt.workstation) == bay and \
+                                        nxt.mode == "drop" and bay not in self._drop_done:
+                                    self._drop_done[bay] = now
+                                    self._bay_event(bay, "processing", name)
                         fused_index[name] = None
                         phase[name] = "idle"
                         for waiting_name, waiting_phase in phase.items():
@@ -3703,11 +4952,13 @@ class VisionLegWorker:
     class only adds the plan-item-at-a-time handoff."""
 
     def __init__(self, name: str, supervisor: "FleetSupervisor",
-                 localization_mode: str = "camera_assist") -> None:
+                 localization_mode: str = "camera_assist",
+                 turn_method: str | None = None) -> None:
         from camera_grid_navigate import CameraGridNavigator
         import argparse as _argparse
 
         self.name = name
+        self.supervisor = supervisor      # for await_rotation_clearance()
         self.localization_mode = normalize_localization_mode(localization_mode)
         args = _argparse.Namespace(
             verbose=False, rows=8, cols=8,
@@ -3774,12 +5025,44 @@ class VisionLegWorker:
             settle_hard_fail_deg=5.0,
             staged_timeout_sec=15.0, staged_no_progress_sec=1.2,
         )
+        # This robot's own brake lead and steering trim, measured from real
+        # legs (robot_drive_calibration.json, tools/analyze_stops.py). The
+        # fleet-wide 1.38in lead stopped Alvik5/6 0.15in past and Alvik1/2/4
+        # 0.05in short, and Alvik3 drove every leg bowed 0.5in to its left.
+        args.steer_trim_rpm = 0.0
+        cal = robot_drive_calibration().get(name, {})
+        for key in ("brake_lead_in", "steer_trim_rpm"):
+            if isinstance(cal.get(key), (int, float)):
+                setattr(args, key, float(cal[key]))
+        # Where this robot rests beside its depot slot / workstation targets,
+        # fed forward by drive_leg (see aim_corrected_target()).
+        aim = cal.get("aim_lateral_in")
+        args.aim_lateral_in = dict(aim) if isinstance(aim, dict) else {}
+        along = cal.get("aim_along_in")
+        args.aim_along_in = dict(along) if isinstance(along, dict) else {}
+        # Chosen per mission by the Run tab's Drive mode buttons: "Camera
+        # only" sends staged, "Camera + Encoder" sends rotate_rel. None
+        # leaves AGV_TURN_METHOD / turn_method above in charge. It outranks
+        # the launch-line override -- see _turn_to_heading_core().
+        args.mission_turn_method = turn_method
+        # Hand the tuning to the metrics emitter before the navigator is
+        # built, so the run records the parameters it actually executed
+        # under -- defaults plus any env/CLI override. Guarded: a metrics
+        # import problem must never stop a robot being constructed.
+        try:
+            from metrics_events import metrics_emitter as _me
+            _me.remember_nav_args(args)
+        except Exception:
+            pass
         self.nav = CameraGridNavigator(name, args)
         self._job: tuple | None = None
         self._result: tuple[bool, str] | None = None
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._stop = threading.Event()
+        # Set by abort(): a rotation hold with no deadline polls it, so a
+        # robot excluded mid-hold does not turn later on its own.
+        self._cancel = threading.Event()
         self._thread = threading.Thread(
             target=self._run, name=f"vision-leg-{name}", daemon=True)
 
@@ -3797,6 +5080,7 @@ class VisionLegWorker:
         with self._lock:
             self._result = None
             self._job = (item, next_move, fuse_next)
+            self._cancel.clear()
         self._wake.set()
 
     def poll(self) -> tuple[bool, str, bool] | None:
@@ -3807,7 +5091,155 @@ class VisionLegWorker:
             return self._result
 
     def abort(self) -> None:
+        self._cancel.set()
         self.nav.send_cmd("STOP")
+
+    def _idle(self, seconds: float) -> None:
+        """Wait while keeping this robot's navigator reading its topics.
+
+        One spin_once handles one callback, and odometry plus camera pose
+        arrive at ~70 msg/s together, so spin in short slices."""
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            self.nav._spin_once(0.01)
+
+    def _turn(self, heading: float, label: str, tol_deg=None) -> bool:
+        """The gated turn itself, releasing the rotation claim when it ends.
+
+        await_rotation_clearance() claims the rotation for ROTATION_CLAIM_SEC
+        so the guard and corridor gate see it before the first frame does;
+        without a release the claim outlived the turn. 2026-10-16: Alvik1's
+        4.7deg turn at 18 took 0.46s, but its claim held Alvik3 in bay 73 --
+        "projects 0.48 cells from requested edge 73->122" -- after it."""
+        try:
+            return self.nav.turn_to_heading_rotate_rel(heading, label,
+                                                       tol_deg=tol_deg)
+        finally:
+            release = getattr(getattr(self.supervisor, "vision", None),
+                              "release_rotation", None)
+            if release is not None:
+                release(self.name)
+
+    def _ready_to_depart(self, frm, x0: float, y0: float, x1: float,
+                         y1: float, leg_label: str,
+                         heading_between) -> tuple[bool, str]:
+        """Two checks before ANY drive leg starts. (ok, why).
+
+        ON THE LINE. drive_leg() steers toward the target from wherever the
+        robot is, so a leg begun off its own line is a diagonal drive across
+        the grid. 2026-10-16: Alvik4 was resynced to node 29 and the retry
+        of "137->88" set off from there, 13in off that leg, and was stopped
+        beside Alvik3. Off by more than LEG_START_LATERAL_IN: refuse; the
+        retry/exclusion path then stops the robot instead.
+
+        POINTED DOWN IT. drive_leg() only trims heading. Planned moves are
+        aimed by the previous item's turn, but nothing re-aims a robot whose
+        trailing turn FAILED and whose drive was then banked -- 2026-10-16,
+        Alvik4 at entry 137 still facing east set off for bay 88, arced off
+        the tape and drove a circle. More than DEPART_ALIGN_DEG off: make
+        the (gated) turn first. Aimed robots are within 4deg, so normal
+        moves are untouched.
+        """
+        nav = self.nav
+        cam = nav.fresh_pose()
+        if cam is not None:
+            dx, dy = x1 - x0, y1 - y0
+            denom = dx * dx + dy * dy
+            if denom > 1e-9:
+                t = max(0.0, min(1.0, ((cam.x - x0) * dx + (cam.y - y0) * dy)
+                                 / denom))
+                off = math.hypot(cam.x - (x0 + t * dx), cam.y - (y0 + t * dy))
+                if off > LEG_START_LATERAL_IN:
+                    nav.stop_only()
+                    return False, (
+                        f"OFF_PATH: {off:.1f}in off the line of {leg_label} "
+                        f"at ({cam.x:.1f},{cam.y:.1f}); refusing to drive "
+                        "across the grid")
+        depart = heading_between(x0, y0, x1, y1)
+        pose = nav.control_pose()
+        if pose is None:
+            self._idle(0.3)          # first job after a wait: read topics
+            pose = nav.control_pose()
+        if pose is None:
+            return True, "heading unknown; drive_leg decides"
+        err = abs((depart - pose.yaw + 180.0) % 360.0 - 180.0)
+        if err <= DEPART_ALIGN_DEG:
+            return True, "aimed"
+        self.supervisor.get_logger().warning(
+            f"[{self.name}] {leg_label}: facing {pose.yaw:+.0f}deg, leg needs "
+            f"{depart:.0f}deg ({err:.0f}deg off) -- turning before driving")
+        ok, why = self._clear_to_rotate(depart, f"{leg_label}: departure",
+                                        timeout_sec=ROTATION_CLEAR_TIMEOUT_SEC,
+                                        at_node=frm)
+        if not ok:
+            return False, f"{why} (departure turn)"
+        if not self._turn(depart, f"{leg_label}: departure turn"):
+            return False, f"departure turn failed on {leg_label}"
+        return True, "turned"
+
+    def _straight_trim_skip(self, at_node, incoming: float, next_heading: float,
+                            label: str) -> bool:
+        """True: skip this turn and go on to the next leg as aimed now.
+
+        Only for a route going STRAIGHT ON through `at_node` (the plan makes
+        no turn there), whose remaining "turn" is a trim of arrival drift
+        above turn_tol_deg but within STRAIGHT_TRIM_SKIP_MAX_DEG, that the
+        rotation gate would hold right now, and only if straight_trim_clear()
+        shows the unsteered drive keeps the guard's margin. drive_leg()
+        steers the trim out on the way; _ready_to_depart() still turns a
+        robot more than DEPART_ALIGN_DEG off. Everything else waits for the
+        gate as before.
+        """
+        if abs((incoming - next_heading + 180.0) % 360.0 - 180.0) > 1.0:
+            return False                         # a real turn
+        return self._blocked_trim_skip(at_node, next_heading, label,
+                                       "on a straight route")
+
+    def _blocked_trim_skip(self, at_node, heading: float, label: str,
+                           why: str, length_in: float | None = None) -> bool:
+        """True: the turn to `heading` is only a trim (above turn_tol_deg,
+        within STRAIGHT_TRIM_SKIP_MAX_DEG), the rotation gate would hold it
+        right now, and the unsteered drive ahead keeps the guard's margin --
+        so drive on and let the leg steer it out."""
+        pose = self.nav.control_pose()
+        if pose is None:
+            return False
+        err = abs((heading - pose.yaw + 180.0) % 360.0 - 180.0)
+        if (err <= self.nav.args.turn_tol_deg
+                or err > STRAIGHT_TRIM_SKIP_MAX_DEG):
+            return False
+        blocked = self.supervisor.rotation_blocker(self.name, at_node)
+        if blocked is None:
+            return False                         # free to trim: trim
+        if not self.supervisor.straight_trim_clear(self.name, pose.yaw,
+                                                   length_in=length_in):
+            return False
+        self.supervisor.get_logger().info(
+            f"[{self.name}] {label}: skipping a {err:.1f}deg trim {why} "
+            f"({blocked[1]}); the leg steers it out")
+        return True
+
+    def _clear_to_rotate(self, heading: float, label: str,
+                         timeout_sec: float | None,
+                         at_node=None) -> tuple[bool, str]:
+        """Gate the rotation about to happen at `label` -- if one will.
+
+        The navigator skips a turn that is already within turn_tol_deg of
+        `heading` (_turn_to_heading_core), and a turn that does not happen
+        sweeps nothing. The gate used to be consulted first regardless, so
+        "turn at X: already within 4.0 deg ... skipping turn" could follow a
+        hold of up to 20s for that same non-turn. With no pose to judge by,
+        assume the turn happens and gate it.
+        """
+        pose = self.nav.control_pose()
+        if pose is not None:
+            err = abs((heading - pose.yaw + 180.0) % 360.0 - 180.0)
+            if err <= self.nav.args.turn_tol_deg:
+                return True, "no rotation needed"
+        return self.supervisor.await_rotation_clearance(
+            self.name, label, timeout_sec=timeout_sec,
+            cancelled=self._cancel.is_set, at_node=at_node,
+            idle=self._idle)
 
     def shutdown(self) -> None:
         self._stop.set()
@@ -3939,7 +5371,22 @@ class VisionLegWorker:
                         return False, (
                             "no fresh onboard odometry to anchor turn after dwell"
                         ), False
-                    if not nav.turn_to_heading_rotate_rel(
+                    # A dwell can end anywhere a planned wait was inserted,
+                    # bay entries included -- on 2026-10-16 Alvik2 turned
+                    # 92deg at entry 137 after one, the one place on the
+                    # table a turn cannot clear an adjacent robot. (Leaving
+                    # a workstation needs no turn: its 180deg arrival
+                    # square-up already faces the exit.) Ungated until
+                    # 2026-10-16. No deadline: the dwell is done, and
+                    # failing here would re-run it.
+                    ok, why = self._clear_to_rotate(
+                        heading,
+                        f"turn after dwell toward "
+                        f"{next_move.from_node}->{next_move.to_node}",
+                        timeout_sec=None, at_node=next_move.from_node)
+                    if not ok:
+                        return False, f"{why} (turn after dwell)", False
+                    if not self._turn(
                             heading,
                             f"turn after dwell toward "
                             f"{next_move.from_node}->{next_move.to_node}"):
@@ -3964,6 +5411,12 @@ class VisionLegWorker:
                 x0, y0 = nav_node_to_world(frm, rows, cols)
                 x1, y1 = nav_node_to_world(to, rows, cols)
                 leg_label = f"leg {frm}->{to}"
+                # YIELD_OUT_REV: this hop is driven TAIL FIRST -- a robot with
+                # no room to turn and nothing free ahead (2026-10-30). It
+                # faces the opposite way to its travel the whole hop.
+                rev = (str(item.command) == "YIELD_OUT_REV" and seg_index == 0)
+                facing = ((heading_between(x0, y0, x1, y1) + 180.0) % 360.0
+                          if rev else heading_between(x0, y0, x1, y1))
                 # A yield is the ONE move that cannot assume the robot is
                 # already pointing at it. Planned moves are always preceded
                 # by the previous item's step (3) turn toward the next leg,
@@ -3973,25 +5426,80 @@ class VisionLegWorker:
                 # 2026-09-09, real hardware: Alvik5 held node 3 facing north
                 # for 3->11, was told to yield west to node 2, and arced into
                 # Alvik3 because nothing turned it first. Turn, then drive.
-                if str(item.command).startswith("YIELD"):
+                if rev:
+                    # No departure turn: the tail already points at `to`
+                    # (_drives_straight checked it within 10deg, and the
+                    # reverse leg steers the rest out).
+                    if (mode_requires_odom(nav.localization_mode)
+                            and not nav.ensure_odom_anchor(x0, y0, facing)):
+                        return False, (
+                            f"no fresh onboard odometry to anchor the "
+                            f"reverse hop {leg_label}"), False
+                elif str(item.command).startswith("YIELD"):
                     depart = heading_between(x0, y0, x1, y1)
                     if (mode_requires_odom(nav.localization_mode)
                             and not nav.ensure_odom_anchor(x0, y0, depart)):
                         return False, (
                             f"no fresh onboard odometry to anchor the "
                             f"departure turn for {leg_label}"), False
-                    if not nav.turn_to_heading_rotate_rel(
-                            depart, f"{leg_label}: yield departure turn"):
-                        return False, (
-                            f"yield departure turn failed on {leg_label}"
-                        ), False
+                    # A yield is injected off-plan by the deadlock resolver
+                    # and skips the normal gates on purpose ("the worker
+                    # does not re-verify collision safety", submit()). But
+                    # its FIRST primitive is a rotation, and a sidestep out
+                    # of a lattice node beside an occupied bay entry is the
+                    # 2026-09-30 contact geometry exactly. Gated with a
+                    # short deadline: a yield that cannot turn safely must
+                    # fail fast so the resolver or the abort timer takes
+                    # over, rather than turning into somebody.
+                    #
+                    # A robot with no room to turn is only ever sent STRAIGHT
+                    # out (2026-10-30, _yield_move): already pointing there,
+                    # so all that is left is a trim the leg steers out.
+                    straight_out = self._blocked_trim_skip(
+                        frm, depart, f"{leg_label}: yield departure",
+                        "leaving straight out",
+                        length_in=math.hypot(x1 - x0, y1 - y0))
+                    if not straight_out:
+                        ok, why = self._clear_to_rotate(
+                            depart, f"{leg_label}: yield departure",
+                            timeout_sec=YIELD_ROTATION_CLEAR_TIMEOUT_SEC,
+                            at_node=frm)
+                        if not ok:
+                            return False, f"{why} (yield departure)", False
+                        if not self._turn(
+                                depart, f"{leg_label}: yield departure turn"):
+                            return False, (
+                                f"yield departure turn failed on {leg_label}"
+                            ), False
                 if mode_requires_odom(nav.localization_mode):
-                    initial_heading = heading_between(x0, y0, x1, y1)
+                    initial_heading = facing
                     if not nav.ensure_odom_anchor(x0, y0, initial_heading):
                         return False, (
                             f"no fresh onboard odometry to anchor {leg_label}"
                         ), False
-                if not nav.drive_leg(x1, y1, leg_label):
+                if seg_index == 0:
+                    # Reversing, "pointed down the leg" means the TAIL is.
+                    hb = ((lambda *a: (heading_between(*a) + 180.0) % 360.0)
+                          if rev else heading_between)
+                    ok, why = self._ready_to_depart(frm, x0, y0, x1, y1,
+                                                    leg_label, hb)
+                    if not ok:
+                        return False, why, False
+                # Tell the collision guard where this leg ends, so it does
+                # not extrapolate a braking robot past its own target.
+                # Optional: a missing hook must never stop a robot driving.
+                _vm = getattr(self.supervisor, "vision", None)
+                _set = getattr(_vm, "set_leg_target", None)
+                _clear = getattr(_vm, "clear_leg_target", None)
+                if _set is not None:
+                    _set(self.name, x1, y1)
+                try:
+                    _drove = (nav.drive_leg(x1, y1, leg_label, reverse=True) if rev
+                              else nav.drive_leg(x1, y1, leg_label))
+                finally:
+                    if _clear is not None:
+                        _clear(self.name)
+                if not _drove:
                     # nav.last_failure carries WHY -- STALLED_IDLE,
                     # STALLED_DRIVING, MODE_ACK_LOST, SETTLE_FAILED,
                     # SETTLE_DIVERGED, VISION_LOST. Without it every one of
@@ -4039,7 +5547,8 @@ class VisionLegWorker:
                     # direction the robot arrived from.
                     heading = 180.0
                 else:
-                    heading = heading_between(x0, y0, x1, y1)
+                    # Reversed in: hold the way it faces, never turn round.
+                    heading = facing
                 # At the final ordinary transit node, an immediately-following
                 # move already causes the absolute departure-heading turn
                 # below. Squaring to the incoming heading first is redundant
@@ -4067,7 +5576,33 @@ class VisionLegWorker:
                              and not to_text.startswith("DE"))
                             or is_workstation_node(to, rows, cols))
                         else None)
-                    if not nav.turn_to_heading_rotate_rel(
+                    # THE REAL ROTATION GATE. Checked here, immediately
+                    # before the turn actually happens, because the
+                    # standalone turn PlanItem this used to be gated on is
+                    # a no-op in vision mode and runs AFTER this rotation.
+                    #
+                    # The robot has ARRIVED, so this must never fail the leg:
+                    # a failure re-dispatches the leg from `frm`, which the
+                    # robot has left, and the vision gate then excludes it
+                    # as off-route. 2026-10-16: Alvik4 reached 18, was held
+                    # 20s here, failed, and was excluded ~23s later.
+                    #   * Workstation/depot: the heading is required, so
+                    #     hold with no deadline.
+                    #   * Anywhere else this only trims arrival drift toward
+                    #     the incoming heading; every later turn re-aims to
+                    #     an absolute heading. If it stays blocked, skip it.
+                    ok, why = self._clear_to_rotate(
+                        heading, f"square up at {to}",
+                        timeout_sec=(None if arrival_tol is not None
+                                     else ROTATION_CLEAR_TIMEOUT_SEC),
+                        at_node=to)
+                    if not ok and why.startswith("aborted"):
+                        return False, f"{why} (square up at {to})", False
+                    if not ok:
+                        self.supervisor.get_logger().warning(
+                            f"[{self.name}] square up at {to} skipped: {why}; "
+                            "arrived, keeping the arrival heading")
+                    elif not self._turn(
                             heading, f"square up at {to} to {heading:.0f}deg",
                             tol_deg=arrival_tol):
                         return False, (
@@ -4080,6 +5615,26 @@ class VisionLegWorker:
                 nfrm, nto = next_move.from_node, next_move.to_node
                 nx, ny = nav_node_to_world(nto, rows, cols)
                 next_heading = heading_between(tx, ty, nx, ny)
+                # Step (3), the turn toward the next leg. This is the
+                # rotation the entry/lattice geometry actually conflicts
+                # over: at 5.00in between a bay entry and its flanking
+                # lattice node, against a 5.625in turning circle, neither
+                # robot can turn while the other is there. Gated here
+                # rather than on the no-op turn item that follows.
+                # No deadline: the robot has arrived at `to_label`, so a
+                # failure would strand it exactly as at the square-up above,
+                # and skipping would send it down the next leg mis-aimed --
+                # except a small trim on a straight-on route, which the next
+                # leg's own steering absorbs (see _straight_trim_skip).
+                if self._straight_trim_skip(
+                        to_label, heading_between(x0, y0, x1, y1),
+                        next_heading, f"turn at {to_label} toward {nfrm}->{nto}"):
+                    return True, "ok", False
+                ok, why = self._clear_to_rotate(
+                    next_heading, f"turn at {to_label} toward {nfrm}->{nto}",
+                    timeout_sec=None, at_node=to_label)
+                if not ok:
+                    return False, f"{why} (turn at {to_label})", False
                 if fuse_next:
                     if not nav.turn_then_drive_leg(
                             next_heading, nx, ny,
@@ -4087,7 +5642,7 @@ class VisionLegWorker:
                         return False, _leg_note(
                         nav, f"turn_then_drive_leg failed at {to_label}"), False
                     return True, "ok", True
-                if not nav.turn_to_heading_rotate_rel(
+                if not self._turn(
                         next_heading,
                         f"turn at {to_label} toward {nfrm}->{nto}"):
                     return False, _leg_note(
@@ -4149,6 +5704,25 @@ class JobRegistry:
 
     def __len__(self) -> int:
         return len(self.jobs)
+
+    def next_pending(self, robot: str):
+        """This robot's next unfinished job, or None."""
+        for jid in self.queues.get(robot, []):
+            job = self.jobs[jid]
+            if job.status == "pending" and job.robot == robot:
+                return job
+        return None
+
+    def pending_after(self, robot: str):
+        """The unfinished job AFTER this robot's next one, or None."""
+        seen = False
+        for jid in self.queues.get(robot, []):
+            job = self.jobs[jid]
+            if job.status == "pending" and job.robot == robot:
+                if seen:
+                    return job
+                seen = True
+        return None
 
     def complete_next(self, robot: str):
         """Mark this robot's next pending job done and return it, or None.
@@ -4338,6 +5912,48 @@ def _parse_args(argv: list[str]) -> tuple[dict[str, list[str]], dict]:
     return robots, options
 
 
+def _spin_forever(node) -> None:
+    """rclpy.spin(), but a callback that raises no longer ends it.
+
+    An exception in ANY subscription callback propagates out of rclpy.spin
+    and ends the spin thread; the supervisor then looks alive but never
+    hears another mission, START or robot status, and only a restart helps
+    (the 4->6 robot switches during the DOE). The operator wants run after
+    run without restarts, so: log the traceback, keep spinning. Each
+    distinct failure is printed in full a few times, then only counted, so
+    a fault repeating at 20 Hz cannot flood the terminal."""
+    import traceback
+    seen: dict = {}
+    try:
+        from rclpy.executors import ExternalShutdownException
+    except ImportError:                       # older rclpy
+        ExternalShutdownException = KeyboardInterrupt
+    while rclpy.ok():
+        try:
+            rclpy.spin(node)
+            return                            # spin returned: shutting down
+        except (KeyboardInterrupt, ExternalShutdownException):
+            return
+        except Exception as exc:              # noqa: BLE001 - that is the point
+            if not rclpy.ok():
+                return
+            tb = traceback.extract_tb(exc.__traceback__)
+            where = f"{tb[-1].filename}:{tb[-1].lineno}" if tb else "?"
+            key = (type(exc).__name__, where)
+            seen[key] = seen.get(key, 0) + 1
+            n = seen[key]
+            try:
+                log = node.get_logger()
+                if n <= 3:
+                    log.error(f"callback raised {type(exc).__name__}: {exc} "
+                              "-- spinning on\n" + traceback.format_exc())
+                elif n in (10, 100) or n % 1000 == 0:
+                    log.error(f"callback raised {type(exc).__name__} at {where} "
+                              f"{n} times so far -- spinning on")
+            except Exception:                 # noqa: BLE001
+                pass
+
+
 def main() -> None:
     argv = sys.argv[1:]
     if not argv:
@@ -4368,8 +5984,9 @@ def main() -> None:
     node.max_leg_retries = int(options["max_leg_retries"])
     if advisor is not None:
         advisor.log_fn = node.advisor_log_sink()  # LLM activity -> terminal + log
+        node.advisor = advisor
 
-    spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    spin_thread = threading.Thread(target=_spin_forever, args=(node,), daemon=True)
     spin_thread.start()
 
     try:
@@ -4430,6 +6047,14 @@ def _run_listen_loop(node: "FleetSupervisor", options: dict) -> None:
             node.get_logger().error(f"mission rejected (alignment): {exc}")
             node.publish_fleet_status("error", note=f"alignment: {exc}")
             continue
+        # Retained so the rotation gate can register a standoff with
+        # note_vision_block(); see await_rotation_clearance().
+        node.advisor = advisor
+        node.drive_mode = str(mission.get("drive_mode", "color")).lower()
+        # In vision mode a turn plan item is a no-op and the real rotation is
+        # gated by await_rotation_clearance(); the advisor must not ALSO hold
+        # the no-op (2026-10-16, Alvik3 held 60s after it had already turned).
+        advisor.rotation_gated_at_execution = (node.drive_mode == "vision")
         node.configure_robots(mission["commands"])
         node.wait_for_status_match(mission["commands"])
         node._start_event.clear()
@@ -4459,13 +6084,26 @@ def _run_listen_loop(node: "FleetSupervisor", options: dict) -> None:
             mission.get("localization_mode", "camera_assist"))
         if drive_mode == "vision":
             fuse_turns = bool(mission.get("fuse_turns", False))
+            # The Run tab's Drive mode buttons send this; an unknown value is
+            # dropped rather than guessed at, which leaves the launch default.
+            turn_method = mission.get("turn_method")
+            if turn_method not in (None, "staged", "rotate_rel", "wheel"):
+                node.get_logger().warn(
+                    f"mission turn_method {turn_method!r} is not staged, "
+                    "rotate_rel or wheel -- ignored, launch default applies")
+                turn_method = None
+            launch_turn = os.environ.get("AGV_TURN_METHOD") or "staged"
             node.get_logger().info(
                 "drive_mode=vision — dispatching position/heading control; "
-                f"localization={localization_mode}; color sensor not used"
+                f"localization={localization_mode}; "
+                f"turn={turn_method or launch_turn}"
+                f"{' (from mission)' if turn_method else ' (launch default)'}; "
+                "color sensor not used"
                 + (" [fuse_turns requested]" if fuse_turns else ""))
             node.run_advised_vision(advisor, timeout_sec=options["timeout"],
                                     fuse_turns=fuse_turns,
-                                    localization_mode=localization_mode)
+                                    localization_mode=localization_mode,
+                                    turn_method=turn_method)
         else:
             node.get_logger().info(
                 "drive_mode=color — firmware color markers trigger nodes and "

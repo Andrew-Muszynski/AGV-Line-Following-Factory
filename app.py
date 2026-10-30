@@ -17,15 +17,20 @@ procedure as the port-8081 stream rule):
 """
 from __future__ import annotations
 
+import atexit
 import csv
 import io
 import json
+import os
 import sys
 
-from flask import Flask, g, jsonify, redirect, render_template, request
+from flask import (Flask, g, jsonify, redirect, render_template, request,
+                   send_file)
 
 import database
 import metrics_engine
+import plan_store
+import video_recorder
 import vlm_chat
 from metrics_definitions import (DEFINITION_SET_VERSION, DEFINITIONS,
                                  seed_definitions)
@@ -54,13 +59,28 @@ def create_app(db_path: str | None = None) -> Flask:
         if conn is not None:
             conn.close()
 
+    def recorder():
+        """The run-video recorder, or None. Only `python app.py` attaches
+        one (see __main__): an app built by a test or an import must never
+        open the camera stream and encode a file because it saw RUN_STARTED."""
+        return app.extensions.get("video_recorder")
+
+    def _recorder_hook(fn):
+        rec = recorder()
+        if rec is None:
+            return
+        try:
+            fn(rec)
+        except Exception:               # a recording must never break the API
+            app.logger.exception("video recorder hook failed")
+
     @app.after_request
     def cors(resp):
         # Local-tool convenience: lets the page keep working against this
         # API even when served by a different local server (http.server).
         if request.path.startswith("/api/"):
             resp.headers["Access-Control-Allow-Origin"] = "*"
-            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, OPTIONS"
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
             resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
         return resp
 
@@ -72,12 +92,111 @@ def create_app(db_path: str | None = None) -> Flask:
 
     @app.route("/")
     def index():
-        return render_template("index.html")
+        # Cache-buster for the page's scripts: the newest JS edit time, so a
+        # deployed change is loaded without anyone remembering Ctrl+F5
+        # (2026-10-30: bay colours were still drawn by a stale solver.js).
+        js_dir = os.path.join(app.static_folder, "js")
+        try:
+            asset_v = int(max(os.path.getmtime(os.path.join(js_dir, f))
+                              for f in os.listdir(js_dir) if f.endswith(".js")))
+        except (OSError, ValueError):
+            asset_v = 0
+        return render_template("index.html", asset_v=asset_v)
 
     @app.route("/agv_grid_workstation_solver.html")
     def legacy_url():
         # Old http.server bookmark keeps working.
         return redirect("/", code=302)
+
+    # ---- traffic planning (DOE) -------------------------------------------
+    # The Run & Monitor tab's "Traffic planner" buttons send the page's current
+    # plan here and get back the same JOB allocation with routes and waits
+    # planned by the chosen method (traffic/planners.py), in the page's own
+    # export format, which the page then dispatches exactly as planned. This
+    # is what lets back-to-back runs differ ONLY in the traffic planner.
+
+    @app.route("/api/traffic/methods")
+    def traffic_methods():
+        from traffic.planners import METHODS
+        return jsonify({"methods": list(METHODS)})
+
+    @app.route("/api/traffic/plan", methods=["POST"])
+    def traffic_plan():
+        from traffic import instance as traffic_instance
+        from traffic.export import to_page_plan
+        from traffic.planners import METHODS, solve
+        from traffic.validate import metrics as traffic_metrics
+        from traffic.validate import validate as traffic_validate
+
+        body = request.get_json(force=True, silent=True) or {}
+        method = str(body.get("method", "")).strip().lower()
+        if method not in METHODS:
+            return jsonify({"error": f"method must be one of {list(METHODS)}"}), 400
+        plan = body.get("plan")
+        if not isinstance(plan, dict):
+            return jsonify({"error": "missing 'plan' (the page's export payload)"}), 400
+        try:
+            inst = traffic_instance.load_data(plan, str(body.get("name") or "page"))
+        except (ValueError, KeyError, TypeError) as exc:
+            return jsonify({"error": f"cannot read the plan: {exc}"}), 400
+        limit = min(120.0, max(1.0, float(body.get("time_limit") or 30.0)))
+        res = solve(inst, method, time_limit=limit, seed=int(body.get("seed") or 0))
+        if not res.paths:
+            return jsonify({"ok": False, "method": method, "note": res.note,
+                            "planning_sec": round(res.planning_sec, 3),
+                            "stats": res.stats})
+        report = traffic_validate(inst, res.paths)
+        row = traffic_metrics(inst, res.paths, report)
+        return jsonify({
+            "ok": True, "method": method,
+            "plan": to_page_plan(inst, res.paths, method, report, row),
+            "valid": report["valid"],
+            "conflicts": [c.describe() for c in report["conflicts"]],
+            "errors": report["errors"],
+            "metrics": row, "planning_sec": round(res.planning_sec, 3),
+            "note": res.note, "stats": res.stats,
+        })
+
+    # ---- saved plans -------------------------------------------------------
+    # The solver page saves a solved plan into generated_plans/ and reloads
+    # it from a dropdown, so a BRKGA solve worth minutes of CPU is kept
+    # without a download/import round trip. plan_server.py serves the same
+    # store under /plans for the start_dashboard.bat flow, where this Flask
+    # app is not running -- see plan_store.py.
+
+    @app.route("/api/plans")
+    def plans_list():
+        return jsonify({"dir": str(plan_store.PLANS_DIR),
+                        "plans": plan_store.list_plans()})
+
+    @app.route("/api/plans/<name>")
+    def plans_get(name):
+        try:
+            return jsonify(plan_store.read_plan(name))
+        except FileNotFoundError:
+            return jsonify({"error": f"no such plan: {name}"}), 404
+        except plan_store.PlanStoreError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.route("/api/plans", methods=["POST"])
+    def plans_save():
+        body = request.get_json(silent=True) or {}
+        try:
+            saved = plan_store.save_plan(body.get("name", ""),
+                                         body.get("plan"),
+                                         overwrite=bool(body.get("overwrite")))
+        except plan_store.PlanStoreError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"ok": True, **saved}), 201
+
+    @app.route("/api/plans/<name>", methods=["DELETE"])
+    def plans_delete(name):
+        try:
+            return jsonify({"ok": True, "deleted": plan_store.delete_plan(name)})
+        except FileNotFoundError:
+            return jsonify({"error": f"no such plan: {name}"}), 404
+        except plan_store.PlanStoreError as exc:
+            return jsonify({"error": str(exc)}), 400
 
     # ---- VLM chat ----------------------------------------------------------
     # Lazily constructed so importing app.py (tests) never touches Ollama or
@@ -126,6 +245,9 @@ def create_app(db_path: str | None = None) -> Flask:
     @app.route("/api/runs", methods=["POST"])
     def create_run():
         payload = request.get_json(force=True, silent=True) or {}
+        # Name for this run's video, typed in Run & Monitor. Not a run column:
+        # the recorder holds it until the run starts.
+        video_label = str(payload.pop("video_label", "") or "").strip()
         # Re-arming a mission must NOT strand the row created by the previous
         # arm. If the caller names a run it already owns and that run never
         # started and carries no events, rewrite it in place and hand back
@@ -141,8 +263,12 @@ def create_app(db_path: str | None = None) -> Flask:
             if (prior is not None and prior["started_at_utc"] is None
                     and prior["status"] == "created" and not has_events):
                 database.update_run(db(), reuse, payload)
+                _recorder_hook(lambda r: r.arm(reuse, video_label,
+                                               payload.get("plan_file")))
                 return jsonify({"run_id": reuse, "reused": True}), 200
         run_id = database.create_run(db(), payload)
+        _recorder_hook(lambda r: r.arm(run_id, video_label,
+                                       payload.get("plan_file")))
         return jsonify({"run_id": run_id}), 201
 
     def _run_filters(executed_default=False):
@@ -175,6 +301,7 @@ def create_app(db_path: str | None = None) -> Flask:
             "run_id": "r.run_id", "status": "r.status",
             "experimental_condition": "r.experimental_condition",
             "algorithm": "r.algorithm", "drive_mode": "r.drive_mode",
+            "traffic_method": "r.traffic_method",
         }
         for param, col in simple.items():
             if q.get(param):
@@ -226,7 +353,11 @@ def create_app(db_path: str | None = None) -> Flask:
                        r.ended_at_utc, r.status, r.experimental_condition,
                        r.algorithm, r.drive_mode, r.robot_count, r.job_count,
                        r.workstation_count, r.process_sec, r.capacity,
-                       r.random_seed, r.planned_makespan_sec, r.notes
+                       r.random_seed, r.planned_makespan_sec,
+                       r.traffic_method, r.plan_file, r.notes,
+                       (SELECT MAX(v.video_id) FROM run_videos v
+                        WHERE v.run_id = r.run_id
+                          AND v.status IN ('ready', 'recording')) AS video_id
                 FROM runs r{where}
                 ORDER BY r.created_at_utc DESC LIMIT ? OFFSET ?""",
             (*args, limit, offset)).fetchall()
@@ -266,10 +397,33 @@ def create_app(db_path: str | None = None) -> Flask:
                     "error": "run never started; refusing to mark it "
                              f"{patch['status']}",
                     "run_id": run_id}), 409
+        # The supervisor is the authority on how a run ended. 2026-10-23: the
+        # browser's /fleet_status fallback read "complete: none; errored:
+        # none" after a collision abort as a clean finish and overwrote
+        # RUN_ABORTED/RUN_FAILED with 'completed' -- a 10-of-12-jobs run then
+        # showed a 165.8 s makespan. A logged abort or failure is never
+        # upgraded to completed.
+        if patch.get("status") == "completed":
+            ended = db().execute(
+                "SELECT event_type FROM events WHERE run_id = ? AND "
+                "event_type IN ('RUN_ABORTED', 'RUN_FAILED') ORDER BY seq "
+                "LIMIT 1", (run_id,)).fetchone()
+            if ended is not None:
+                return jsonify({
+                    "error": f"the supervisor logged {ended['event_type']} "
+                             "for this run; refusing to mark it completed",
+                    "run_id": run_id}), 409
         try:
             database.update_run(db(), run_id, patch)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
+        # Video: the Start button is the earliest sign a run is under way;
+        # a terminal status ends its recording (after the tail).
+        status = patch.get("status")
+        if status == "running":
+            _recorder_hook(lambda r: r.on_run_started(run_id, "browser"))
+        elif status in ("completed", "failed", "aborted"):
+            _recorder_hook(lambda r: r.on_run_ended(run_id, f"run {status}"))
         return jsonify(dict(database.get_run(db(), run_id)))
 
     # ---- events ------------------------------------------------------------
@@ -307,10 +461,31 @@ def create_app(db_path: str | None = None) -> Flask:
         except Exception:                       # never break event ingest
             app.logger.exception("auto-finalize failed for %s", run_id)
 
+    def _video_triggers(run_id, events):
+        """RUN_STARTED starts (or re-anchors) the run's recording; a terminal
+        event ends it. Events after RUN_STARTED in the same batch prove it
+        was emitted at least that much earlier than this POST arrived, which
+        is the lag the recorder subtracts from its time anchor."""
+        evs = [e for e in events if isinstance(e, dict)]
+        types = [str(e.get("event_type")) for e in evs]
+        if "RUN_STARTED" in types:
+            i = types.index("RUN_STARTED")
+            t0 = evs[i].get("elapsed_ms")
+            later = [e.get("elapsed_ms") for e in evs[i + 1:]
+                     if isinstance(e.get("elapsed_ms"), (int, float))]
+            lag = (max(later) - t0) / 1000.0 \
+                if later and isinstance(t0, (int, float)) else 0.0
+            _recorder_hook(lambda r: r.on_run_started(
+                run_id, "supervisor", max(0.0, lag)))
+        ended = next((t for t in types if t in TERMINAL_EVENTS), None)
+        if ended:
+            _recorder_hook(lambda r: r.on_run_ended(run_id, ended))
+
     def _ingest(run_id, events):
         if database.get_run(db(), run_id) is None:
             return jsonify({"error": "unknown run"}), 404
         result = database.ingest_events(db(), run_id, events)
+        _video_triggers(run_id, events)
         if any(str(e.get("event_type")) in TERMINAL_EVENTS
                for e in events if isinstance(e, dict)):
             _autofinalize(run_id)
@@ -352,6 +527,226 @@ def create_app(db_path: str | None = None) -> Flask:
         return jsonify({"total": total, "limit": limit, "offset": offset,
                         "events": [dict(r) for r in rows]})
 
+    # ---- run videos ----------------------------------------------------------
+    # Recording itself is video_recorder.py. These routes are its controls
+    # (Run & Monitor) and the library the Recordings page reads.
+
+    def _no_recorder():
+        return jsonify({"error": "video recording is not enabled in this app "
+                                 "instance -- start it with python app.py"}), 409
+
+    def _video_out(row):
+        v = dict(row)
+        rec = recorder()
+        v["file_exists"] = bool(rec and rec.find_file(v["file_name"]))
+        v["url"] = f"/api/videos/{v['video_id']}/file"
+        return v
+
+    @app.route("/api/recorder")
+    def recorder_status():
+        rec = recorder()
+        if rec is None:
+            return jsonify({"enabled": False, "available": False,
+                            "reason": "no recorder in this app instance"})
+        return jsonify({**rec.status(), "enabled": True})
+
+    @app.route("/api/recorder/settings", methods=["POST"])
+    def recorder_settings():
+        rec = recorder()
+        if rec is None:
+            return _no_recorder()
+        body = request.get_json(force=True, silent=True) or {}
+        if "auto" in body:
+            rec.set_auto(bool(body["auto"]))
+        if "second" in body:
+            rec.set_second(bool(body["second"]))
+        return jsonify({**rec.status(), "enabled": True})
+
+    @app.route("/api/recorder/start", methods=["POST"])
+    def recorder_start():
+        rec = recorder()
+        if rec is None:
+            return _no_recorder()
+        body = request.get_json(force=True, silent=True) or {}
+        run_id = body.get("run_id") or None
+        run = database.get_run(db(), run_id) if run_id else None
+        if run_id and run is None:
+            return jsonify({"error": "unknown run", "run_id": run_id}), 404
+        # The page offers its session run, which may have finished long ago;
+        # a recording made after that must not inherit its events.
+        if run is not None and run["status"] in ("completed", "failed",
+                                                 "aborted"):
+            run_id = None
+        try:
+            out = rec.start(run_id=run_id, label=body.get("label"))
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+        return jsonify({**out, "enabled": True})
+
+    @app.route("/api/recorder/stop", methods=["POST"])
+    def recorder_stop():
+        rec = recorder()
+        if rec is None:
+            return _no_recorder()
+        return jsonify({**rec.stop("stopped by hand", wait=True),
+                        "enabled": True})
+
+    @app.route("/api/videos")
+    def list_videos():
+        where, args = [], []
+        for param in ("run_id", "status"):
+            if request.args.get(param):
+                where.append(f"v.{param} = ?")
+                args.append(request.args.get(param))
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        limit, offset = _paginate()
+        total = db().execute(
+            f"SELECT COUNT(*) AS n FROM run_videos v{clause}",
+            args).fetchone()["n"]
+        rows = db().execute(
+            f"""SELECT v.*, r.robot_count, r.traffic_method,
+                       r.experimental_condition, r.status AS run_status,
+                       r.drive_mode, r.algorithm, r.planned_makespan_sec
+                FROM run_videos v LEFT JOIN runs r ON r.run_id = v.run_id
+                {clause}
+                ORDER BY v.video_id DESC LIMIT ? OFFSET ?""",
+            (*args, limit, offset)).fetchall()
+        videos = [_video_out(r) for r in rows]
+        values = _values_for_runs(
+            sorted({v["run_id"] for v in videos if v["run_id"]}),
+            ["actual_makespan_sec"])
+        for v in videos:
+            mv = values.get((v["run_id"], "actual_makespan_sec"))
+            v["actual_makespan_sec"] = mv["value"] if mv else None
+        return jsonify({"total": total, "limit": limit, "offset": offset,
+                        "videos": videos})
+
+    @app.route("/api/videos/<int:video_id>")
+    def get_video(video_id):
+        row = database.get_video(db(), video_id)
+        if row is None:
+            return jsonify({"error": "unknown video"}), 404
+        return jsonify(_video_out(row))
+
+    @app.route("/api/videos/<int:video_id>", methods=["PATCH"])
+    def patch_video(video_id):
+        if database.get_video(db(), video_id) is None:
+            return jsonify({"error": "unknown video"}), 404
+        body = request.get_json(force=True, silent=True) or {}
+        patch = {k: body[k] for k in ("title", "notes") if k in body}
+        if "second_offset_sec" in body:
+            # The page's sync nudge for the second camera.
+            try:
+                patch["second_offset_sec"] = round(
+                    float(body["second_offset_sec"]), 3)
+            except (TypeError, ValueError):
+                return jsonify({"error": "second_offset_sec must be a "
+                                         "number"}), 400
+        if "title" in patch:
+            patch["title"] = str(patch["title"] or "").strip()[:200]
+            if not patch["title"]:
+                return jsonify({"error": "a video needs a name"}), 400
+        database.update_video(db(), video_id, patch)
+        return jsonify(_video_out(database.get_video(db(), video_id)))
+
+    @app.route("/api/videos/<int:video_id>", methods=["DELETE"])
+    def delete_video(video_id):
+        row = database.get_video(db(), video_id)
+        if row is None:
+            return jsonify({"error": "unknown video"}), 404
+        if row["status"] == "recording":
+            return jsonify({"error": "stop the recording before deleting "
+                                     "it"}), 409
+        rec = recorder()
+        if rec is None:
+            return _no_recorder()
+        path = rec.find_file(row["file_name"])
+        if path:
+            os.remove(path)
+        database.delete_video(db(), video_id)
+        return jsonify({"deleted": video_id, "file_removed": bool(path)})
+
+    @app.route("/api/videos/<int:video_id>/file")
+    def video_file(video_id):
+        row = database.get_video(db(), video_id)
+        if row is None:
+            return jsonify({"error": "unknown video"}), 404
+        if row["status"] == "recording":
+            return jsonify({"error": "still recording -- the file can be "
+                                     "played once the recording stops"}), 409
+        rec = recorder()
+        path = rec.find_file(row["file_name"]) if rec else None
+        if not path:
+            return jsonify({"error": "the video file is missing"}), 404
+        ext = os.path.splitext(path)[1].lower()
+        name = (video_recorder.slug(row["title"], limit=120)
+                or os.path.splitext(row["file_name"])[0]) + ext
+        # conditional=True answers Range requests, which is what lets the
+        # player seek without downloading the whole file first.
+        return send_file(path, conditional=True,
+                         mimetype="video/mp4" if ext == ".mp4"
+                         else "video/x-msvideo",
+                         as_attachment=request.args.get("download") == "1",
+                         download_name=name)
+
+    def _marker_text(e, details):
+        bits = []
+        robots = e["robot_id"] or ", ".join(
+            details.get("robot_ids") or details.get("robots") or [])
+        if e["workstation_id"]:
+            bits.append(f"WS {e['workstation_id']}")
+        if e["job_id"]:
+            bits.append(e["job_id"])
+        if details.get("gap_in") is not None:
+            bits.append(f"gap {details['gap_in']} in")
+        note = e["reason"] or details.get("note") or details.get("reason")
+        if note:
+            bits.append(str(note))
+        return robots, " · ".join(bits)
+
+    @app.route("/api/videos/<int:video_id>/markers")
+    def video_markers(video_id):
+        """The run's notable events placed on the video's own timeline."""
+        row = database.get_video(db(), video_id)
+        if row is None:
+            return jsonify({"error": "unknown video"}), 404
+        offset = row["run_t0_offset_sec"]
+        out = {"video_id": video_id, "run_id": row["run_id"],
+               "offset_sec": offset, "duration_sec": row["duration_sec"],
+               "markers": []}
+        if not row["run_id"]:
+            return jsonify(out)
+        category = {t: cat for cat, types in
+                    video_recorder.MARKER_EVENTS.items() for t in types}
+        # elapsed_ms counts from RUN_STARTED; anything earlier was timed
+        # from configuration and cannot be placed on the video.
+        first = db().execute(
+            "SELECT MIN(seq) AS s FROM events WHERE run_id = ? "
+            "AND event_type = 'RUN_STARTED'", (row["run_id"],)).fetchone()["s"]
+        marks = ",".join("?" * len(category))
+        rows = db().execute(
+            f"""SELECT seq, elapsed_ms, event_type, robot_id, job_id,
+                       workstation_id, reason, details_json
+                FROM events
+                WHERE run_id = ? AND seq >= ? AND event_type IN ({marks})
+                ORDER BY seq LIMIT 3000""",
+            (row["run_id"], first or 0, *category)).fetchall()
+        for e in rows:
+            try:
+                details = json.loads(e["details_json"] or "{}") or {}
+            except ValueError:
+                details = {}
+            robots, text = _marker_text(e, details)
+            elapsed = None if e["elapsed_ms"] is None \
+                else e["elapsed_ms"] / 1000.0
+            out["markers"].append({
+                "seq": e["seq"], "event_type": e["event_type"],
+                "category": category[e["event_type"]],
+                "elapsed_sec": elapsed, "robots": robots, "text": text,
+                "t_video": None if offset is None or elapsed is None
+                else round(offset + elapsed, 2)})
+        return jsonify(out)
+
     @app.route("/api/runs/<run_id>/robots")
     def list_robots(run_id):
         rows = db().execute(
@@ -367,6 +762,56 @@ def create_app(db_path: str | None = None) -> Flask:
         return jsonify({"jobs": [dict(r) for r in rows]})
 
     # ---- metrics -----------------------------------------------------------
+
+    def _is_stale(run_id):
+        """True when data landed after the stored metrics were computed.
+
+        Finalization fires on the run's terminal event, but the supervisor
+        keeps flushing pose batches for a long time afterwards -- on the
+        2026-10-13 reference run the last event arrived 71 minutes later.
+        Everything computed from telemetry (distance, pose rate, vision
+        availability) was therefore frozen against a partial timeline, and
+        a run finalized before its terminal event was visible kept a null
+        makespan forever. 64 of 98 finalized runs were affected.
+
+        Comparing the newest event's wall clock against the newest
+        computed_at is one indexed MAX each and costs nothing on a page
+        load, so staleness is detected rather than waited for.
+        """
+        row = db().execute(
+            """SELECT (SELECT MAX(time_utc) FROM events WHERE run_id = :r)
+                          AS last_event,
+                      (SELECT MAX(computed_at_utc) FROM metric_values
+                        WHERE run_id = :r) AS last_computed""",
+            {"r": run_id}).fetchone()
+        if row is None or row["last_event"] is None or row["last_computed"] is None:
+            return False
+        return str(row["last_event"]) > str(row["last_computed"])
+
+    def _refresh_if_stale(run_id):
+        """Recompute into a NEW revision when late data has arrived.
+
+        A new revision rather than an overwrite, so the original numbers
+        stay auditable -- the same rule /recalculate follows.
+        """
+        try:
+            if not _is_stale(run_id):
+                return False
+            prev = database.max_final_revision(db(), run_id)
+            if prev is None:
+                return False
+            values = metrics_engine.compute_run_metrics(db(), run_id)
+            for v in values:
+                if v["status"] == "ok":
+                    v["status"] = "final"
+            database.store_metric_values(db(), run_id, values, "final",
+                                         revision=prev + 1)
+            app.logger.info("refreshed stale metrics for %s -> revision %d",
+                            run_id, prev + 1)
+            return True
+        except Exception:                       # never fail a page load
+            app.logger.exception("stale refresh failed for %s", run_id)
+            return False
 
     def _stored_final(run_id):
         rev = database.max_final_revision(db(), run_id)
@@ -384,6 +829,7 @@ def create_app(db_path: str | None = None) -> Flask:
         run = database.get_run(db(), run_id)
         if run is None:
             return jsonify({"error": "unknown run"}), 404
+        _refresh_if_stale(run_id)
         stored, rev = _stored_final(run_id)
         if stored is not None and request.args.get("live") != "1":
             values, provisional = stored, False
@@ -394,6 +840,18 @@ def create_app(db_path: str | None = None) -> Flask:
                 if v["status"] == "ok":
                     v["status"] = "provisional"
         dq = metrics_engine.run_data_quality(db(), run_id)
+        # The control tuning this run executed under, captured by the
+        # supervisor at mission configure. Null for runs recorded before
+        # 2026-10-14, when nothing recorded it -- the page says so rather
+        # than showing today's constants, which would assert something
+        # false about an older run.
+        tuning = None
+        raw = run["tuning_json"] if "tuning_json" in run.keys() else None
+        if raw:
+            try:
+                tuning = json.loads(raw)
+            except (TypeError, ValueError):
+                tuning = {"error": "stored tuning is not valid JSON"}
         return jsonify({
             "run_id": run_id,
             "run_status": run["status"],
@@ -401,6 +859,7 @@ def create_app(db_path: str | None = None) -> Flask:
             "revision": rev,
             "values": values,
             "data_quality": dq,
+            "tuning": tuning,
         })
 
     @app.route("/api/runs/<run_id>/finalize", methods=["POST"])
@@ -468,17 +927,26 @@ def create_app(db_path: str | None = None) -> Flask:
     DEFAULT_HISTORY_METRICS = [
         "actual_makespan_sec", "observed_duration_sec",
         "throughput_jobs_per_min", "job_completion_rate",
+        "workstation_completion_rate",
         "fleet_productive_utilization_pct", "fleet_traffic_delay_robot_sec",
         "mission_completion_success", "intervention_free_success",
-        "collision_count", "deadlock_count", "min_fleet_separation_m",
+        "collision_count", "deadlock_count", "total_deadlock_sec",
+        "min_fleet_separation_m",
         "makespan_error_sec", "yaw_mae_deg",
         "rotation_within_tolerance_rate", "battery_drain_per_job_pct",
         "command_success_rate", "total_distance_m",
     ]
 
     def _values_for_runs(run_ids, keys):
-        """Latest stored value per (run, key): highest final revision wins,
-        else the provisional row."""
+        """Latest stored value per (run, key): the HIGHEST REVISION wins,
+        whatever its value status; a provisional row only when nothing
+        final exists. Same choice as the run detail view (_stored_final).
+
+        It used to sort on status == 'final' before revision, so an older
+        revision's 'final' number beat a newer revision's 'n/a'. 2026-10-23:
+        a collision run re-labelled from completed to failed and recomputed
+        (revision 3: makespan n/a) still showed revision 1's 165.8 s makespan
+        here -- a red dot on the makespan chart."""
         if not run_ids:
             return {}
         marks = ",".join("?" * len(run_ids))
@@ -488,18 +956,24 @@ def create_app(db_path: str | None = None) -> Flask:
                 WHERE run_id IN ({marks}) AND metric_key IN ({kmarks})
                   AND scope_type = 'run'
                 ORDER BY run_id, metric_key,
-                         CASE status WHEN 'final' THEN 1 ELSE 0 END,
+                         CASE status WHEN 'provisional' THEN 0 ELSE 1 END,
                          revision""",
             (*run_ids, *keys)).fetchall()
         out: dict[tuple, dict] = {}
-        for r in rows:  # later rows (final, higher revision) overwrite
+        for r in rows:  # later rows (non-provisional, higher revision) overwrite
             out[(r["run_id"], r["metric_key"])] = dict(r)
         return out
 
     @app.route("/api/history")
     def history():
         where, args = _run_filters(executed_default=True)
-        limit, offset = _paginate()
+        # ALL matching runs by default (2026-10-23). This used the shared
+        # 100-row page size, so the history showed only the newest 100 of
+        # 142 runs -- and the success rates and means below, computed over
+        # the returned rows, silently left the rest out. An explicit
+        # ?limit= still pages.
+        limit = min(10000, max(1, int(request.args.get("limit", 10000))))
+        offset = max(0, int(request.args.get("offset", 0)))
         # What the rule removed, so the page can say so rather than just
         # showing a shorter list.
         w_all, a_all = _run_filters(executed_default=False)
@@ -515,6 +989,7 @@ def create_app(db_path: str | None = None) -> Flask:
                        r.experimental_condition, r.algorithm, r.drive_mode,
                        r.robot_count, r.job_count, r.workstation_count,
                        r.process_sec, r.random_seed, r.planned_makespan_sec,
+                       r.traffic_method,
                        -- Wall-clock time the attempt actually ran. Defined
                        -- for every started run, unlike makespan, which only
                        -- exists once robots report completion -- so this is
@@ -522,7 +997,10 @@ def create_app(db_path: str | None = None) -> Flask:
                        -- from one that died near the end.
                        ROUND((julianday(r.ended_at_utc)
                               - julianday(r.started_at_utc)) * 86400.0, 1)
-                           AS attempt_sec
+                           AS attempt_sec,
+                       (SELECT MAX(v.video_id) FROM run_videos v
+                        WHERE v.run_id = r.run_id
+                          AND v.status IN ('ready', 'recording')) AS video_id
                 FROM runs r{where}
                 ORDER BY r.created_at_utc DESC LIMIT ? OFFSET ?""",
             (*args, limit, offset)).fetchall()]
@@ -540,6 +1018,7 @@ def create_app(db_path: str | None = None) -> Flask:
         group_by = request.args.get("group_by")
         group_col = {"experimental_condition": "experimental_condition",
                      "algorithm": "algorithm", "drive_mode": "drive_mode",
+                     "traffic_method": "traffic_method",
                      "robot_count": "robot_count",
                      "random_seed": "random_seed"}.get(group_by)
         aggregates = {}
@@ -578,6 +1057,7 @@ def create_app(db_path: str | None = None) -> Flask:
         return jsonify({"runs": runs, "metric_keys": keys,
                         "group_by": group_by, "aggregates": aggregates,
                         "limit": limit, "offset": offset,
+                        "total": n_exec,
                         "nonexecuted_hidden": max(0, n_all - n_exec)})
 
     @app.route("/api/runs/facets")
@@ -592,7 +1072,8 @@ def create_app(db_path: str | None = None) -> Flask:
         not what survives the selection already in force.
         """
         out = {}
-        for col in ("experimental_condition", "algorithm", "drive_mode"):
+        for col in ("experimental_condition", "algorithm", "drive_mode",
+                    "traffic_method"):
             rows = db().execute(
                 f"""SELECT {col} AS v, COUNT(*) AS n FROM runs
                     WHERE {col} IS NOT NULL AND {col} != ''
@@ -616,7 +1097,7 @@ def create_app(db_path: str | None = None) -> Flask:
                 "experimental_condition", "algorithm", "drive_mode",
                 "robot_count", "job_count", "workstation_count",
                 "process_sec", "capacity", "random_seed",
-                "planned_makespan_sec"]
+                "planned_makespan_sec", "traffic_method"]
         writer.writerow(head + keys)
         for r in runs:
             row = [r.get(h) for h in head]
@@ -653,7 +1134,8 @@ def create_app(db_path: str | None = None) -> Flask:
                   "ended_at_utc", "status", "experimental_condition",
                   "algorithm", "drive_mode", "robot_count", "job_count",
                   "workstation_count", "process_sec", "capacity",
-                  "random_seed", "planned_makespan_sec", "notes"):
+                  "random_seed", "planned_makespan_sec", "traffic_method",
+                  "notes"):
             w.writerow([k, run[k] if k in run_keys else ""])
 
         stored, _rev = _stored_final(run_id)
@@ -747,5 +1229,15 @@ if __name__ == "__main__":
             port = int(sys.argv[i + 1])
     print(f"AGV solver + metrics backend: http://localhost:{port}/")
     print(f"metric definitions registered: {len(DEFINITIONS)}")
+    # Per-run video recording. Attached here rather than in create_app so
+    # tests and imports never open the camera stream (see recorder()).
+    try:
+        _rec = video_recorder.VideoRecorder.for_app(app.config["DB_PATH"])
+        app.extensions["video_recorder"] = _rec
+        atexit.register(_rec.shutdown)
+        print(f"run videos: {_rec.video_dir} (stream {_rec.stream_url}, "
+              f"auto-record {'on' if _rec.auto else 'off'})")
+    except Exception as exc:
+        print(f"run videos DISABLED: {exc}")
     # 0.0.0.0 so the Linux-laptop supervisor can POST events over the LAN.
     app.run(host="0.0.0.0", port=port, threaded=True)

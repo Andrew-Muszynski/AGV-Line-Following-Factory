@@ -353,8 +353,24 @@ ROBOT_YAW_OFFSET_DEG: dict[int, float] = {
 # +x, +grid_y along table +y); a robot centered on any lattice node should
 # read near-integers — drift from integers on far nodes would reveal a pitch
 # or rotation error.
-GRID_NODE1_WORLD_IN = (13.5, 16.75)
-GRID_PITCH_IN = 10.0
+# Since 2026-10-22 these, and every table below, come from the ONE shared
+# file fleet/testbed_coordinates.json via fleet/testbed_coordinates.py -- the
+# same file camera_grid_navigate.py drives to. Edit the JSON, not this file.
+try:
+    import testbed_coordinates as _tc
+except ImportError:
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent / "fleet"))
+    import testbed_coordinates as _tc
+COORDINATES_ID = _tc.COORDINATES_ID
+GRID_ROWS, GRID_COLS = _tc.GRID_ROWS, _tc.GRID_COLS
+GRID_NODE1_WORLD_IN = _tc.GRID_NODE1_WORLD_IN
+GRID_PITCH_IN = _tc.GRID_PITCH_IN
+NODE_WORLD_IN = _tc.NODE_WORLD_IN
+WORKSTATION_WORLD_IN: dict[int, tuple[float, float]] = _tc.WORKSTATION_WORLD_IN
+DEPOT_SLOT_WORLD_IN: dict[str, tuple[float, float]] = _tc.DEPOT_SLOT_WORLD_IN
+DEPOT_ENTRY_WORLD_IN: dict[str, tuple[float, float]] = _tc.DEPOT_ENTRY_WORLD_IN
+NODE0_WORLD_IN: tuple[float, float] = _tc.NODE0_WORLD_IN
 
 # MEASURED workstation (bay) positions, world inches, replacing the derived
 # grid_y = (row_up + 1) - 0.44 offset for workstation nodes ONLY.
@@ -383,60 +399,8 @@ GRID_PITCH_IN = 10.0
 # would separate the two; until then up to ~0.4in of the x component
 # may be robot mount, not bay.
 #
-# REGENERATE with: calibrate_workstations.py --emit-python
-# (paste into BOTH apriltag_localize.py and fleet/camera_grid_navigate.py
-# -- they run on different machines and cannot import each other.)
-WORKSTATION_WORLD_IN: dict[int, tuple[float, float]] = {
-    65: (18.30, 21.76),  # row 0 col 0, Alvik1
-    66: (28.12, 21.81),  # row 0 col 1, Alvik2
-    67: (38.19, 21.88),  # row 0 col 2, Alvik3
-    68: (48.19, 21.86),  # row 0 col 3, Alvik4
-    69: (58.29, 21.85),  # row 0 col 4, Alvik5
-    70: (68.25, 21.76),  # row 0 col 5, Alvik6
-    71: (77.73, 21.74),  # row 0 col 6, tag7
-    72: (18.42, 31.90),  # row 1 col 0, Alvik1
-    73: (28.25, 31.78),  # row 1 col 1, Alvik2
-    74: (38.32, 31.72),  # row 1 col 2, Alvik3
-    75: (48.07, 31.76),  # row 1 col 3, Alvik4
-    76: (58.28, 31.73),  # row 1 col 4, Alvik5
-    77: (68.08, 31.90),  # row 1 col 5, Alvik6
-    78: (78.23, 31.90),  # row 1 col 6, tag7
-    79: (18.61, 41.69),  # row 2 col 0, Alvik1
-    80: (28.49, 41.75),  # row 2 col 1, Alvik2
-    81: (38.30, 41.82),  # row 2 col 2, Alvik3
-    82: (48.18, 41.86),  # row 2 col 3, Alvik4
-    83: (58.26, 41.83),  # row 2 col 4, Alvik5
-    84: (68.03, 41.79),  # row 2 col 5, Alvik6
-    85: (78.04, 41.86),  # row 2 col 6, tag7
-    86: (18.62, 51.70),  # row 3 col 0, Alvik1
-    87: (28.58, 51.55),  # row 3 col 1, Alvik2
-    88: (37.98, 51.46),  # row 3 col 2, Alvik3
-    89: (48.10, 51.52),  # row 3 col 3, Alvik4
-    90: (58.40, 51.54),  # row 3 col 4, Alvik5
-    91: (68.19, 51.62),  # row 3 col 5, Alvik6
-    92: (78.14, 51.71),  # row 3 col 6, tag7
-    93: (18.88, 61.55),  # row 4 col 0, Alvik1
-    94: (28.78, 61.67),  # row 4 col 1, Alvik2
-    95: (38.48, 61.67),  # row 4 col 2, Alvik3
-    96: (48.32, 61.91),  # row 4 col 3, Alvik4
-    97: (58.40, 61.80),  # row 4 col 4, Alvik5
-    98: (68.38, 61.77),  # row 4 col 5, Alvik6
-    99: (78.24, 61.78),  # row 4 col 6, tag7
-    100: (18.68, 71.56),  # row 5 col 0, Alvik1
-    101: (28.65, 71.38),  # row 5 col 1, Alvik2
-    102: (38.22, 71.51),  # row 5 col 2, Alvik3
-    103: (48.45, 71.61),  # row 5 col 3, Alvik4
-    104: (58.61, 71.53),  # row 5 col 4, Alvik5
-    105: (68.30, 71.79),  # row 5 col 5, Alvik6
-    106: (78.01, 71.98),  # row 5 col 6, tag7
-    107: (18.44, 81.80),  # row 6 col 0, Alvik1
-    108: (28.46, 81.69),  # row 6 col 1, Alvik2
-    109: (38.44, 81.60),  # row 6 col 2, Alvik3
-    110: (48.44, 81.65),  # row 6 col 3, Alvik4
-    111: (58.54, 81.50),  # row 6 col 4, Alvik5
-    112: (68.56, 81.65),  # row 6 col 5, Alvik6
-    113: (78.49, 81.81),  # row 6 col 6, tag7
-}
+# REGENERATE with: calibrate_workstations.py --apply (writes the JSON).
+# WORKSTATION_WORLD_IN: from testbed_coordinates.json (above).
 
 # ---- depot slots / entries / node 0 ----
 # node 0 still carries its 2026-07-30 measurement: it sits west of
@@ -477,9 +441,7 @@ WORKSTATION_WORLD_IN: dict[int, tuple[float, float]] = {
 # tight enough to sequence them if anything else is marginal, but no longer
 # negative-clearance.
 #
-# Regenerate with: calibrate_workstations.py --emit-python
-# (paste into BOTH this file and the other one -- they run on different
-# machines and cannot import each other.)
+# Regenerate with: calibrate_workstations.py --apply (writes the JSON).
 # RE-MEASURED 2026-09-30 after the depot row was shifted. 42 vision samples
 # per robot with the fleet parked and stationary; every slot moved the same
 # way (y down 0.25-0.40in, mean -0.34; x within +/-0.20in), which is the
@@ -490,28 +452,8 @@ WORKSTATION_WORLD_IN: dict[int, tuple[float, float]] = {
 # same value on all 42 samples). And they record where each robot CAME TO
 # REST, so any consistent parking bias is baked in -- which is what you want
 # for "drive here and stop", but is not the same as measuring the tape.
-DEPOT_SLOT_WORLD_IN: dict[str, tuple[float, float]] = {
-    "D1": (19.60, 10.58),  # Alvik1
-    "D2": (25.90, 10.70),  # Alvik2
-    "D3": (32.40, 10.70),  # Alvik3
-    "D4": (38.72, 10.90),  # Alvik4
-    "D5": (45.10, 10.80),  # Alvik5
-    "D6": (51.40, 10.80),  # Alvik6
-    # NOT re-measured 2026-09-30 -- there is no 7th robot to park on it, so
-    # this is still the 2026-08-26 figure and is ~0.34in stale in y if the
-    # whole row moved together. Re-measure before using D7.
-    "D7": (57.34, 11.23),  # tag7
-}
-DEPOT_ENTRY_WORLD_IN: dict[str, tuple[float, float]] = {
-    "DE1": (19.71, 2.94),  # Alvik1
-    "DE2": (25.93, 3.07),  # Alvik2
-    "DE3": (32.09, 3.15),  # Alvik3
-    "DE4": (38.56, 3.21),  # Alvik4
-    "DE5": (45.07, 3.27),  # Alvik5
-    "DE6": (51.47, 3.36),  # Alvik6
-    "DE7": (57.51, 3.46),  # tag7
-}
-NODE0_WORLD_IN: tuple[float, float] = (13.3, 2.9)
+# DEPOT_SLOT_WORLD_IN: from testbed_coordinates.json (above).
+# DEPOT_ENTRY_WORLD_IN: from testbed_coordinates.json (above).
 
 
 def build_depot_overlay_points() -> list[tuple[str, float, float]]:
@@ -547,6 +489,10 @@ def node_to_world(n: int, rows: int, cols: int) -> tuple[float, float]:
                                               spur past the entry, YELLOW)
       rows*cols+bays+1 .. rows*cols+2*bays   ENTRY nodes (bay mouth, YELLOW)
     where bays = (rows-1)*(cols-1). Node 1 = bottom-left lattice point."""
+    # The testbed's own grid: every node listed in testbed_coordinates.json,
+    # the same table the navigator drives to.
+    if (rows, cols) == (GRID_ROWS, GRID_COLS) and n in NODE_WORLD_IN:
+        return NODE_WORLD_IN[n]
     nodes = rows * cols
     bays = (rows - 1) * (cols - 1)
     if 1 <= n <= nodes:
@@ -555,11 +501,6 @@ def node_to_world(n: int, rows: int, cols: int) -> tuple[float, float]:
         grid_y = float(idx // cols)
     elif nodes < n <= nodes + 2 * bays:
         is_workstation = n <= nodes + bays
-        # Measured position wins over the derived offset for WORKSTATION
-        # nodes -- see WORKSTATION_WORLD_IN. Entry nodes are never in that
-        # table, so they always fall through to the lattice-aligned formula.
-        if is_workstation and n in WORKSTATION_WORLD_IN:
-            return WORKSTATION_WORLD_IN[n]
         bay_num = (n - nodes) if is_workstation else (n - nodes - bays)
         b = bay_num - 1
         row_up = b // (cols - 1)
@@ -2585,6 +2526,9 @@ def main() -> None:
                              "3-5 minute test procedure so median/p95 "
                              "reflect the whole run, not one short slice)")
     args = parser.parse_args()
+    # Same id the navigator logs; differing ids mean the two machines hold
+    # different node tables.
+    print(f"node coordinates: {_tc.PATH} (id {COORDINATES_ID})")
 
     if args.decimate <= 0:
         parser.error("--decimate must be > 0")

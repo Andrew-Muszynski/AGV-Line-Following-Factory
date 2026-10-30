@@ -1,0 +1,17 @@
+# systemd USER service for the overhead camera recorder.
+# Installed by tools/deploy_overhead_cam.sh to
+#   ~/.config/systemd/user/overhead-recorder.service
+# SIGINT on stop lets a recording in progress finish its file first.
+[Unit]
+Description=Testbed overhead camera recorder (port 8090)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 %h/overhead_cam/overhead_recorder.py
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=40
+
+[Install]
+WantedBy=default.target

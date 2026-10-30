@@ -767,10 +767,22 @@
       <label class="field">Import plan (external solver JSON)
         <input id="import-plan" type="file" accept=".json,application/json">
       </label>
+      <label class="field">Saved plans (VRP/generated_plans)
+        <span style="display:flex; gap:6px; align-items:center;">
+          <select id="saved-plans" style="flex:1; min-width:0;">
+            <option value="">— checking… —</option>
+          </select>
+          <button class="secondary" id="saved-plans-refresh" type="button"
+                  title="Re-read generated_plans/" style="padding:4px 8px;">&#x21bb;</button>
+        </span>
+      </label>
       <div class="actions">
         <button id="solve">Solve</button>
+        <button class="secondary" id="save-plan" disabled
+                title="Write this plan into VRP/generated_plans/">Save to VRP</button>
         <button class="secondary" id="download-json" disabled>Download JSON</button>
       </div>
+      <p id="saved-plans-status" class="muted" style="margin:2px 0 0; font-size:11px;"></p>
       <p id="capacity-warning" class="warning" style="display:none;"></p>
     </div>
   </section>
@@ -3601,8 +3613,10 @@ function solve(openModal = true) {
   refreshScheduleStatus();
   state.timestep = 0;
   render();
-  // successful solve: collapse setup and put the plan front and center
-  if (state.routes.length) setView("plan");
+  // successful solve: collapse setup and put the plan front and center.
+  // Only for a user-initiated solve -- the startup solve(false) pre-computes
+  // a plan but leaves the page on 1 · Setup.
+  if (openModal && state.routes.length) setView("plan");
   if (openModal) showReport();
 }
 
@@ -3733,6 +3747,8 @@ function renderMetrics() {
   document.getElementById("metric-agents").textContent = state.agents;
   document.getElementById("metric-distance").textContent = state.routes.length ? fmtSec(makespan()) : "0.0s";
   document.getElementById("download-json").disabled = state.routes.length === 0;
+  const saveBtn = document.getElementById("save-plan");
+  if (saveBtn) saveBtn.disabled = state.routes.length === 0;
   document.getElementById("open-report").disabled = state.routes.length === 0;
 
   let hotspot = "None";
@@ -4726,7 +4742,10 @@ function closeReport() {
 }
 
 function buildExportPayload() {
+  const modeSel = document.getElementById("route-mode");
   return {
+    route_mode: (modeSel && modeSel.value) || "",
+    generated_at: new Date().toISOString(),
     grid: { rows: state.rows, cols: state.cols },
     agents: state.agents,
     capacity: state.capacity,
@@ -4831,6 +4850,152 @@ function buildExportPayload() {
       detail: conflict.detail,
     })),
   };
+}
+
+// ---- saved plans (VRP/generated_plans) ------------------------------------
+// Writes the solved plan straight into the repo and lists what is already
+// there, so a BRKGA solve -- minutes of CPU -- is kept without the
+// download-then-reimport round trip.
+//
+// TWO POSSIBLE SERVERS, and which one is up depends on how the testbed was
+// started. START_TESTBED.bat runs app.py (Flask :8000, which serves this
+// page, so same-origin /api/plans works). start_dashboard.bat runs
+// plan_server.py (:8082) and opens the standalone page from file://. Probe
+// both once and remember the winner; if neither answers, the dropdown says
+// so instead of failing silently.
+//
+// The candidate list is built lazily rather than at load: in the split
+// build PLAN_SERVER_URL lives in solver.js, and reading it at top level
+// would make this file depend on script order.
+function planStoreCandidates() {
+  return [
+    { base: "/api/plans", label: "metrics app :8000" },
+    { base: PLAN_SERVER_URL + "/plans", label: "plan server :8082" },
+  ];
+}
+let planStore = { base: null, label: "", probed: false };
+const PLAN_STORE_NL = String.fromCharCode(10);  // newline inside alert() text
+
+function savedPlansStatus(text, isError) {
+  const el = document.getElementById("saved-plans-status");
+  if (!el) return;
+  el.textContent = text || "";
+  el.style.color = isError ? "#b91c1c" : "";
+}
+
+async function resolvePlanStore(force) {
+  if (planStore.probed && !force) return planStore.base;
+  planStore.probed = true;
+  for (const cand of planStoreCandidates()) {
+    // file:// has no origin for a bare "/api/..." to resolve against.
+    if (cand.base.startsWith("/") && window.location.protocol === "file:") continue;
+    try {
+      const resp = await fetch(cand.base, { method: "GET" });
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      if (!data || !Array.isArray(data.plans)) continue;
+      planStore = { base: cand.base, label: cand.label, probed: true, dir: data.dir };
+      return planStore.base;
+    } catch (_) { /* try the next one */ }
+  }
+  planStore.base = null;
+  return null;
+}
+
+function savedPlanLabel(row) {
+  if (row.error) return `${row.name}  (unreadable: ${row.error})`;
+  const bits = [];
+  if (row.route_mode || row.algorithm) bits.push(row.route_mode || row.algorithm);
+  if (row.agents) bits.push(`${row.agents} agent${row.agents === 1 ? "" : "s"}`);
+  if (row.bays) bits.push(`${row.bays} visit${row.bays === 1 ? "" : "s"}`);
+  if (row.rpd) bits.push(`RPD ${row.process_sec || 0}s`);
+  const span = row.makespan_sec || row.solver_makespan_sec_estimate;
+  if (span) bits.push(`${Math.round(span)}s`);
+  return bits.length ? `${row.name}  ·  ${bits.join("  ·  ")}` : row.name;
+}
+
+async function refreshSavedPlans(force) {
+  const sel = document.getElementById("saved-plans");
+  if (!sel) return;
+  const base = await resolvePlanStore(force);
+  if (!base) {
+    sel.innerHTML = '<option value="">— no plan store reachable —</option>';
+    savedPlansStatus("Start app.py (:8000) or plan_server.py (:8082) to save " +
+                     "and load plans in VRP/generated_plans.", true);
+    return;
+  }
+  let rows = [];
+  try {
+    const resp = await fetch(base);
+    rows = (await resp.json()).plans || [];
+  } catch (err) {
+    sel.innerHTML = '<option value="">— store unreachable —</option>';
+    savedPlansStatus(`Could not read the plan store: ${err.message}`, true);
+    return;
+  }
+  const keep = sel.value;
+  sel.innerHTML = rows.length
+    ? '<option value="">— select a saved plan —</option>'
+    : '<option value="">— none saved yet —</option>';
+  for (const row of rows) {
+    const opt = document.createElement("option");
+    opt.value = row.name;
+    opt.textContent = savedPlanLabel(row);
+    opt.title = `${row.name}${PLAN_STORE_NL}${row.modified}  ·  ${row.size} bytes`;
+    sel.appendChild(opt);
+  }
+  if (keep && rows.some((r) => r.name === keep)) sel.value = keep;
+  savedPlansStatus(`${rows.length} plan${rows.length === 1 ? "" : "s"} in ` +
+                   `generated_plans/  (via ${planStore.label})`);
+}
+
+async function loadSavedPlan(name) {
+  if (!name) return;
+  const base = await resolvePlanStore();
+  if (!base) return;
+  savedPlansStatus(`loading ${name}…`);
+  try {
+    const resp = await fetch(`${base}/${encodeURIComponent(name)}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+    importPlanFromJson(data, name);
+    savedPlansStatus(`loaded ${name}`);
+  } catch (err) {
+    savedPlansStatus(`load failed: ${err.message}`, true);
+    alert(`Loading ${name} failed: ${err.message}`);
+  }
+}
+
+async function savePlanToVrp() {
+  if (!state.routes.length) return;
+  const base = await resolvePlanStore(true);
+  if (!base) {
+    alert("No plan store reachable." + PLAN_STORE_NL + PLAN_STORE_NL +
+          "Start app.py (:8000) or plan_server.py (:8082), then press ↻.");
+    return;
+  }
+  const suggested = exportFileName();
+  const name = window.prompt("Save this plan into VRP/generated_plans/ as:", suggested);
+  if (name === null) return;
+  const wanted = name.trim() || suggested;
+  savedPlansStatus(`saving ${wanted}…`);
+  try {
+    const resp = await fetch(base, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: wanted, plan: buildExportPayload() }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+    await refreshSavedPlans(true);
+    const sel = document.getElementById("saved-plans");
+    if (sel) sel.value = data.name;
+    savedPlansStatus(`saved generated_plans/${data.name}` +
+      (data.name !== wanted ? "  (renamed, that name was taken)" : ""));
+  } catch (err) {
+    savedPlansStatus(`save failed: ${err.message}`, true);
+    alert(`Saving failed: ${err.message}`);
+  }
 }
 
 function downloadJson() {
@@ -5957,6 +6122,14 @@ document.getElementById("solve").addEventListener("click", solve);
 document.getElementById("open-report").addEventListener("click", showReport);
 document.getElementById("close-report").addEventListener("click", closeReport);
 document.getElementById("download-json").addEventListener("click", downloadJson);
+document.getElementById("save-plan").addEventListener("click", savePlanToVrp);
+document.getElementById("saved-plans-refresh").addEventListener("click", () => refreshSavedPlans(true));
+document.getElementById("saved-plans").addEventListener("change", (ev) => {
+  loadSavedPlan(ev.target.value);
+});
+// Populate the dropdown once at startup. Deliberately not awaited:
+// a missing plan store must not hold up the rest of the page.
+refreshSavedPlans();
 document.getElementById("dispatch-generate").addEventListener("click", dispatchGenerate);
 document.getElementById("dispatch-start").addEventListener("click", dispatchStart);
 document.getElementById("dispatch-hold").addEventListener("click", dispatchHold);

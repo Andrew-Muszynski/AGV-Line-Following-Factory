@@ -1,0 +1,1299 @@
+{
+  "seed": 20260911,
+  "count": 24,
+  "blocks": [
+    {
+      "block_id": "B01",
+      "questions": 26,
+      "in_depot": [
+        "Alvik6"
+      ],
+      "at_workstation": [
+        "Alvik3"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "node 20",
+          "x_in": 43.5,
+          "y_in": 36.75,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik2": {
+          "where": "node 47",
+          "x_in": 73.5,
+          "y_in": 66.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik3": {
+          "where": "bay 91",
+          "x_in": 68.19,
+          "y_in": 51.62,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik4": {
+          "where": "node 49",
+          "x_in": 13.5,
+          "y_in": 76.75,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik5": {
+          "where": "node 61",
+          "x_in": 53.5,
+          "y_in": 86.75,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik6": {
+          "where": "depot D6",
+          "x_in": 51.2,
+          "y_in": 11.19,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        }
+      }
+    },
+    {
+      "block_id": "B02",
+      "questions": 26,
+      "in_depot": [
+        "Alvik4"
+      ],
+      "at_workstation": [],
+      "robots": {
+        "Alvik1": {
+          "where": "node 54",
+          "x_in": 63.5,
+          "y_in": 76.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik2": {
+          "where": "node 25",
+          "x_in": 13.5,
+          "y_in": 46.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik3": {
+          "where": "node 28",
+          "x_in": 43.5,
+          "y_in": 46.75,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik4": {
+          "where": "depot D4",
+          "x_in": 38.58,
+          "y_in": 11.15,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik5": {
+          "where": "node 19",
+          "x_in": 33.5,
+          "y_in": 36.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik6": {
+          "where": "node 60",
+          "x_in": 43.5,
+          "y_in": 86.75,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        }
+      }
+    },
+    {
+      "block_id": "B03",
+      "questions": 26,
+      "in_depot": [
+        "Alvik3"
+      ],
+      "at_workstation": [
+        "Alvik1",
+        "Alvik2"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "bay 71",
+          "x_in": 77.73,
+          "y_in": 21.74,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik2": {
+          "where": "bay 111",
+          "x_in": 58.54,
+          "y_in": 81.5,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik3": {
+          "where": "depot D3",
+          "x_in": 32.2,
+          "y_in": 11.08,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik4": {
+          "where": "node 64",
+          "x_in": 83.5,
+          "y_in": 86.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik5": {
+          "where": "node 12",
+          "x_in": 43.5,
+          "y_in": 26.75,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik6": {
+          "where": "node 33",
+          "x_in": 13.5,
+          "y_in": 56.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        }
+      }
+    },
+    {
+      "block_id": "B04",
+      "questions": 26,
+      "in_depot": [
+        "Alvik1"
+      ],
+      "at_workstation": [
+        "Alvik3",
+        "Alvik6"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "depot D1",
+          "x_in": 19.64,
+          "y_in": 10.86,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik2": {
+          "where": "node 12",
+          "x_in": 43.5,
+          "y_in": 26.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik3": {
+          "where": "bay 84",
+          "x_in": 68.03,
+          "y_in": 41.79,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik4": {
+          "where": "node 24",
+          "x_in": 83.5,
+          "y_in": 36.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik5": {
+          "where": "node 62",
+          "x_in": 63.5,
+          "y_in": 86.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik6": {
+          "where": "bay 89",
+          "x_in": 48.1,
+          "y_in": 51.52,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        }
+      }
+    },
+    {
+      "block_id": "B05",
+      "questions": 26,
+      "in_depot": [
+        "Alvik5"
+      ],
+      "at_workstation": [
+        "Alvik2"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "node 14",
+          "x_in": 63.5,
+          "y_in": 26.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik2": {
+          "where": "bay 109",
+          "x_in": 38.44,
+          "y_in": 81.6,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik3": {
+          "where": "node 58",
+          "x_in": 23.5,
+          "y_in": 86.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik4": {
+          "where": "node 9",
+          "x_in": 13.5,
+          "y_in": 26.75,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik5": {
+          "where": "depot D5",
+          "x_in": 44.96,
+          "y_in": 11.2,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik6": {
+          "where": "node 48",
+          "x_in": 83.5,
+          "y_in": 66.75,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        }
+      }
+    },
+    {
+      "block_id": "B06",
+      "questions": 26,
+      "in_depot": [
+        "Alvik5"
+      ],
+      "at_workstation": [
+        "Alvik4"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "node 45",
+          "x_in": 53.5,
+          "y_in": 66.75,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik2": {
+          "where": "node 54",
+          "x_in": 63.5,
+          "y_in": 76.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik3": {
+          "where": "node 31",
+          "x_in": 73.5,
+          "y_in": 46.75,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik4": {
+          "where": "bay 108",
+          "x_in": 28.46,
+          "y_in": 81.69,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik5": {
+          "where": "depot D5",
+          "x_in": 44.96,
+          "y_in": 11.2,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik6": {
+          "where": "node 1",
+          "x_in": 13.5,
+          "y_in": 16.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        }
+      }
+    },
+    {
+      "block_id": "B07",
+      "questions": 25,
+      "in_depot": [],
+      "at_workstation": [
+        "Alvik2",
+        "Alvik5"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "node 52",
+          "x_in": 43.5,
+          "y_in": 76.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik2": {
+          "where": "bay 106",
+          "x_in": 78.01,
+          "y_in": 71.98,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik3": {
+          "where": "node 33",
+          "x_in": 13.5,
+          "y_in": 56.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik4": {
+          "where": "node 62",
+          "x_in": 63.5,
+          "y_in": 86.75,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik5": {
+          "where": "bay 67",
+          "x_in": 38.19,
+          "y_in": 21.88,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik6": {
+          "where": "node 13",
+          "x_in": 53.5,
+          "y_in": 26.75,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        }
+      }
+    },
+    {
+      "block_id": "B08",
+      "questions": 25,
+      "in_depot": [],
+      "at_workstation": [
+        "Alvik3",
+        "Alvik6"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "node 20",
+          "x_in": 43.5,
+          "y_in": 36.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik2": {
+          "where": "node 1",
+          "x_in": 13.5,
+          "y_in": 16.75,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik3": {
+          "where": "bay 86",
+          "x_in": 18.62,
+          "y_in": 51.7,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik4": {
+          "where": "node 11",
+          "x_in": 33.5,
+          "y_in": 26.75,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik5": {
+          "where": "node 31",
+          "x_in": 73.5,
+          "y_in": 46.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik6": {
+          "where": "bay 109",
+          "x_in": 38.44,
+          "y_in": 81.6,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        }
+      }
+    },
+    {
+      "block_id": "B09",
+      "questions": 26,
+      "in_depot": [
+        "Alvik6"
+      ],
+      "at_workstation": [
+        "Alvik4",
+        "Alvik5"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "node 52",
+          "x_in": 43.5,
+          "y_in": 76.75,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik2": {
+          "where": "node 21",
+          "x_in": 53.5,
+          "y_in": 36.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik3": {
+          "where": "node 62",
+          "x_in": 63.5,
+          "y_in": 86.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik4": {
+          "where": "bay 77",
+          "x_in": 68.08,
+          "y_in": 31.9,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik5": {
+          "where": "bay 107",
+          "x_in": 18.44,
+          "y_in": 81.8,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik6": {
+          "where": "depot D6",
+          "x_in": 51.2,
+          "y_in": 11.19,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        }
+      }
+    },
+    {
+      "block_id": "B10",
+      "questions": 25,
+      "in_depot": [],
+      "at_workstation": [
+        "Alvik5",
+        "Alvik6"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "node 28",
+          "x_in": 43.5,
+          "y_in": 46.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik2": {
+          "where": "node 9",
+          "x_in": 13.5,
+          "y_in": 26.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik3": {
+          "where": "node 19",
+          "x_in": 33.5,
+          "y_in": 36.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik4": {
+          "where": "node 6",
+          "x_in": 63.5,
+          "y_in": 16.75,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik5": {
+          "where": "bay 84",
+          "x_in": 68.03,
+          "y_in": 41.79,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik6": {
+          "where": "bay 99",
+          "x_in": 78.24,
+          "y_in": 61.78,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        }
+      }
+    },
+    {
+      "block_id": "B11",
+      "questions": 26,
+      "in_depot": [
+        "Alvik6"
+      ],
+      "at_workstation": [
+        "Alvik1"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "bay 91",
+          "x_in": 68.19,
+          "y_in": 51.62,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik2": {
+          "where": "node 9",
+          "x_in": 13.5,
+          "y_in": 26.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik3": {
+          "where": "node 18",
+          "x_in": 23.5,
+          "y_in": 36.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik4": {
+          "where": "node 45",
+          "x_in": 53.5,
+          "y_in": 66.75,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik5": {
+          "where": "node 34",
+          "x_in": 23.5,
+          "y_in": 56.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik6": {
+          "where": "depot D6",
+          "x_in": 51.2,
+          "y_in": 11.19,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        }
+      }
+    },
+    {
+      "block_id": "B12",
+      "questions": 26,
+      "in_depot": [
+        "Alvik4"
+      ],
+      "at_workstation": [
+        "Alvik1",
+        "Alvik3"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "bay 105",
+          "x_in": 68.3,
+          "y_in": 71.79,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik2": {
+          "where": "node 42",
+          "x_in": 23.5,
+          "y_in": 66.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik3": {
+          "where": "bay 69",
+          "x_in": 58.29,
+          "y_in": 21.85,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik4": {
+          "where": "depot D4",
+          "x_in": 38.58,
+          "y_in": 11.15,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik5": {
+          "where": "node 57",
+          "x_in": 13.5,
+          "y_in": 86.75,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik6": {
+          "where": "node 22",
+          "x_in": 63.5,
+          "y_in": 36.75,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        }
+      }
+    },
+    {
+      "block_id": "B13",
+      "questions": 25,
+      "in_depot": [],
+      "at_workstation": [
+        "Alvik1",
+        "Alvik4"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "bay 91",
+          "x_in": 68.19,
+          "y_in": 51.62,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik2": {
+          "where": "node 1",
+          "x_in": 13.5,
+          "y_in": 16.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik3": {
+          "where": "node 59",
+          "x_in": 33.5,
+          "y_in": 86.75,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik4": {
+          "where": "bay 103",
+          "x_in": 48.45,
+          "y_in": 71.61,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik5": {
+          "where": "node 16",
+          "x_in": 83.5,
+          "y_in": 26.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik6": {
+          "where": "node 27",
+          "x_in": 33.5,
+          "y_in": 46.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        }
+      }
+    },
+    {
+      "block_id": "B14",
+      "questions": 25,
+      "in_depot": [],
+      "at_workstation": [
+        "Alvik1",
+        "Alvik5"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "bay 111",
+          "x_in": 58.54,
+          "y_in": 81.5,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik2": {
+          "where": "node 63",
+          "x_in": 73.5,
+          "y_in": 86.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik3": {
+          "where": "node 6",
+          "x_in": 63.5,
+          "y_in": 16.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik4": {
+          "where": "node 24",
+          "x_in": 83.5,
+          "y_in": 36.75,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik5": {
+          "where": "bay 65",
+          "x_in": 18.3,
+          "y_in": 21.76,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik6": {
+          "where": "node 39",
+          "x_in": 73.5,
+          "y_in": 56.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        }
+      }
+    },
+    {
+      "block_id": "B15",
+      "questions": 26,
+      "in_depot": [
+        "Alvik6"
+      ],
+      "at_workstation": [
+        "Alvik3"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "node 13",
+          "x_in": 53.5,
+          "y_in": 26.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik2": {
+          "where": "node 35",
+          "x_in": 33.5,
+          "y_in": 56.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik3": {
+          "where": "bay 110",
+          "x_in": 48.44,
+          "y_in": 81.65,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik4": {
+          "where": "node 9",
+          "x_in": 13.5,
+          "y_in": 26.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik5": {
+          "where": "node 39",
+          "x_in": 73.5,
+          "y_in": 56.75,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik6": {
+          "where": "depot D6",
+          "x_in": 51.2,
+          "y_in": 11.19,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        }
+      }
+    },
+    {
+      "block_id": "B16",
+      "questions": 26,
+      "in_depot": [
+        "Alvik1"
+      ],
+      "at_workstation": [
+        "Alvik3"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "depot D1",
+          "x_in": 19.64,
+          "y_in": 10.86,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik2": {
+          "where": "node 6",
+          "x_in": 63.5,
+          "y_in": 16.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik3": {
+          "where": "bay 99",
+          "x_in": 78.24,
+          "y_in": 61.78,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik4": {
+          "where": "node 20",
+          "x_in": 43.5,
+          "y_in": 36.75,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik5": {
+          "where": "node 54",
+          "x_in": 63.5,
+          "y_in": 76.75,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik6": {
+          "where": "node 57",
+          "x_in": 13.5,
+          "y_in": 86.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        }
+      }
+    },
+    {
+      "block_id": "B17",
+      "questions": 26,
+      "in_depot": [
+        "Alvik6"
+      ],
+      "at_workstation": [
+        "Alvik4"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "node 30",
+          "x_in": 63.5,
+          "y_in": 46.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik2": {
+          "where": "node 53",
+          "x_in": 53.5,
+          "y_in": 76.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik3": {
+          "where": "node 42",
+          "x_in": 23.5,
+          "y_in": 66.75,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik4": {
+          "where": "bay 98",
+          "x_in": 68.38,
+          "y_in": 61.77,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik5": {
+          "where": "node 9",
+          "x_in": 13.5,
+          "y_in": 26.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik6": {
+          "where": "depot D6",
+          "x_in": 51.2,
+          "y_in": 11.19,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        }
+      }
+    },
+    {
+      "block_id": "B18",
+      "questions": 26,
+      "in_depot": [
+        "Alvik4"
+      ],
+      "at_workstation": [
+        "Alvik3",
+        "Alvik5"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "node 13",
+          "x_in": 53.5,
+          "y_in": 26.75,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik2": {
+          "where": "node 40",
+          "x_in": 83.5,
+          "y_in": 56.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik3": {
+          "where": "bay 65",
+          "x_in": 18.3,
+          "y_in": 21.76,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik4": {
+          "where": "depot D4",
+          "x_in": 38.58,
+          "y_in": 11.15,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik5": {
+          "where": "bay 85",
+          "x_in": 78.04,
+          "y_in": 41.86,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik6": {
+          "where": "node 25",
+          "x_in": 13.5,
+          "y_in": 46.75,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        }
+      }
+    },
+    {
+      "block_id": "B19",
+      "questions": 26,
+      "in_depot": [
+        "Alvik6"
+      ],
+      "at_workstation": [
+        "Alvik2",
+        "Alvik4"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "node 54",
+          "x_in": 63.5,
+          "y_in": 76.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik2": {
+          "where": "bay 72",
+          "x_in": 18.42,
+          "y_in": 31.9,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik3": {
+          "where": "node 8",
+          "x_in": 83.5,
+          "y_in": 16.75,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik4": {
+          "where": "bay 108",
+          "x_in": 28.46,
+          "y_in": 81.69,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik5": {
+          "where": "node 52",
+          "x_in": 43.5,
+          "y_in": 76.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik6": {
+          "where": "depot D6",
+          "x_in": 51.2,
+          "y_in": 11.19,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        }
+      }
+    },
+    {
+      "block_id": "B20",
+      "questions": 26,
+      "in_depot": [
+        "Alvik2"
+      ],
+      "at_workstation": [
+        "Alvik1",
+        "Alvik4"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "bay 97",
+          "x_in": 58.4,
+          "y_in": 61.8,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik2": {
+          "where": "depot D2",
+          "x_in": 25.88,
+          "y_in": 11.04,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik3": {
+          "where": "node 64",
+          "x_in": 83.5,
+          "y_in": 86.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik4": {
+          "where": "bay 79",
+          "x_in": 18.61,
+          "y_in": 41.69,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik5": {
+          "where": "node 51",
+          "x_in": 33.5,
+          "y_in": 76.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik6": {
+          "where": "node 28",
+          "x_in": 43.5,
+          "y_in": 46.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        }
+      }
+    },
+    {
+      "block_id": "B21",
+      "questions": 25,
+      "in_depot": [],
+      "at_workstation": [
+        "Alvik6"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "node 59",
+          "x_in": 33.5,
+          "y_in": 86.75,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik2": {
+          "where": "node 36",
+          "x_in": 43.5,
+          "y_in": 56.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik3": {
+          "where": "node 15",
+          "x_in": 73.5,
+          "y_in": 26.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik4": {
+          "where": "node 53",
+          "x_in": 53.5,
+          "y_in": 76.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik5": {
+          "where": "node 22",
+          "x_in": 63.5,
+          "y_in": 36.75,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik6": {
+          "where": "bay 100",
+          "x_in": 18.68,
+          "y_in": 71.56,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        }
+      }
+    },
+    {
+      "block_id": "B22",
+      "questions": 26,
+      "in_depot": [
+        "Alvik2"
+      ],
+      "at_workstation": [
+        "Alvik6"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "node 55",
+          "x_in": 73.5,
+          "y_in": 76.75,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik2": {
+          "where": "depot D2",
+          "x_in": 25.88,
+          "y_in": 11.04,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik3": {
+          "where": "node 7",
+          "x_in": 73.5,
+          "y_in": 16.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik4": {
+          "where": "node 36",
+          "x_in": 43.5,
+          "y_in": 56.75,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik5": {
+          "where": "node 40",
+          "x_in": 83.5,
+          "y_in": 56.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik6": {
+          "where": "bay 85",
+          "x_in": 78.04,
+          "y_in": 41.86,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        }
+      }
+    },
+    {
+      "block_id": "B23",
+      "questions": 26,
+      "in_depot": [
+        "Alvik3"
+      ],
+      "at_workstation": [
+        "Alvik2",
+        "Alvik5"
+      ],
+      "robots": {
+        "Alvik1": {
+          "where": "node 19",
+          "x_in": 33.5,
+          "y_in": 36.75,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik2": {
+          "where": "bay 104",
+          "x_in": 58.61,
+          "y_in": 71.53,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik3": {
+          "where": "depot D3",
+          "x_in": 32.2,
+          "y_in": 11.08,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik4": {
+          "where": "node 56",
+          "x_in": 83.5,
+          "y_in": 76.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik5": {
+          "where": "bay 72",
+          "x_in": 18.42,
+          "y_in": 31.9,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik6": {
+          "where": "node 31",
+          "x_in": 73.5,
+          "y_in": 46.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        }
+      }
+    },
+    {
+      "block_id": "B24",
+      "questions": 26,
+      "in_depot": [
+        "Alvik6"
+      ],
+      "at_workstation": [],
+      "robots": {
+        "Alvik1": {
+          "where": "node 14",
+          "x_in": 63.5,
+          "y_in": 26.75,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        },
+        "Alvik2": {
+          "where": "node 40",
+          "x_in": 83.5,
+          "y_in": 56.75,
+          "yaw_deg": 180.0,
+          "faces": "north"
+        },
+        "Alvik3": {
+          "where": "node 9",
+          "x_in": 13.5,
+          "y_in": 26.75,
+          "yaw_deg": -90.0,
+          "faces": "west"
+        },
+        "Alvik4": {
+          "where": "node 28",
+          "x_in": 43.5,
+          "y_in": 46.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik5": {
+          "where": "node 42",
+          "x_in": 23.5,
+          "y_in": 66.75,
+          "yaw_deg": 90.0,
+          "faces": "east"
+        },
+        "Alvik6": {
+          "where": "depot D6",
+          "x_in": 51.2,
+          "y_in": 11.19,
+          "yaw_deg": 0.0,
+          "faces": "south"
+        }
+      }
+    }
+  ]
+}
