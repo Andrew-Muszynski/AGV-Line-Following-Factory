@@ -64,7 +64,11 @@ Thumbs.db
 
 # Page-4 metrics backend: local database + telemetry captures (raw run data
 # stays on this machine; schema.sql recreates the structure anywhere)
-data/
+data/*
+# ...except the Experiment 2 reproducibility archive the thesis cites
+# (Appendix D): its 19 run logs, the metrics database restricted to those
+# runs, and a README. Nothing else under data/ is published.
+!data/exp2/
 backups/
 
 # ---------------------------------------------------------------------------
