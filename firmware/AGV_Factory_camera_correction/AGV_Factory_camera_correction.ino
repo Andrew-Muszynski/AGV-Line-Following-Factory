@@ -72,8 +72,9 @@ Arduino_Alvik alvik;
 // =============================================================================
 // WiFi / agent config
 // =============================================================================
-char WIFI_SSID[] = "AGV_Testbed";
-char WIFI_PASSWORD[] = "62110204";
+// WiFi credentials live in arduino_secrets.h next to this sketch, which is
+// git-ignored; copy wifi_template.h to arduino_secrets.h and fill it in.
+#include "arduino_secrets.h"
 char AGENT_IP[] = "192.168.0.212";  // reverted 2026-08-03: back to the Linux laptop (was 192.168.0.162 / WSL2) -- see memory: wsl2_microros_migration
 const uint32_t AGENT_PORT = 8888;
 
