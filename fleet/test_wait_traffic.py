@@ -37,7 +37,7 @@ check("rate-limited to 0.1 s", "keepalive_at.get(name, -1.0) >= 0.1" in block)
 
 print("\n2. a wait is logged when it starts or changes, and closed once")
 check("same reason -> not re-logged (no 3 s repeat)",
-      "if previous == reason:\n                    return" in vision
+      "wait_key(previous) == wait_key(reason)" in vision
       and "HOLD_LOG_THROTTLE_SEC" not in vision)
 check("release line with the duration", "wait over after" in src and "def log_release" in src)
 check("released when the robot is dispatched", "log_release(name)\n" in src)

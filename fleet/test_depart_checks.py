@@ -94,7 +94,8 @@ class _Sup:
             release_rotation=lambda n: self.released.append(n))
 
     def await_rotation_clearance(self, name, label, timeout_sec=None,
-                                 cancelled=None, at_node=None, idle=None):
+                                 cancelled=None, at_node=None, idle=None,
+                                 nudge=None, drive_to=None):
         self.gates.append((label, at_node, idle is not None))
         return True, "clear"
 

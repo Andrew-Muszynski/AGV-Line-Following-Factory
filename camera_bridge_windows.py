@@ -205,6 +205,16 @@ def main() -> None:
                      help="path to camera_calibrate.py --solve output, "
                           "only used if --undistort is set (default "
                           "fleet/camera_intrinsics.json)")
+    ap.add_argument("--hq-port", type=int, default=8767,
+                    help="127.0.0.1 port of the full-quality recorder's "
+                         "control API (see hq_recorder.py); 0 disables it. "
+                         "Nothing is recorded until video_recorder.py, or "
+                         "anyone, asks for it.")
+    ap.add_argument("--hq-dir", default="data/videos",
+                    help="where full-quality recordings go (default "
+                         "data/videos, next to the run videos)")
+    ap.add_argument("--ffmpeg", default=None,
+                    help="path to ffmpeg.exe (default: PATH, then winget)")
     args = ap.parse_args()
 
     if args.cpu_affinity:
@@ -241,6 +251,20 @@ def main() -> None:
               "rectified (cv2.fisheye) before crop/encode.")
 
     encode_params = [cv2.IMWRITE_JPEG_QUALITY, args.jpeg_quality]
+
+    # Full-quality recorder: idle until asked. On the hot path it costs one
+    # bool check per frame while idle, a non-blocking queue put while on.
+    hq = None
+    if args.hq_port:
+        try:
+            from hq_recorder import HqRecorder, find_ffmpeg
+            hq = HqRecorder(find_ffmpeg(args.ffmpeg), args.hq_dir)
+            hq.serve(args.hq_port)
+            print(f"Full-quality recorder ready on 127.0.0.1:{args.hq_port} "
+                  f"({hq.encoder}, {hq.ffmpeg or 'ffmpeg NOT FOUND'}) -- idle")
+        except Exception as exc:       # never let it stop the camera
+            hq = None
+            print(f"Full-quality recorder unavailable: {exc}")
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -300,6 +324,8 @@ def main() -> None:
                     if not ok:
                         time.sleep(0.01)
                         continue
+                    if hq is not None and hq.active:
+                        hq.offer(frame)   # full frame, before undistort/crop
                     if undistort_maps is not None:
                         map1, map2 = undistort_maps
                         frame = cv2.remap(frame, map1, map2, cv2.INTER_LINEAR)
@@ -355,6 +381,8 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        if hq is not None and hq.active:
+            hq.stop(wait=True)            # keep what was recorded
         cap.release()
         server.close()
 

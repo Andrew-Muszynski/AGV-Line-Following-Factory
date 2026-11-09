@@ -381,7 +381,12 @@ async function metricsCreateRunForMission(mission) {
   _mSelectedRunId = data.run_id;
   if (recLabel && payload.video_label) recLabel.value = "";
   if (typeof recorderPoll === "function") recorderPoll();
-  return { run_id: data.run_id, metrics_url: METRICS_SUPERVISOR_URL };
+  // The backend says which of this laptop's addresses reaches the
+  // supervisor (WiFi and Ethernet differ); ?metrics= still wins.
+  const override = new URLSearchParams(window.location.search).get("metrics");
+  return { run_id: data.run_id,
+           metrics_url: (!override && data.supervisor_metrics_url)
+             || METRICS_SUPERVISOR_URL };
 }
 
 function metricsNotifyRunStarted() {

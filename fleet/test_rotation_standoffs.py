@@ -109,7 +109,8 @@ class _Sup:
         self.calls, self.result, self.warnings = [], result, []
 
     def await_rotation_clearance(self, name, label, timeout_sec=None,
-                                 cancelled=None, at_node=None, idle=None):
+                                 cancelled=None, at_node=None, idle=None,
+                                 nudge=None, drive_to=None):
         self.calls.append((label, timeout_sec, cancelled))
         self.at_nodes = getattr(self, "at_nodes", []) + [at_node]
         r = self.result(timeout_sec) if callable(self.result) else self.result

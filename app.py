@@ -36,6 +36,28 @@ from metrics_definitions import (DEFINITION_SET_VERSION, DEFINITIONS,
                                  seed_definitions)
 
 DEFAULT_PORT = 8000
+#: The Linux laptop running the supervisor. supervisor_metrics_url() asks
+#: the OS which of this laptop's addresses routes there.
+SUPERVISOR_HOST = os.environ.get("AGV_SUPERVISOR_HOST", "192.168.0.212")
+
+
+def supervisor_metrics_url(port: int = DEFAULT_PORT) -> str | None:
+    """This backend's URL as the supervisor can reach it, or None.
+
+    The supervisor posts every run event here, so it needs a LAN address,
+    and this laptop's changes with the connection: 192.168.0.162 on WiFi,
+    192.168.0.174 on Ethernet (2026-11-03: a run on Ethernet stored zero
+    events because the supervisor was still posting to the WiFi address).
+    A UDP connect() sends nothing; it only makes the OS pick the route.
+    """
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sk:
+            sk.connect((SUPERVISOR_HOST, 9))
+            ip = sk.getsockname()[0]
+    except OSError:
+        return None
+    return None if ip.startswith(("0.", "127.")) else f"http://{ip}:{port}"
 
 
 def create_app(db_path: str | None = None) -> Flask:
@@ -265,11 +287,17 @@ def create_app(db_path: str | None = None) -> Flask:
                 database.update_run(db(), reuse, payload)
                 _recorder_hook(lambda r: r.arm(reuse, video_label,
                                                payload.get("plan_file")))
-                return jsonify({"run_id": reuse, "reused": True}), 200
+                return jsonify({"run_id": reuse, "reused": True,
+                                "supervisor_metrics_url":
+                                supervisor_metrics_url(request.host.partition(":")[2]
+                                                       or DEFAULT_PORT)}), 200
         run_id = database.create_run(db(), payload)
         _recorder_hook(lambda r: r.arm(run_id, video_label,
                                        payload.get("plan_file")))
-        return jsonify({"run_id": run_id}), 201
+        return jsonify({"run_id": run_id,
+                        "supervisor_metrics_url":
+                        supervisor_metrics_url(request.host.partition(":")[2]
+                                               or DEFAULT_PORT)}), 201
 
     def _run_filters(executed_default=False):
         """WHERE clause + args from query params (shared by list/history/
@@ -560,6 +588,8 @@ def create_app(db_path: str | None = None) -> Flask:
             rec.set_auto(bool(body["auto"]))
         if "second" in body:
             rec.set_second(bool(body["second"]))
+        if "hq" in body:
+            rec.set_hq(bool(body["hq"]))
         return jsonify({**rec.status(), "enabled": True})
 
     @app.route("/api/recorder/start", methods=["POST"])

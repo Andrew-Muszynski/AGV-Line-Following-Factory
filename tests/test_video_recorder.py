@@ -434,6 +434,60 @@ def test_second_camera_can_be_switched_off(tmp_path):
     assert make_recorder(tmp_path).second_on is False     # remembered
 
 
+class FakeHq(FakeSecond):
+    """Stands in for hq_recorder.py inside the camera bridge."""
+
+    url = "http://127.0.0.1:8767"
+
+    def start(self, name, stamp, file_core=""):
+        out = super().start(name, stamp, file_core)
+        out["recording"]["file"] = out["recording"]["file"].replace(
+            "_second.mp4", "_hq.mp4")
+        return out
+
+
+def test_full_quality_is_off_until_switched_on(tmp_path):
+    hq = FakeHq()
+    rec = make_recorder(tmp_path, hq_camera=hq)
+    assert rec.status()["hq"] == {"configured": True, "on": False,
+                                  "url": "http://127.0.0.1:8767"}
+    rec.on_run_started(new_run(rec), "supervisor")
+    time.sleep(0.2)
+    rec.stop(wait=True)
+    assert hq.calls == []
+
+
+def test_full_quality_records_the_run_under_the_same_name(tmp_path):
+    hq = FakeHq()
+    rec = make_recorder(tmp_path, hq_camera=hq)
+    rec.set_hq(True)
+    run_id = new_run(rec)
+    rec.arm(run_id, "Presentation run")
+    rec.on_run_started(run_id, "supervisor")
+    time.sleep(0.3)
+    assert rec.status()["recording"]["hq_state"] == "recording"
+    rec.on_run_ended(run_id, "RUN_COMPLETED")
+    wait_idle(rec)
+    time.sleep(0.1)
+    (row,) = video_rows(rec)
+    assert row["file_name"] == "Presentation_run_main.mp4"
+    assert hq.calls[0][:2] == ("start", "Presentation run")
+    assert hq.calls[-1] == ("stop", "Presentation_run_hq.mp4")
+    assert rec.status()["last"]["hq_file"] == "Presentation_run_hq.mp4"
+    assert make_recorder(tmp_path).hq_on is True          # remembered
+
+
+def test_full_quality_failure_never_touches_the_main_video(tmp_path):
+    rec = make_recorder(tmp_path, hq_camera=FakeHq(fail="unreachable"))
+    rec.set_hq(True)
+    rec.on_run_started(new_run(rec), "supervisor")
+    time.sleep(0.3)
+    rec.stop(wait=True)
+    (row,) = video_rows(rec)
+    assert row["status"] == "ready"
+    assert rec.status()["last"]["hq_error"] == "unreachable"
+
+
 def test_sync_nudge_is_saved(recording_app):
     c, rec = recording_app
     rec.start(label="nudge")

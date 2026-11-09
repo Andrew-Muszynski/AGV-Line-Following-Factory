@@ -55,8 +55,12 @@ DEFAULT_STREAM_URL = "http://localhost:8081/stream"
 #: (industrious@192.168.0.73). Override with AGV_SECOND_CAMERA_URL; set it
 #: to an empty string to never contact it.
 DEFAULT_SECOND_CAMERA_URL = "http://192.168.0.73:8090"
+#: hq_recorder.py inside camera_bridge_windows.py, same laptop: the main
+#: camera at its native 1920x1080 / 60 fps. Off unless switched on (page 3).
+#: Override with AGV_HQ_CAMERA_URL; empty never contacts it.
+DEFAULT_HQ_CAMERA_URL = "http://127.0.0.1:8767"
 #: Camera tags in the file names: the two videos of one run differ only here.
-MAIN_TAG, SECOND_TAG = "main", "second"
+MAIN_TAG, SECOND_TAG, HQ_TAG = "main", "second", "hq"
 FPS = 10.0
 #: Seconds kept after the run's terminal signal: the last robot parking.
 TAIL_SEC = 5.0
@@ -133,9 +137,10 @@ class SecondCamera:
     """HTTP client for the second camera's recorder. It records on its own
     laptop; this side only starts and stops it and keeps its file name."""
 
-    def __init__(self, url: str, timeout: float = 8.0):
+    def __init__(self, url: str, timeout: float = 8.0, tag: str = SECOND_TAG):
         self.url = url.rstrip("/")
         self.timeout = timeout
+        self.tag = tag
 
     def _post(self, path: str, body: dict) -> dict:
         req = urllib.request.Request(
@@ -155,7 +160,7 @@ class SecondCamera:
 
     def start(self, name: str, stamp: str, file_core: str = "") -> dict:
         return self._post("/api/record", {"name": name, "stamp": stamp,
-                                          "camera": SECOND_TAG,
+                                          "camera": self.tag,
                                           "file_core": file_core})
 
     def stop(self, file: str) -> dict:
@@ -366,6 +371,10 @@ class _Session:
         self.second_offset: float | None = None
         self.second_error: str | None = None
         self.second_state = "off"        # off | starting | recording | stopped | failed
+        # The full-quality copy of the main camera (hq_recorder.py).
+        self.hq_file: str | None = None
+        self.hq_error: str | None = None
+        self.hq_state = "off"
 
 
 class VideoRecorder:
@@ -377,7 +386,8 @@ class VideoRecorder:
                  tail_sec: float = TAIL_SEC, max_sec: float = MAX_SEC,
                  first_frame_wait_sec: float = FIRST_FRAME_WAIT_SEC,
                  source_factory=None, writer_factory=None,
-                 second_camera: SecondCamera | None = None):
+                 second_camera: SecondCamera | None = None,
+                 hq_camera: SecondCamera | None = None):
         self.db_path = db_path
         self.video_dir = video_dir
         self.stream_url = stream_url
@@ -389,6 +399,7 @@ class VideoRecorder:
             lambda url: MjpegReader(url).start())
         self._writer_factory = writer_factory or open_writer
         self.second_camera = second_camera
+        self.hq_camera = hq_camera
         self._lock = threading.Lock()
         self._cur: _Session | None = None
         self._labels: dict[str, str] = {}
@@ -400,6 +411,7 @@ class VideoRecorder:
         settings = self._load_settings()
         self.auto = bool(settings.get("auto", True))
         self.second_on = bool(settings.get("second", True))
+        self.hq_on = bool(settings.get("hq", False))
         self._recover_interrupted()
 
     @classmethod
@@ -412,6 +424,10 @@ class VideoRecorder:
                                              DEFAULT_STREAM_URL),
                    second_camera=SecondCamera(url) if (url := os.environ.get(
                        "AGV_SECOND_CAMERA_URL", DEFAULT_SECOND_CAMERA_URL))
+                   else None,
+                   hq_camera=SecondCamera(hurl, tag=HQ_TAG) if (
+                       hurl := os.environ.get("AGV_HQ_CAMERA_URL",
+                                              DEFAULT_HQ_CAMERA_URL))
                    else None)
 
     # ---- settings / housekeeping ---------------------------------------
@@ -426,7 +442,8 @@ class VideoRecorder:
     def _save_settings(self) -> None:
         try:
             with open(self._settings_path, "w", encoding="utf-8") as fh:
-                json.dump({"auto": self.auto, "second": self.second_on}, fh)
+                json.dump({"auto": self.auto, "second": self.second_on,
+                           "hq": self.hq_on}, fh)
         except OSError:
             pass
 
@@ -436,6 +453,10 @@ class VideoRecorder:
 
     def set_second(self, on: bool) -> None:
         self.second_on = bool(on)
+        self._save_settings()
+
+    def set_hq(self, on: bool) -> None:
+        self.hq_on = bool(on)
         self._save_settings()
 
     def _db(self):
@@ -600,6 +621,11 @@ class VideoRecorder:
                     pair = base.rsplit(f"_{MAIN_TAG}", 1)[0]
                     threading.Thread(target=self._second_start,
                                      args=(s, "", pair), daemon=True).start()
+                if self.hq_camera is not None and self.hq_on:
+                    s.hq_state = "starting"
+                    pair = base.rsplit(f"_{MAIN_TAG}", 1)[0]
+                    threading.Thread(target=self._hq_start,
+                                     args=(s, pair), daemon=True).start()
         finally:
             conn.close()
         return self.status()
@@ -641,6 +667,31 @@ class VideoRecorder:
         except Exception as exc:
             s.second_error = f"stop failed: {exc}"
             s.second_state = "failed"
+
+    def _hq_start(self, s: _Session, core: str) -> None:
+        """Start the full-quality copy under this recording's name. It
+        records the same camera, so it needs no sync offset."""
+        try:
+            out = self.hq_camera.start(s.title, "", core)
+            s.hq_file = (out.get("recording") or {}).get("file")
+            s.hq_state = "recording"
+            stopped = s.stop_evt.is_set() or (s.thread and not s.thread.is_alive())
+        except Exception as exc:          # never let it touch the main video
+            s.hq_error = str(exc)
+            s.hq_state = "failed"
+            return
+        if stopped:
+            self._hq_stop(s)
+
+    def _hq_stop(self, s: _Session) -> None:
+        if s.hq_state != "recording" or not s.hq_file:
+            return
+        try:
+            self.hq_camera.stop(s.hq_file)
+            s.hq_state = "stopped"
+        except Exception as exc:
+            s.hq_error = f"stop failed: {exc}"
+            s.hq_state = "failed"
 
     def stop(self, reason: str = "stopped by hand", wait: bool = False) -> dict:
         with self._lock:
@@ -730,7 +781,10 @@ class VideoRecorder:
                "second": {"configured": self.second_camera is not None,
                           "on": self.second_on,
                           "url": self.second_camera.url
-                          if self.second_camera else None}}
+                          if self.second_camera else None},
+               "hq": {"configured": self.hq_camera is not None,
+                      "on": self.hq_on,
+                      "url": self.hq_camera.url if self.hq_camera else None}}
         with self._lock:
             s = self._cur
             if s is not None:
@@ -751,6 +805,9 @@ class VideoRecorder:
                     "second_state": s.second_state,
                     "second_file": s.second_file,
                     "second_error": s.second_error,
+                    "hq_state": s.hq_state,
+                    "hq_file": s.hq_file,
+                    "hq_error": s.hq_error,
                 }
         return out
 
@@ -833,6 +890,8 @@ class VideoRecorder:
             # Both cameras stop together, before this side closes its file.
             threading.Thread(target=self._second_stop, args=(s,),
                              daemon=True).start()
+            threading.Thread(target=self._hq_stop, args=(s,),
+                             daemon=True).start()
             try:
                 s.reader.stop()
             except Exception:
@@ -894,4 +953,5 @@ class VideoRecorder:
                     self._cur = None
                 self._last = {"video_id": s.video_id, "title": s.title,
                               "status": status, "error": error,
+                              "hq_file": s.hq_file, "hq_error": s.hq_error,
                               "duration_sec": patch["duration_sec"]}

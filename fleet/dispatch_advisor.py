@@ -2638,6 +2638,32 @@ class DispatchAdvisor:
         self._grant_reservation(robot, -1, self._standing_request(at_node),
                                 now_sec)
 
+    def begin_backoff(self, robot: str, stopped_toward, back_to,
+                      now_sec: float):
+        """Reserve a straight reverse from a guard stop back to `back_to`,
+        the node the failed leg started from. Returns the PlanItem to drive
+        (YIELD_OUT_REV, tail first), or None if another robot holds the way.
+
+        2026-11-02, ALNS sequential pair 1: Alvik4 was granted 31->23,
+        emergency-stopped 4.4in short beside Alvik3 at entry 127, and every
+        retry drove the same leg further in until the guard called contact.
+        Backing out, through the same reservation path as any move, gives the
+        node back to the robot it was stopped against.
+        """
+        st = self.robots.get(robot)
+        if st is None or str(stopped_toward) == str(back_to):
+            return None
+        item = PlanItem(command="YIELD_OUT_REV", kind="move",
+                        duration_sec=self.YIELD_HOP_SEC,
+                        from_node=stopped_toward, to_node=back_to)
+        request = self._movement_request(item)
+        if self._reservation_blocker(robot, request) is not None:
+            return None
+        self._release_reservation(robot)
+        self._grant_reservation(robot, -1, request, now_sec)
+        st.current_edge = (str(stopped_toward), str(back_to))
+        return item
+
     def end_yield(self, robot: str, now_sec: float) -> None:
         """Hand the robot back to normal dispatch.
 

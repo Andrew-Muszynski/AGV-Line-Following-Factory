@@ -31,6 +31,9 @@ State: both ALNS shakedowns passed on hardware (6 robots, 24 workstations).
   processes for 30 s and becomes READY. The robot does not wait for processing.
 - Frozen experiment plans: generated_plans/ALNS24_joint.json and ALNS24_seq.json.
 - Run order for the 5 pairs: J/S, S/J, S/J, J/S, S/J.
+- November 2, 2026, before any experiment run: extended to 8 pairs.
+  Order: J/S, S/J, S/J, J/S, S/J, J/S, S/J, J/S (4 joint-first, 4 sequential-first).
+  If time runs out, stop after a complete pair; the stopping point is not chosen from results.
 
 
 3. SUPERVISOR FIXES (fleet/fleetSupervisor.py, fleet/dispatch_advisor.py, fleet/camera_grid_navigate.py)
@@ -99,3 +102,125 @@ or moves only the robots involved and uses the exact robot footprint geometry al
 used by the collision guard, so none of them loosens a safety margin. The supervisor
 must not change between the experiment pairs: joint and sequential have to be compared
 on the same code.
+
+November 3, 2026, 13:00 -- pair 1 sequential collision, fix deployed
+- Run 20261103-1258 (ALNS24_seq): Alvik3 leaving workstation 78 touched
+  Alvik4 driving 23->15 (0.02in overlap). Same corner as November 2.
+- Cause 1: the bay-exit gate counts a robot whose move is in flight as at
+  its destination, so it released Alvik3 65ms after Alvik4 left 23, with
+  Alvik4 still beside the bay.
+- Cause 2: the guard called Alvik3 "parked" (no speed yet, 0.33s into its
+  exit), so it stopped only Alvik4.
+- Fix: a workstation exit now waits while any robot is DRIVING within 1.5in
+  of the exit path (BAY_EXIT_PASSER_CLEAR_IN); a robot with an active leg
+  target is never "parked" to the guard. test_bay_exit_passer.py (10).
+- Pair 1 joint (12:21) ran on the old code. Recommended: rerun pair 1 in
+  full so all counted pairs share one software version.
+
+November 3, 2026, 13:13 -- depot square-up held until the stall watchdog
+- Run 20261103-1313 (ALNS24_seq): every job done; Alvik5 back in D5 held its
+  square-up 88s ("Alvik4 is 5.61in away, a turn sweeps 5.625in") and the
+  run was ended as stalled. Operator's hand-sent ROTATE_REL 167.7 cleared.
+- Cause: the rotation gate treated every neighbour as a second turning
+  circle (5.625in centre to centre). Against a parked square-on robot the
+  sweep clears by 0.78in.
+- Fix: a neighbour that is stopped, not turning and not on a leg is judged
+  by its real footprint (0.25in margin). Check and claim of a turn are now
+  one locked step, so two neighbours cannot both pass at once.
+  test_rotation_parked_neighbour.py (10).
+- This run does not count: the run was ended as stalled, and the code
+  changed again. Rerun pair 1 in full.
+
+November 3, 2026, 15:46 -- Alvik2 waited forever in bay 42 (joint, pair 1 rerun)
+- Not a micro-ROS drop. Alvik2 waited for a bay-25 drop that never
+  registered.
+- Cause: leaving a workstation closed the robot's next job on EVERY
+  dispatch of the exit. Alvik3's exit from bay 27 failed and was retried,
+  so the retry closed its bay-25 drop before it happened.
+- Fix: an exit closes a job only if that job is at the bay being left.
+  Nobody waits for a drop that no robot still has pending (closed or
+  orphaned), so a lost record can no longer stall a run.
+- Decision log: a wait whose text changes only in decimal figures
+  (countdowns, distances) is logged once. "same conflict" rechecks are not
+  logged. A rotation hold is one line when it starts, or when the blocking
+  robot changes, and one line when it is released.
+- test_drop_bookkeeping.py (12). Deployed, backup *.bak.20261103_dropjobs.
+- This run does not count (aborted). Pair 1 starts again with joint.
+
+November 3, 2026, 16:50 -- pair 4, run 2 (sequential): collision near the end
+- Counted pairs so far: pair 1 joint 16:01, seq 16:07; pair 2 seq 16:14,
+  joint 16:25; pair 3 seq 16:32, joint 16:38; pair 4 joint 16:44.
+- 16:50 seq: Alvik5 was waiting to leave bay 1, and Alvik3 drove 17->9->1
+  beside it. The guard stopped Alvik3 twice (0.37in apart), then Alvik3
+  backed off to 9 and held. The two then waited on each other: deadlock.
+- The resolver sent Alvik3 to sidestep 9->17, which needs a 177deg turn at
+  node 9, 5.62in from Alvik5. The rotation gate first held it (3 s timeout,
+  retry), then let it turn. The guard immediately reported a collision:
+  footprints overlapping by 0.03in, which is inside pose noise (0.05in).
+- Decision: no code change during the counted pairs. Rerun pair 4, run 2
+  (sequential) in the same slot.
+- Look into after the 8 pairs: why the gate and the guard disagreed at
+  5.62in. Was Alvik5 judged as turning by the guard, or was it parked
+  skewed? Also why Alvik5 sat close enough to the lane for a 0.37in gap.
+- Operator: the root cause is Alvik3 veering left (east) while passing
+  Alvik5. The log agrees: on 17->9 it ended at x=14.5 against the lane's
+  13.5, 1.0in toward bay 1, pointing 16deg off (the turn at 9 had to
+  correct -15.9deg). It already has the largest steering trim (-4.87 RPM).
+  After the pairs: check Alvik3's drive straightness and steering trim.
+
+November 3, 2026, end of day -- pairs 1-4 done
+- Counted runs (local start): P1 J 16:01, S 16:07; P2 S 16:14, J 16:25;
+  P3 S 16:32, J 16:38; P4 J 16:44, S 17:02 (the 16:50 S failed and was
+  rerun in its slot). All 8 have events and a makespan in the metrics DB.
+- Pairs 5-8 continue November 4, 2026 on the same software (supervisor md5
+  a8954d443ef3111806ab07f11c1c0aa1). Day is a known block factor; pairs
+  stay whole within a day.
+
+November 9, 2026 -- pair 5, run 1 (sequential, 08:59): completed, KEPT
+- Same spot and robots as the November 3 16:50 failure: Alvik3 on 9->1
+  passed Alvik5 in bay 1 and was guard-stopped at 0.20in.
+- Back-off to 9 timed out. The deadlock sidestep 9->17 was refused 6 times
+  (turn 5.54in from Alvik5, under 5.625in). The 30s guard hold then lapsed
+  and Alvik3 drove on. About 53s lost; the run finished on its own.
+- Kept: the rule reruns only FAILED runs. A completed slow run is data.
+- Note for analysis: twice now in ALNS24_seq at this one place (Alvik3
+  passing an occupied bay 1, with Alvik3's leftward drift). Report it as a
+  recurring execution event, not as noise.
+- After the pairs: a sidestep that the rotation gate can never allow should
+  not be retried six times. The resolver should pick another move, or let
+  the guard hold decide sooner.
+
+November 9, 2026, 09:08 -- pair 5, run 2 (joint): FAILED, rerun in slot
+- Deadlock 1 (Alvik6 on entry 122, Alvik1 needs 122 into ws 73) was
+  resolved: Alvik6 backtracked to 11, and Alvik1 went in.
+- Alvik6's yield return drove straight back to 122, beside Alvik1, which
+  still had to square up (180deg) in ws 73. Each robot then held its turn
+  for the other. Alvik1's hold was a STALE yield reservation ("Alvik6 is
+  driving 11->19 beside workstation 73" after Alvik6 had arrived).
+  Alvik6's standoff nudge backed it up 3in, but Alvik1 stayed held 57s.
+- At the 75s yield limit the reservation dropped and Alvik1 turned. The
+  advisor then had Alvik6 at 11 while it stood at 122: off-route x100,
+  excluded, and the deadlock abort ended the run.
+- Supervisor recovery bug, not plan-specific. Code stays frozen; rerun the
+  slot.
+- After the pairs, fix:
+  (a) the workstation-lane rotation blocker must ignore a reservation the
+      robot has already driven;
+  (b) a yield return must wait while its HOME node's turning circle holds
+      a robot that still has to turn;
+  (c) an abandoned yield must resync the advisor to the measured node.
+
+November 9, 2026 -- pair 5 run 2 rerun (joint, 09:15) completed and counts.
+09:21 -- pair 6, run 1 (joint): FAILED, the SAME chain as 09:08
+- Bay 9 (ws 73 / entry 122), Alvik1 and Alvik6: backtrack to 11, early
+  yield return to 122, stale "driving 11->19 beside workstation 73" hold on
+  Alvik1's square-up, 75s yield limit, Alvik6 off-route at 11 vs 122,
+  excluded, deadlock abort.
+- Systematic for ALNS24_joint at this bay: 2 of the last 3 joint runs.
+- Analysis caveat: rerun-until-success counts only joint runs where the
+  timing avoided this, so it biases joint makespan downward. Report
+  attempts and failures per method as an outcome:
+    joint      -- failed 09:08 and 09:21 (Nov 9)
+    sequential -- failed 16:50 (Nov 3); one completed run delayed ~53s
+  Operator decision pending if it fails a third time: fix (a)-(c) and
+  redo or block the pairs, or keep going and report the failure rate.

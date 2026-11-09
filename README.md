@@ -85,8 +85,9 @@ downloading them, and reloads any of them from the **Saved plans** dropdown.
 This matters most for BRKGA, where a solve costs minutes of CPU.
 
 The store is `plan_store.py`, exposed by whichever server is up —
-`START_TESTBED.bat` runs `app.py` but not `plan_server.py`, and
-`start_dashboard.bat` the other way round:
+`START_TESTBED.bat` runs `app.py`; `plan_server.py` (the live solver for
+the Route-mode dropdown) is started by hand when needed:
+`python plan_server.py --brkga num_gpus=1,total_generations=300`
 
 | Server | Endpoints |
 |---|---|

@@ -43,7 +43,13 @@ SUPERVISOR_LOG="$HOME/supervisor_live.log"
 # agent back here in the first place. Keep heavy work off this box.
 WINDOWS_IP=192.168.0.162
 : "${OLLAMA_URL:=http://$WINDOWS_IP:11434}"
-: "${METRICS_URL:=http://$WINDOWS_IP:8000}"
+# METRICS_URL is NOT defaulted any more (2026-11-03). Set, it overrides
+# the address the page sends with each mission -- and this laptop's
+# Windows address changes with the connection (WiFi .162, Ethernet .174);
+# a run on Ethernet stored zero events while this pointed at WiFi. The
+# metrics app now tells the page which address reaches this laptop.
+# Export it only to force an address.
+: "${METRICS_URL:=}"
 : "${AGV_NO_LLM:=1}"
 
 # Explicitly unset, not set. Restricting discovery to LOCALHOST was tried on
@@ -115,7 +121,7 @@ case "$role" in
     else
       echo "LLM advisor: ON  -> $OLLAMA_URL"
     fi
-    echo "metrics -> $METRICS_URL"
+    echo "metrics -> ${METRICS_URL:-the address the page sends with each mission}"
     # TURN METHOD. Inherited from this shell, so an A/B needs no code edit:
     #   AGV_TURN_METHOD=rotate_rel bash tools/run_role_linux.sh supervisor
     # Announced loudly because the one unrecoverable mistake in a paired

@@ -114,6 +114,14 @@ function renderRecorderStatus() {
       : sc.on ? "Second camera on" : "Second camera off";
     second.className = sc.configured && sc.on ? "secondary active" : "secondary";
   }
+  const hq = document.getElementById("rec-hq");
+  const hc = st.hq || {};
+  if (hq) {
+    hq.disabled = !hc.configured;
+    hq.textContent = !hc.configured ? "Full quality: not set up"
+      : hc.on ? "Full quality on" : "Full quality off";
+    hq.className = hc.configured && hc.on ? "secondary active" : "secondary";
+  }
   auto.textContent = st.auto ? "Auto-record on" : "Auto-record off";
   auto.className = st.auto ? "secondary active" : "secondary";
   const r = st.recording;
@@ -128,6 +136,9 @@ function renderRecorderStatus() {
     if (r.second_state === "starting") text += " · starting the second camera";
     else if (r.second_state === "recording") text += " · second camera recording";
     else if (r.second_state === "failed") text += ` · second camera: ${r.second_error}`;
+    if (r.hq_state === "starting") text += " · starting full quality";
+    else if (r.hq_state === "recording") text += " · full quality recording";
+    else if (r.hq_state === "failed") text += ` · full quality: ${r.hq_error} (is the camera bridge running?)`;
     if (r.stopping_in_sec !== null && r.stopping_in_sec !== undefined) {
       text += ` · run ended, saving in ${Math.ceil(r.stopping_in_sec)} s`;
     }
@@ -145,6 +156,8 @@ function renderRecorderStatus() {
     text += ` · last recording failed: ${st.last.error}`;
   } else if (st.last) {
     text += ` · saved "${st.last.title}" (${recFmtDur(st.last.duration_sec)})`;
+    if (st.last.hq_file) text += ` · full quality: data/videos/${st.last.hq_file}`;
+    else if (st.last.hq_error) text += ` · full quality failed: ${st.last.hq_error}`;
   }
   label.className = st.last && st.last.status === "failed"
     ? "mode-status rec-warn" : "mode-status muted";
@@ -193,6 +206,17 @@ async function recorderToggleSecond() {
       { method: "POST", body: { second: on } });
   } catch (err) {
     alert(`Second camera: ${err.message}`);
+  }
+  renderRecorderStatus();
+}
+
+async function recorderToggleHq() {
+  const on = !(_recStatus && _recStatus.hq && _recStatus.hq.on);
+  try {
+    _recStatus = await metricsFetch("/api/recorder/settings",
+      { method: "POST", body: { hq: on } });
+  } catch (err) {
+    alert(`Full quality: ${err.message}`);
   }
   renderRecorderStatus();
 }
@@ -747,6 +771,7 @@ function recordingsInit() {
   on("rec-sync-minus", "click", () => recNudge(0.1));
   on("rec-sync-plus", "click", () => recNudge(-0.1));
   on("rec-second", "click", recorderToggleSecond);
+  on("rec-hq", "click", recorderToggleHq);
   const v2 = recSecondVideo();
   if (v2) {
     v2.addEventListener("timeupdate", recSyncPlayhead);

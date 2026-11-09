@@ -275,6 +275,10 @@ ROTATION_CLEAR_TIMEOUT_SEC = 20.0
 #: before the yaw rate can show it (see VisionMonitor.claim_rotation). A turn
 #: and its settle take ~1.3-2.5s; past that the measured yaw rate takes over.
 ROTATION_CLAIM_SEC = 3.0
+# Check-and-claim for a turn is one step: a parked neighbour is judged as a
+# square only while it is not turning, so two neighbours checking at the
+# same instant must not both see the other as parked.
+_ROTATION_GATE_LOCK = threading.Lock()
 #: A drive leg starting more than this off its own line is refused rather
 #: than driven -- see VisionLegWorker._ready_to_depart(). Legs brake 1.0-1.4in
 #: short ALONG the line; sideways a robot on the tape is within ~0.5in.
@@ -333,6 +337,7 @@ YIELD_ROTATION_CLEAR_TIMEOUT_SEC = 3.0
 # episodes rise from 0.69 to 0.97 per fleet-minute, 1.39x. An avoid is a
 # brief mutual stop that resumes; a contact aborts the run. 0.70 was also
 # tried (1.72x) and is not justified by the measured cadence.
+ROBOT_STOP_LATENCY_SEC = 0.35   # measured: STOP sent -> wheels stopped
 COLLISION_REACTION_SEC = 0.56   # robot stop latency (0.35) + one pose
                                 # interval (0.21), both measured
 COLLISION_MIN_CLOSING_IN_S = 0.5  # below this, treat as not closing (noise)
@@ -462,6 +467,24 @@ def contact_distance_in(yaw_a_deg, yaw_b_deg, dx: float, dy: float) -> float:
 #: as the disc its corners sweep, not as the square it happened to be in the
 #: last frame. Drive legs trim heading by a few deg/s; turns run 60-150.
 COLLISION_TURNING_DEG_S = 30.0
+
+
+def job_at_bay(job, bay) -> bool:
+    """Is `job` a visit to workstation bay `bay`?"""
+    try:
+        return bay is not None and int(job.workstation) == int(bay)
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def wait_key(reason: str) -> str:
+    """What makes two wait reasons the SAME decision for the log.
+
+    Decimal figures (distances, countdowns: "0.88in", "part ready in 3.8s")
+    change on every recheck without the decision changing; whole numbers
+    are node and bay labels and do. Operator, 2026-11-03: one line per
+    decision, not one per recheck."""
+    return re.sub(r"\d+\.\d+", "#", reason or "")
 #: The predicted gap must stay above this through the stop horizon. Covers
 #: pose noise (~0.05in) and heading noise (~1deg, ~0.05in at a corner).
 COLLISION_PREDICT_MARGIN_IN = 0.25
@@ -685,6 +708,26 @@ def arrived_world_in(vision, name: str, label) -> bool:
             <= ARRIVAL_BANK_CELLS * GRID_PITCH_WORLD_IN)
 
 
+#: A robot this far from a workstation's centre has not arrived there:
+#: it is partly out in the lane. Robots stop within ~0.5in of a workstation
+#: target (with the per-robot aim correction), so 1.0in is generous.
+WS_ARRIVAL_BANK_IN = 1.0
+
+
+def at_workstation_centre(vision, name: str, label, rows: int,
+                          cols: int) -> bool:
+    """`name`'s fresh pose is within WS_ARRIVAL_BANK_IN of workstation
+    `label`'s measured centre."""
+    pose = vision.snapshot_in().get(name)
+    if pose is None or pose[3] > VISION_STALE_SEC:
+        return False
+    try:
+        x, y = nav_node_to_world(label, rows, cols)
+    except (ValueError, KeyError, TypeError):
+        return False
+    return math.hypot(pose[0] - x, pose[1] - y) <= WS_ARRIVAL_BANK_IN
+
+
 def nearest_depot_label(vision, name: str):
     """The depot node `name` is standing on (within ARRIVAL_BANK_CELLS), or
     None."""
@@ -776,6 +819,7 @@ DEADLOCK_CONFIRM_SEC = 1.0
 # the abort is what happens.
 YIELD_CLEAR_TIMEOUT_SEC = 30.0
 YIELD_TOTAL_TIMEOUT_SEC = 75.0
+YIELD_LEG_RETRIES = 3            # a failed yield hop is redone, not dropped
 
 # Per-leg retry budget before a robot is excluded. Two, because every vision
 # leg failure observed on this testbed has been transient and single: a turn
@@ -787,6 +831,34 @@ MAX_LEG_RETRIES = 2
 # Let the fleet settle before re-dispatching -- the robot has just braked and
 # a neighbour may have been waiting on the resource it is about to re-request.
 LEG_RETRY_PAUSE_SEC = 1.0
+# GUARD BACK-OFF (2026-11-02). A leg the collision guard stopped is not a
+# transient: the robot it was stopped against is usually still there, and a
+# retry drives the same leg into it again. ALNS sequential pair 1: Alvik4,
+# granted 31->23, was stopped 4.4in short beside Alvik3 standing at entry
+# 127; both retries drove further in and the third approach was a contact.
+# Instead the robot backs straight out to the leg's start node and holds
+# until the other robot has moved. Back-offs do not use the retry budget.
+GUARD_BACKOFF_MAX = 3            # per leg; past this, the ordinary retry path
+GUARD_BACKOFF_AT_ORIGIN_IN = 1.5  # this close to the start: no reverse needed
+GUARD_BACKOFF_TIMEOUT_SEC = 15.0
+GUARD_HOLD_MOVED_IN = 2.0        # the other robot has moved off its spot
+GUARD_HOLD_MAX_SEC = 30.0        # then the ordinary gates decide alone
+# BAY EXIT WAITS FOR A PASSER (2026-11-03, ALNS24_seq pair 1). The bay-exit
+# gate is node logic: it released Alvik3 from workstation 78 65ms after
+# Alvik4 was granted 23->15, because a robot whose move is in flight counts
+# as at its DESTINATION. Alvik4 was still at 23 and then drove down the lane
+# beside the bay; Alvik3 pulled out alongside it and they touched. A lane
+# passer leaves 1.0in nominal, so anyone MOVING within this footprint gap of
+# the exit path holds the exit until it has gone by.
+BAY_EXIT_PASSER_CLEAR_IN = 1.5
+# ROTATION STANDOFF (2026-11-02). Two stopped robots each holding a turn for
+# the other: one backs up out of the other's turning circle, lets it turn,
+# then drives back onto its node. See _standoff_nudge().
+STANDOFF_NUDGE_SEC = 2.5         # mutual hold this long before backing up
+STANDOFF_CLEAR_EXTRA_IN = 0.35   # beyond ROTATION_SWEEP_IN
+STANDOFF_NUDGE_MIN_IN = 2.0      # shorter legs barely move (brake lead ~1.2)
+STANDOFF_NUDGE_MAX_IN = 4.0
+STANDOFF_RETURN_MAX_SEC = 15.0
 # Longest a robot may sit off-route before it is excluded. Unlike every other
 # wait here, an off-route hold cannot be cleared by another robot moving, so
 # without a bound it is a permanent fleet-wide stall (2026-09-25 run 4).
@@ -1009,7 +1081,8 @@ from dispatch_advisor import (  # noqa: E402
     STANDING_LINGER_SEC, STANDING_VACATE_IN,
     bridge_commands, corridor_key, entry_edge_nodes, entry_rotation_footprint,
     heading_between_cells, is_workstation_node, label_to_cell,
-    movement_segments, node_at_cell, resync_point, workstation_rotation_edges)
+    movement_segments, node_at_cell, resync_point, workstation_rotation_edges,
+    PlanItem)
 from testbed_coordinates import GRID_PITCH_IN as GRID_PITCH_WORLD_IN  # noqa: E402
 
 
@@ -1240,6 +1313,16 @@ class VisionMonitor:
         with self._lock:
             self.__dict__.setdefault("_leg_targets", {}).pop(name, None)
 
+    def driving_leg(self, name: str) -> bool:
+        """Dispatched on a leg and not yet at its end -- moving, or about
+        to, whatever its measured speed says right now."""
+        with self._lock:
+            t = self.__dict__.get("_leg_targets", {}).get(name)
+            p = self._poses_in.get(name)
+        if t is None or p is None:
+            return False
+        return math.hypot(p[0] - t[0], p[1] - t[1]) > 1.0
+
     def motion_pairs_in(self) -> list[tuple]:
         """motion_pairs_ext() without the pass-by flag."""
         return [p[:6] for p in self.motion_pairs_ext()]
@@ -1313,6 +1396,82 @@ class VisionMonitor:
                             pred, math.hypot(rvx, rvy),
                             lane_passby(ya, yb, rvx, rvy, dx, dy)))
         return out
+
+    def keep_moving(self, a: str, b: str, margin: float,
+                    prefer=()) -> str | None:
+        """Which ONE of a pair, both driving, may keep going while only the
+        other is stopped -- or None to stop both.
+
+        2026-11-03 shakedown: Alvik5 had just left node 42 northbound when
+        Alvik3 drove 43->143 toward it. The guard stopped both. Alvik5,
+        driving AWAY, stopped 2.6in off 42; Alvik3 at entry 143 then could
+        not turn (Alvik5 inside its circle) and Alvik5's retry was held by
+        Alvik3 -- until Alvik3 timed out and was excluded. Stopping only
+        Alvik3 lets Alvik5 drive out of the way.
+
+        Judged by footprints, not direction alone: the stopped robot still
+        travels for ROBOT_STOP_LATENCY_SEC, the other holds its velocity to
+        the end of its leg, and the gap must stay above `margin` over
+        COLLISION_REACTION_SEC plus two seconds. If both qualify, a robot in
+        `prefer` (driving into its workstation: stopping it there leaves it
+        half out in the lane) keeps going; otherwise the one whose own
+        motion closes the gap more is the one stopped.
+        """
+        now = time.time()
+        with self._lock:
+            self._update_motion()
+            est = dict(self.__dict__.get("_motion", {}))
+            fresh = {n: p for n, p in self._poses_in.items()
+                     if now - self._pose_in_t.get(n, 0.0) <= COLLISION_MAX_AGE_SEC}
+            turning = {n for n in fresh if self._turning_locked(n, now)}
+            targets = dict(self.__dict__.get("_leg_targets", {}))
+        if a not in fresh or b not in fresh or a in turning or b in turning:
+            return None
+
+        def vel(n):
+            m = est.get(n)
+            if m is None or now - m[3] > COLLISION_MAX_AGE_SEC:
+                return 0.0, 0.0
+            return m[0], m[1]
+
+        def leg_time(n, v):
+            tgt = targets.get(n)
+            speed = math.hypot(v[0], v[1])
+            if tgt is None or speed < 1e-6:
+                return math.inf
+            x, y, _ = fresh[n]
+            return (math.hypot(tgt[0] - x, tgt[1] - y) + LEG_OVERSHOOT_IN) / speed
+
+        def solo_gap(mover, stopped):
+            (mx, my, myaw), (sx, sy, syaw) = fresh[mover], fresh[stopped]
+            vm, vs = vel(mover), vel(stopped)
+            if math.hypot(*vm) < COLLISION_MIN_CLOSING_IN_S:
+                return None                  # not actually driving
+            tm = leg_time(mover, vm)
+            horizon = COLLISION_REACTION_SEC + 2.0
+            best = math.inf
+            for k in range(1, 41):
+                t = horizon * k / 40
+                tmv = min(t, tm)
+                tst = min(t, ROBOT_STOP_LATENCY_SEC)
+                dx = (mx + vm[0] * tmv) - (sx + vs[0] * tst)
+                dy = (my + vm[1] * tmv) - (sy + vs[1] * tst)
+                best = min(best, footprint_gap_in(dx, dy, myaw, syaw))
+            return best
+
+        ga, gb = solo_gap(a, b), solo_gap(b, a)
+        ok_a = ga is not None and ga >= margin
+        ok_b = gb is not None and gb >= margin
+        if ok_a and ok_b:
+            pa_, pb_ = a in prefer, b in prefer
+            if pa_ != pb_:
+                return a if pa_ else b
+            return a if ga >= gb else b
+        if ok_a:
+            return a
+        if ok_b:
+            return b
+        return None
 
     def proximity_pairs(self) -> list[tuple[str, str, float]]:
         """Pairs of robots with fresh vision, both on the lattice, closer
@@ -1911,12 +2070,33 @@ class FleetSupervisor(Node):
         mine = snap.get(name)
         if mine is None or mine[3] > VISION_STALE_SEC:
             return None          # no fresh fix: fall through to the other gates
+        # A neighbour that is standing still, not turning and not on a leg
+        # is judged as its real square, not as a second turning circle.
+        # 2026-11-03 13:13 (ALNS24_seq): Alvik5 back in D5, Alvik4 parked
+        # square-on 5.61in away -- 0.78in clear of Alvik5's sweep -- but
+        # 5.61 < ROTATION_SWEEP_IN, so the square-up was held for 88s until
+        # the stall watchdog ended the run. The operator then sent the same
+        # 167.7deg turn by hand and it cleared. A neighbour that later wants
+        # to turn goes through this gate itself, sees this robot turning
+        # (claim_rotation) and still holds on the full 5.625in.
+        turning = getattr(self.vision, "is_turning", lambda _n: True)
+        driving = getattr(self.vision, "driving_leg", lambda _n: False)
+        speed_of = getattr(self.vision, "speed_in", lambda _n: None)
         worst = None
         for other, pose in snap.items():
             if other == name or pose[3] > VISION_STALE_SEC:
                 continue
             d = math.hypot(mine[0] - pose[0], mine[1] - pose[1])
-            if d < ROTATION_SWEEP_IN and (worst is None or d < worst[1]):
+            if d >= ROTATION_SWEEP_IN:
+                continue
+            speed = speed_of(other)
+            if (speed is not None and speed <= PARKED_MAX_SPEED_IN_S
+                    and not turning(other) and not driving(other)
+                    and footprint_gap_in(pose[0] - mine[0], pose[1] - mine[1],
+                                         None, pose[2])
+                    >= COLLISION_PREDICT_MARGIN_IN):
+                continue
+            if worst is None or d < worst[1]:
                 worst = (other, d)
         return worst
 
@@ -2051,7 +2231,8 @@ class FleetSupervisor(Node):
                                  = ROTATION_CLEAR_TIMEOUT_SEC,
                                  cancelled=None,
                                  at_node=None,
-                                 idle=None) -> tuple[bool, str]:
+                                 idle=None, nudge=None,
+                                 drive_to=None) -> tuple[bool, str]:
         """Hold until rotating here is clear of other robots.
 
         THIS IS THE GATE THAT ACTUALLY GUARDS A ROTATION. Everything before
@@ -2090,10 +2271,51 @@ class FleetSupervisor(Node):
         """
         deadline = (None if timeout_sec is None
                     else time.monotonic() + timeout_sec)
+        # Who each robot is holding its turn for, so a MUTUAL hold can be
+        # recognised and broken. See _standoff_nudge().
+        holds = self.__dict__.setdefault("_rot_holds", {})
+        try:
+            return self._await_rotation_loop(
+                name, leg_label, timeout_sec, cancelled, at_node, idle,
+                nudge, drive_to, deadline, holds)
+        finally:
+            holds.pop(name, None)
+
+    def _await_rotation_loop(self, name, leg_label, timeout_sec, cancelled,
+                             at_node, idle, nudge, drive_to, deadline,
+                             holds) -> tuple[bool, str]:
+        # backed: (partner, x, y) -- where this robot stood before backing
+        # up for partner's turn; it drives back there afterwards.
         blocked_by = None
+        held_since = time.monotonic()
+        backed = None
         while True:
-            other, why = self.rotation_blocker(name, at_node) or (None, "")
+            with _ROTATION_GATE_LOCK:
+                other, why = self.rotation_blocker(name, at_node) or (None, "")
+                if other is None and backed is None:
+                    claim = getattr(self.vision, "claim_rotation", None)
+                    if claim is not None:
+                        claim(name)
+            if backed is not None and drive_to is not None:
+                # Backed up for `partner`: go back onto the node only once it
+                # has turned and its circle no longer covers the node.
+                partner, bx, by, since = backed
+                if self._partner_still_turning_here(partner, bx, by, since):
+                    other = other or partner
+                    why = why or f"waiting for {partner} to turn"
+                else:
+                    holds.pop(name, None)
+                    if not drive_to(bx, by, leg_label):
+                        return False, (f"could not drive back onto the node "
+                                       f"after letting {partner} turn")
+                    backed = None
+                    continue
             if other is None:
+                if blocked_by is not None:
+                    self._event("wait",
+                                f"rotation released after "
+                                f"{time.monotonic() - held_since:.1f}s "
+                                f"({blocked_by} clear)", robot=name)
                 if blocked_by is not None and self.advisor is not None:
                     self.advisor.clear_vision_block(name)
                 # Tell the guard and the corridor gate now, before the first
@@ -2104,10 +2326,36 @@ class FleetSupervisor(Node):
                 return True, "clear"
             if blocked_by != other:
                 blocked_by = other
+                held_since = time.monotonic()
                 self.get_logger().info(
                     f"[{name}] {leg_label}: holding rotation -- {why}")
-                self._event("wait", f"{name} rotation hold: {why}",
-                            robot=name)
+                # ONE decision-log line per hold (operator, 2026-11-03: the
+                # 0.1s poll sent ~60 identical lines a hold), and one when
+                # it is released. A new blocking robot is a new hold.
+                self._event("wait", f"rotation hold: {why}", robot=name,
+                            severity="warn")
+            if backed is None:
+                holds[name] = other
+            if (backed is None and nudge is not None
+                    and not other.startswith("(")):
+                plan = self._standoff_nudge(name, other,
+                                            time.monotonic() - held_since)
+                if plan is not None:
+                    dist, ox, oy = plan
+                    self.get_logger().warning(
+                        f"[{name}] {leg_label}: {other} is waiting on this "
+                        f"robot's turn and this one on its -- backing up "
+                        f"{dist:.1f}in so {other} can turn")
+                    self._event("recovery",
+                                f"{name} backs up {dist:.1f}in to let "
+                                f"{other} turn", robot=name,
+                                severity="warning")
+                    holds.pop(name, None)
+                    if nudge(dist, leg_label):
+                        backed = (other, ox, oy, time.monotonic())
+                        continue
+                    # Could not back up: stay and keep holding.
+                    held_since = time.monotonic()
             if self.advisor is not None and not other.startswith("("):
                 # Same registration the corridor gate uses, so a mutual
                 # rotation standoff is visible to the existing resolver
@@ -2296,6 +2544,266 @@ class FleetSupervisor(Node):
                   for px, py in points)
         return gap >= (CORRIDOR_FOOTPRINT_MARGIN_IN if margin is None else margin)
 
+    def _guard_hold_reason(self, advisor, name: str) -> str | None:
+        """Hold a robot that backed off a guard stop until the robot it was
+        stopped against has moved GUARD_HOLD_MOVED_IN, or GUARD_HOLD_MAX_SEC
+        has passed. Fed to the wait-for graph, so if that robot is in turn
+        waiting for this one, the deadlock resolver sees the cycle."""
+        holds = getattr(self, "_guard_holds", None)
+        h = holds.get(name) if holds else None
+        if h is None:
+            return None
+        other = h["partner"]
+        p = (self.vision.snapshot_in().get(other)
+             if self.vision is not None else None)
+        moved = (p is not None and p[3] <= VISION_STALE_SEC
+                 and math.hypot(p[0] - h["x"], p[1] - h["y"])
+                 >= GUARD_HOLD_MOVED_IN)
+        if moved or time.monotonic() - h["since"] > GUARD_HOLD_MAX_SEC:
+            holds.pop(name, None)
+            advisor.clear_vision_block(name)
+            self.get_logger().info(
+                f"[{name}] guard hold over: {other} "
+                + ("has moved" if moved else
+                   f"still there after {GUARD_HOLD_MAX_SEC:.0f}s"))
+            return None
+        advisor.note_vision_block(name, other)
+        return (f"guard hold: backed off after a guard stop against {other}; "
+                "waiting for it to move")
+
+    def _nudge_geometry(self, name: str, other: str, snap):
+        """(distance, x, y): how far `name` must back up, tail first along
+        its current heading, to leave `other`'s turning circle -- or None if
+        it cannot within STANDOFF_NUDGE_MAX_IN, or backing up would bring it
+        closer to `other` or within the guard's margin of anyone else."""
+        mine, theirs = snap.get(name), snap.get(other)
+        if (mine is None or theirs is None or mine[3] > VISION_STALE_SEC
+                or theirs[3] > VISION_STALE_SEC):
+            return None
+        t = math.radians(mine[2])
+        ux, uy = -math.sin(t), math.cos(t)      # tail direction
+        need = ROTATION_SWEEP_IN + STANDOFF_CLEAR_EXTRA_IN
+        d0 = math.hypot(theirs[0] - mine[0], theirs[1] - mine[1])
+        s = None
+        k = 1
+        while k * 0.1 <= STANDOFF_NUDGE_MAX_IN + 1e-9:
+            d = math.hypot(theirs[0] - (mine[0] + k * 0.1 * ux),
+                           theirs[1] - (mine[1] + k * 0.1 * uy))
+            if d >= need:
+                s = k * 0.1
+                break
+            k += 1
+        if s is None:
+            return None
+        dist = min(STANDOFF_NUDGE_MAX_IN, max(s, STANDOFF_NUDGE_MIN_IN))
+        end = math.hypot(theirs[0] - (mine[0] + dist * ux),
+                         theirs[1] - (mine[1] + dist * uy))
+        if end <= d0:
+            return None
+        turning = getattr(self.vision, "is_turning", lambda _n: False)
+        n = int(dist / 0.25) + 1
+        for q, p in snap.items():
+            if q in (name, other):
+                continue
+            if p[3] > VISION_STALE_SEC:
+                if math.hypot(p[0] - mine[0], p[1] - mine[1]) < 2 * need:
+                    return None       # nearby and not seen right now
+                continue
+            qyaw = None if turning(q) else p[2]
+            for i in range(n + 1):
+                f = min(dist, i * 0.25)
+                if footprint_gap_in(p[0] - (mine[0] + f * ux),
+                                    p[1] - (mine[1] + f * uy), mine[2],
+                                    qyaw) < COLLISION_PREDICT_MARGIN_IN:
+                    return None
+        return dist, mine[0], mine[1]
+
+    def _standoff_nudge(self, name: str, other: str, held_for: float):
+        """Break a MUTUAL rotation hold: `name` waits to turn because
+        `other` is inside its circle, and `other` waits for the same reason.
+        Neither turn can ever start, and neither robot is asked to move by
+        anything else (2026-11-02, Alvik2 at entry 137 with Alvik4 at 35 and
+        then Alvik5 at 36, until the run was ended by hand).
+
+        After STANDOFF_NUDGE_SEC, ONE of them backs up just far enough for
+        the other to turn: whichever can, the higher name if both can.
+        Returns (distance, x, y) for `name` to do it, else None."""
+        holds = getattr(self, "_rot_holds", {})
+        if holds.get(other) != name or held_for < STANDOFF_NUDGE_SEC:
+            return None
+        if self.vision is None:
+            return None
+        snap = self.vision.snapshot_in()
+        mine = self._nudge_geometry(name, other, snap)
+        if mine is None:
+            return None
+        if name < other and self._nudge_geometry(other, name, snap) is not None:
+            return None               # the other robot backs up instead
+        return mine
+
+    def _partner_still_turning_here(self, partner: str, bx: float,
+                                    by: float, since: float) -> bool:
+        """Keep standing back while `partner` is turning, still holding a
+        turn of its own, or within its turning circle of the spot this robot
+        will drive back to. Past STANDOFF_RETURN_MAX_SEC a partner that is
+        merely parked there no longer keeps it back."""
+        if getattr(self.vision, "is_turning", lambda _n: False)(partner):
+            return True
+        if getattr(self, "_rot_holds", {}).get(partner) is not None:
+            return True
+        p = self.vision.snapshot_in().get(partner) if self.vision else None
+        if p is None:
+            return time.monotonic() - since <= STANDOFF_RETURN_MAX_SEC
+        need = ROTATION_SWEEP_IN + STANDOFF_CLEAR_EXTRA_IN
+        if math.hypot(p[0] - bx, p[1] - by) >= need:
+            return False
+        return time.monotonic() - since <= STANDOFF_RETURN_MAX_SEC
+
+    def _turning_circle_crowd(self, advisor, name: str, nodes) -> str | None:
+        """Why a yield may not go home yet, or None.
+
+        Home (and a two-hop yield's middle node) must be outside every other
+        robot's turning circle -- ROTATION_SWEEP_IN plus the guard's margin
+        from its centre. A robot at the next entry over is 5in away, so the
+        yielder waits until it has gone; one parked in a bay is ~7in away
+        and does not hold it."""
+        if self.vision is None:
+            return None
+        snap = self.vision.snapshot_in()
+        reach = ROTATION_SWEEP_IN + COLLISION_PREDICT_MARGIN_IN
+        for n in nodes:
+            try:
+                nx, ny = nav_node_to_world(n, advisor.rows, advisor.cols)
+            except (ValueError, KeyError, TypeError):
+                continue
+            for other, p in snap.items():
+                if other == name:
+                    continue
+                d = math.hypot(p[0] - nx, p[1] - ny)
+                if d < reach:      # stale too: last seen there, assume still
+                    return (f"{other} is {d:.1f}in from {n}, inside the "
+                            f"{reach:.2f}in it needs to turn")
+        return None
+
+    def _entering_workstation(self, advisor, names) -> set:
+        """Those of `names` whose move in flight ends at a workstation."""
+        out = set()
+        for n in names:
+            st = advisor.robots.get(n) if advisor is not None else None
+            if st is None or not st.pending or st.pending[0] != "plan":
+                continue
+            idx = st.pending[1]
+            if 0 <= idx < len(st.plan):
+                item = st.plan[idx]
+                if item.kind == "move" and is_workstation_node(
+                        item.to_node, advisor.rows, advisor.cols):
+                    out.add(n)
+        return out
+
+    def _start_guard_hold(self, name: str, partner: str) -> None:
+        """Remember where `partner` stands, so the hold ends when it moves."""
+        p = (self.vision.snapshot_in().get(partner)
+             if self.vision is not None else None)
+        if p is None:
+            return
+        self._guard_holds[name] = {"partner": partner, "x": p[0], "y": p[1],
+                                   "since": time.monotonic()}
+
+    def _guard_backoff_plan(self, advisor, name: str, item, partner: str):
+        """After a guard-stopped leg: ("reverse", PlanItem), ("hold", None),
+        or None to fall back to the ordinary retry.
+
+        Only a single-segment move between lattice/entry nodes is backed
+        out; workstation and depot legs keep the old path. Reversing must
+        clear every other robot by CORRIDOR_FOOTPRINT_MARGIN_IN, and must
+        not bring this robot closer to `partner` than it is now."""
+        if self.vision is None or item is None or item.kind != "move":
+            return None
+        segs = movement_segments(item)
+        if len(segs) != 1:
+            return None
+        origin, dest, _d = segs[0]
+        rows, cols = advisor.rows, advisor.cols
+        for n in (origin, dest):
+            if (depot_label(n) or _is_depot_region_label(n)
+                    or is_workstation_node(n, rows, cols)):
+                return None
+        snap = self.vision.snapshot_in()
+        mine = snap.get(name)
+        if mine is None or mine[3] > VISION_STALE_SEC:
+            return None
+        try:
+            from camera_grid_navigate import heading_between
+            ox, oy = nav_node_to_world(origin, rows, cols)
+            dx_, dy_ = nav_node_to_world(dest, rows, cols)
+        except (ValueError, KeyError, TypeError):
+            return None
+        if math.hypot(mine[0] - ox, mine[1] - oy) <= GUARD_BACKOFF_AT_ORIGIN_IN:
+            return ("hold", None)
+        holder = advisor._occupied_nodes().get(str(origin))
+        if holder not in (None, name):
+            return None
+        heading = heading_between(ox, oy, dx_, dy_)
+        points = [(mine[0] + (ox - mine[0]) * k / 10.0,
+                   mine[1] + (oy - mine[1]) * k / 10.0) for k in range(11)]
+        turning = getattr(self.vision, "is_turning", lambda _n: False)
+        for other, p in snap.items():
+            if other == name or p[3] > VISION_STALE_SEC:
+                continue
+            oyaw = None if turning(other) else p[2]
+            gaps = [footprint_gap_in(p[0] - px, p[1] - py, heading, oyaw)
+                    for px, py in points]
+            if other == partner:
+                if min(gaps[1:]) < gaps[0] - 0.05:
+                    return None
+            elif min(gaps) < CORRIDOR_FOOTPRINT_MARGIN_IN:
+                return None
+        return ("reverse", (dest, origin))
+
+    def _bay_exit_passer(self, advisor, name: str, request) -> str | None:
+        """Hold a workstation exit while another robot is DRIVING past
+        within BAY_EXIT_PASSER_CLEAR_IN of the exit path. Robots standing
+        still are left to the bay-exit gate; one driving by is gone in a
+        few seconds, so this cannot deadlock."""
+        segs = list(getattr(request, "segments", ()) or ())
+        if not segs:
+            return None
+        ws, entry = segs[0][0], segs[0][1]
+        rows, cols = advisor.rows, advisor.cols
+        if not is_workstation_node(ws, rows, cols):
+            return None
+        snap = self.vision.snapshot_in()
+        mine = snap.get(name)
+        try:
+            from camera_grid_navigate import heading_between
+            wx, wy = nav_node_to_world(ws, rows, cols)
+            ex, ey = nav_node_to_world(entry, rows, cols)
+        except (ValueError, KeyError, TypeError):
+            return None
+        sx, sy = ((mine[0], mine[1])
+                  if mine is not None and mine[3] <= VISION_STALE_SEC
+                  else (wx, wy))
+        heading = heading_between(wx, wy, ex, ey)
+        points = [(sx + (ex - sx) * k / 10.0, sy + (ey - sy) * k / 10.0)
+                  for k in range(11)]
+        turning = getattr(self.vision, "is_turning", lambda _n: False)
+        driving = getattr(self.vision, "driving_leg", lambda _n: False)
+        for other, p in snap.items():
+            if other == name or p[3] > VISION_STALE_SEC:
+                continue
+            speed = self.vision.speed_in(other)
+            if not (driving(other) or (speed is not None
+                                       and speed > PARKED_MAX_SPEED_IN_S)):
+                continue
+            oyaw = None if turning(other) else p[2]
+            gap = min(footprint_gap_in(p[0] - px, p[1] - py, heading, oyaw)
+                      for px, py in points)
+            if gap < BAY_EXIT_PASSER_CLEAR_IN:
+                return (f"bay exit: {other} is driving past, {gap:.2f}in "
+                        f"from the way out to {entry}; waiting for it to "
+                        "go by")
+        return None
+
     def _ws_bay(self, node) -> int | None:
         """Solver bay number of a WORKSTATION node label, else None."""
         try:
@@ -2315,6 +2823,18 @@ class FleetSupervisor(Node):
         lattice = GRID_ROWS * GRID_COLS
         bays = (GRID_ROWS - 1) * (GRID_COLS - 1)
         return n - lattice - bays if lattice + bays < n <= lattice + 2 * bays else None
+
+    def _drop_coming(self, bay) -> bool:
+        """Does some robot still have a drop (or service visit) PENDING at
+        this bay? False means the part will never be recorded as dropped,
+        so nobody may wait for it: 2026-11-03 Alvik2 waited in bay 42 for a
+        bay-25 drop whose job had already been closed, until the run was
+        aborted by hand."""
+        jobs = getattr(self, "_jobs", None)
+        if jobs is None:
+            return True
+        return any(job_at_bay(j, bay) and j.mode in ("drop", "service")
+                   and j.status == "pending" for j in jobs.jobs.values())
 
     def _rpd_hold(self, name: str, item, now: float) -> str | None:
         """Hold a move that would break PICKUP READINESS on real times.
@@ -2363,18 +2883,22 @@ class FleetSupervisor(Node):
                            if getattr(self, "_rpd_after_drop", False)
                            else drops.get(from_ws))
                 ready = None if started is None else started + proc
+                if ready is None and not self._drop_coming(from_ws):
+                    return None           # never recorded; never will be
                 if ready is None or now < ready:
                     left = "" if ready is None else f" in {ready - now:.1f}s"
                     return (f"pick-up at bay {from_ws}: part ready{left} "
                             f"(processing {proc:.0f}s from the measured drop)")
             after = jobs.pending_after(name)
             if after is not None and after.mode == "pick" and \
-                    drops.get(int(after.workstation)) is None:
+                    drops.get(int(after.workstation)) is None and \
+                    self._drop_coming(after.workstation):
                 return (f"next stop is a pick-up at bay {after.workstation}: "
                         f"waiting in bay {from_ws} until that part has been "
                         "dropped")
             return None
-        if job.mode == "pick" and drops.get(int(job.workstation)) is None:
+        if job.mode == "pick" and drops.get(int(job.workstation)) is None \
+                and self._drop_coming(job.workstation):
             bay = int(job.workstation)
             if to_ws == bay or (to_entry == bay and from_ws != bay):
                 return (f"pick-up at bay {bay}: the part has not been "
@@ -2397,6 +2921,9 @@ class FleetSupervisor(Node):
         st = advisor.robots.get(name)
         if st is None:
             return None
+        guard_hold = self._guard_hold_reason(advisor, name)
+        if guard_hold:
+            return guard_hold
         rows, cols = advisor.rows, advisor.cols
 
         for other, other_state in advisor.robots.items():
@@ -2412,6 +2939,9 @@ class FleetSupervisor(Node):
 
         if self.vision is None:
             return None
+        passer = self._bay_exit_passer(advisor, name, request)
+        if passer:
+            return passer
         snap = self.vision.snapshot()
         mine = snap.get(name)
         my_cell = label_to_cell(st.current_node, rows, cols)
@@ -2534,10 +3064,13 @@ class FleetSupervisor(Node):
                     return (f"vision corridor: {other} still on/near node {lbl} "
                             f"in my path (rotating or not yet clear)")
 
-        # Nothing on the corridor: drop any standing camera block for this
-        # robot so a cleared standoff cannot linger in the graph and get
-        # resolved after the fact.
-        advisor.clear_vision_block(name)
+        # The standing camera block is dropped at the END, once no vision
+        # hold applies at all -- not here. Clearing it here and re-noting it
+        # in the edge gate below restarted its age on every recheck, so it
+        # never reached VISION_BLOCK_DEADLOCK_SEC and a standoff against a
+        # rotation hold was never reported (2026-11-03 shakedown: Alvik5
+        # held by "Alvik3 projects 0.45 cells", Alvik3's turn at 143 held by
+        # Alvik5, for 82s until Alvik3 timed out and was excluded).
 
         def distance_to_segment(px, py, a, b):
             dx, dy = b[0] - a[0], b[1] - a[1]
@@ -2631,8 +3164,12 @@ class FleetSupervisor(Node):
                 if (distance < VISION_TARGET_BLOCK_CELLS
                         and not (seg is not None and self._path_clears(
                             other, seg[0], seg[1], rows, cols, node=target))):
+                    advisor.note_vision_block(name, other)
                     return (f"vision: {other} is {distance:.2f} cells from "
                             f"requested node {target}")
+        # No vision hold of any kind: drop any standing camera block so a
+        # cleared standoff cannot linger in the graph.
+        advisor.clear_vision_block(name)
         return None
 
     def _print_vision(self) -> None:
@@ -2677,6 +3214,16 @@ class FleetSupervisor(Node):
             self.get_logger().error(f"[{name}] reported error: {text}")
             self._event("error", f"reported {text}", robot=name,
                         severity="error")
+            # NOT FATAL IN VISION MODE (2026-11-02). The firmware brakes and
+            # returns to IDLE after a wheel-command timeout, and the
+            # navigator fails the leg itself, so the leg-retry path handles
+            # it. Marking the channel errored here dropped the robot out of
+            # the loop silently -- never retried, never stranded -- and its
+            # reservations outlived it: ALNS24_joint, Alvik1's link stalled
+            # on 124->20 and Alvik6 waited on node 20 for the rest of the run.
+            if (text.startswith("ERROR WHEEL_CMD_TIMEOUT")
+                    and self.drive_mode == "vision"):
+                return
             ch.errored = True
             ch.done_event.set()
             return
@@ -2966,7 +3513,8 @@ class FleetSupervisor(Node):
 
         def log_wait(name: str, reason: str, *, deadlock: bool = False) -> None:
             previous, logged_at = last_hold_log[name]
-            if previous == reason and now - logged_at < HOLD_LOG_THROTTLE_SEC:
+            if (wait_key(previous or "") == wait_key(reason)
+                    and now - logged_at < HOLD_LOG_THROTTLE_SEC):
                 return
             last_hold_log[name] = (reason, now)
             text = f"[{name}] SUPERVISOR WAIT t={now:.1f}s ({reason})"
@@ -3525,7 +4073,9 @@ class FleetSupervisor(Node):
                 # it lasted. The decision is still re-checked every tick --
                 # only the repetition in the log is gone.
                 previous, since = last_hold_log[name]
-                if previous == reason:
+                # "same conflict; supervisor recheck" IS the previous wait.
+                if previous and (wait_key(previous) == wait_key(reason)
+                                 or reason.startswith("same conflict")):
                     return
                 last_hold_log[name] = (reason, now)
                 text = f"[{name}] SUPERVISOR WAIT t={now:.1f}s ({reason})"
@@ -3610,6 +4160,13 @@ class FleetSupervisor(Node):
                                 state_to=new_state, reason=reason)
 
             avoided: dict[tuple, float] = {}
+            # robot -> (time, the robot it was guard-stopped against); read
+            # by the leg-failure path to back out instead of retrying.
+            self._guard_stops = {}
+            self._guard_holds = {}
+            backoffs: dict[str, dict] = {}
+            stranded_seen: set[str] = set()
+            guard_backoffs: dict[tuple, int] = {}
 
             def emergency_stop(names, why: str) -> None:
                 """STOP specific robots immediately, outside the plan.
@@ -3665,6 +4222,13 @@ class FleetSupervisor(Node):
                     # ...and actually stopped. A robot driving out of a bay
                     # or slot is not parked (see PARKED_MAX_SPEED_IN_S). An
                     # unknown speed (no estimate yet) keeps the old rule.
+                    # A robot just dispatched out of its bay is not parked
+                    # either, though it has no speed yet: 2026-11-03 Alvik3
+                    # was "parked" 0.33s into its exit from workstation 78,
+                    # so only Alvik4 was stopped and Alvik3 drove into it.
+                    if getattr(self.vision, "driving_leg",
+                               lambda _n: False)(nm):
+                        return False
                     speed = self.vision.speed_in(nm)
                     return speed is None or speed <= PARKED_MAX_SPEED_IN_S
 
@@ -3724,9 +4288,22 @@ class FleetSupervisor(Node):
                         continue
                     avoided[key] = now_sec
                     movers = [n for n, p in ((a, pa), (b, pb)) if not p] or [a, b]
+                    keep = None
+                    if len(movers) == 2:
+                        keep_fn = getattr(self.vision, "keep_moving", None)
+                        keep = (keep_fn(a, b, margin,
+                                        prefer=self._entering_workstation(
+                                            advisor, (a, b)))
+                                if keep_fn else None)
+                        if keep is not None:
+                            movers = [b if keep == a else a]
+                    for m in movers:
+                        self._guard_stops[m] = (now_sec, b if m == a else a)
                     emergency_stop(
                         movers,
-                        (f"{a if pa else b} is parked; " if (pa or pb) else "")
+                        (f"{a if pa else b} is parked; " if (pa or pb) else
+                         f"{keep} drives on, it is pulling clear; " if keep
+                         else "")
                         + f"{gap:.2f}in between footprints now, "
                         f"{min_gap:.2f}in within {COLLISION_REACTION_SEC:.2f}s "
                         f"at {rel_speed:.1f}in/s relative "
@@ -4158,6 +4735,13 @@ class FleetSupervisor(Node):
                     self.publish_fleet_status("running", advisor, phase,
                                               now_sec=now)
 
+                # A robot excluded outside this loop (a firmware ERROR status)
+                # must still give up its movement claims, or whoever needs
+                # them waits for the rest of the run. See strand().
+                for n, c in self._channels.items():
+                    if c.errored and n not in stranded_seen:
+                        stranded_seen.add(n)
+                        advisor.strand(n, now)
                 unfinished = [n for n, ch in self._channels.items()
                               if not ch.errored and phase[n] != "done"]
                 if not unfinished:
@@ -4202,6 +4786,23 @@ class FleetSupervisor(Node):
                                     advisor._occupied_nodes().items()
                                     if holder != name}
                             home_free = not any(n in held for n in way_home)
+                            # ...and not inside anyone's turning circle.
+                            # 2026-11-02, ALNS24_joint: Alvik4 and Alvik5
+                            # each went home to a node beside entry 137 while
+                            # Alvik2 still had to turn there; each then
+                            # needed to turn itself, and three rotation holds
+                            # waited on one another for 55 s. A reservation
+                            # check cannot see a turn.
+                            crowd = (self._turning_circle_crowd(
+                                advisor, name, way_home)
+                                if home_free else None)
+                            if crowd is not None:
+                                home_free = False
+                                if not y.get("crowd_logged"):
+                                    y["crowd_logged"] = True
+                                    self.get_logger().info(
+                                        f"[{name}] yield: staying at "
+                                        f"{y['out'].to_node} -- {crowd}")
                             # PASSED means went THROUGH, not merely "left the
                             # node it was waiting on". That was the whole
                             # test, and on 2026-10-16 it was satisfied by the
@@ -4247,6 +4848,29 @@ class FleetSupervisor(Node):
                         if result is None:
                             continue
                         ok, note, _fused = result
+                        if not ok and y.get("fails", 0) < YIELD_LEG_RETRIES:
+                            # RETRY, do not drop the yield (2026-11-03).
+                            # Alvik4's turn home from 19 settled 4.04deg off
+                            # against a 4.0deg tolerance; dropping the yield
+                            # left it on 19 while its plan expected 27, every
+                            # retry of 27->35 was refused as OFF_PATH, and it
+                            # was excluded. The worker re-derives the hop
+                            # from where the robot is. The way home goes
+                            # back through the "clear" stage, which
+                            # re-checks and re-reserves it.
+                            y["fails"] = y.get("fails", 0) + 1
+                            self.get_logger().warning(
+                                f"[{name}] yield leg failed ({note}); retry "
+                                f"{y['fails']}/{YIELD_LEG_RETRIES}")
+                            self._event("recovery",
+                                        f"yield leg failed ({note}); retrying",
+                                        robot=name, severity="warning")
+                            if y["stage"] == "back":
+                                y["stage"] = "clear"
+                                y["stage_since"] = now
+                            else:
+                                worker.submit(y["out"], None, False)
+                            continue
                         if not ok:
                             self.get_logger().error(
                                 f"[{name}] yield leg failed: {note}")
@@ -4295,6 +4919,38 @@ class FleetSupervisor(Node):
                         yielding.pop(name, None)
                         phase[name] = "idle"
                         next_gate_at[name] = 0.0
+                        continue
+
+                    if phase[name] == "backoff":
+                        b = backoffs[name]
+                        result = worker.poll()
+                        if result is None:
+                            if now - b["since"] <= GUARD_BACKOFF_TIMEOUT_SEC:
+                                continue
+                            worker.abort()
+                            result = (False, "back-off timed out", False)
+                        backoffs.pop(name, None)
+                        ok_b, note_b, _f = result
+                        # Back on the start node in the plan either way:
+                        # the leg it was stopped on is re-requested from
+                        # there, through every gate, once the hold ends.
+                        advisor.finish_yield_leg(name, b["origin"], now)
+                        self._start_guard_hold(name, b["partner"])
+                        if ok_b:
+                            self.get_logger().info(
+                                f"[{name}] backed out to {b['origin']}; "
+                                f"holding until {b['partner']} moves")
+                        else:
+                            self.get_logger().warning(
+                                f"[{name}] back-off to {b['origin']} did not "
+                                f"finish ({note_b}); holding where it is "
+                                f"until {b['partner']} moves")
+                        phase[name] = "idle"
+                        next_gate_at[name] = now + LEG_RETRY_PAUSE_SEC
+                        # Whoever was waiting on the node it gave up may go.
+                        for waiting_name, waiting_phase in phase.items():
+                            if waiting_phase == "waiting":
+                                next_gate_at[waiting_name] = 0.0
                         continue
 
                     if phase[name] == "idle":
@@ -4504,13 +5160,26 @@ class FleetSupervisor(Node):
                             # closes here -- not on every DWELL, which closed
                             # two jobs per visit (2 s pause + 30 s chunk).
                             here = str(item.from_node)
-                            in_service.pop(name, None)
+                            serving = in_service.pop(name, None) is not None
                             jobs = getattr(self, "_jobs", None)
+                            # Only the job AT THIS BAY closes. A retried exit
+                            # is dispatched again, and used to close the NEXT
+                            # job too (2026-11-03, ALNS24_joint: Alvik3's exit
+                            # from bay 27 failed and was retried, closing its
+                            # bay-25 drop before it happened; the drop then
+                            # never registered and Alvik2 waited for it in
+                            # bay 42 until the run was aborted).
+                            pending = (jobs.next_pending(name)
+                                       if jobs is not None else None)
                             job = (jobs.complete_next(name)
-                                   if jobs is not None else None)
-                            self._memit("PROCESSING_COMPLETED", robot_id=name,
-                                        workstation_id=here,
-                                        job_id=job.job_id if job else None)
+                                   if pending is not None
+                                   and job_at_bay(pending, self._ws_bay(here))
+                                   else None)
+                            if job is not None or serving:
+                                self._memit("PROCESSING_COMPLETED",
+                                            robot_id=name,
+                                            workstation_id=here,
+                                            job_id=job.job_id if job else None)
                             if job is not None and job.mode in ("pick",
                                                                 "service"):
                                 self._bay_event(job.workstation, "picked",
@@ -4610,6 +5279,58 @@ class FleetSupervisor(Node):
                         ok, note, fused = result
                         if not ok:
                             key = (name, advisor.robots[name].next_index)
+                            # GUARD BACK-OFF -- see GUARD_BACKOFF_MAX.
+                            gs = self._guard_stops.get(name)
+                            st_g = advisor.robots[name]
+                            item_g = (st_g.plan[st_g.next_index]
+                                      if st_g.next_index < len(st_g.plan)
+                                      else None)
+                            plan_g = None
+                            if (gs is not None
+                                    and gs[0] >= st_dispatched(advisor, name) - 0.5
+                                    and guard_backoffs.get(key, 0) < GUARD_BACKOFF_MAX):
+                                plan_g = self._guard_backoff_plan(
+                                    advisor, name, item_g, gs[1])
+                            if plan_g is not None:
+                                guard_backoffs[key] = guard_backoffs.get(key, 0) + 1
+                                partner = gs[1]
+                                self._guard_stops.pop(name, None)
+                                inflight.pop(name, None)
+                                fused_index[name] = None
+                                advisor.cancel_dispatch(name)
+                                origin = movement_segments(item_g)[0][0]
+                                emit_state(name, "FAULT_RECOVERY")
+                                self._memit(
+                                    "COMMAND_FAILED", robot_id=name,
+                                    reason="GUARD_BACKOFF",
+                                    details={"note": note, "partner": partner})
+                                rev = None
+                                if plan_g[0] == "reverse":
+                                    rev = advisor.begin_backoff(
+                                        name, plan_g[1][0], plan_g[1][1], now)
+                                if rev is not None:
+                                    worker.submit(rev, None, False)
+                                    backoffs[name] = {"origin": origin,
+                                                      "partner": partner,
+                                                      "since": now}
+                                    phase[name] = "backoff"
+                                    self.get_logger().warning(
+                                        f"[{name}] guard-stopped against "
+                                        f"{partner} ({note}); backing out "
+                                        f"to {origin} instead of retrying")
+                                    self._event(
+                                        "recovery",
+                                        f"guard stop: backing out to {origin} "
+                                        f"to let {partner} pass",
+                                        robot=name, severity="warning")
+                                    continue
+                                # At the start node already (or the way back
+                                # was refused): stay, and hold for partner.
+                                advisor.finish_yield_leg(name, origin, now)
+                                self._start_guard_hold(name, partner)
+                                phase[name] = "idle"
+                                next_gate_at[name] = now + LEG_RETRY_PAUSE_SEC
+                                continue
                             leg_attempts[key] = leg_attempts.get(key, 0) + 1
                             tries = leg_attempts[key]
                             if tries <= max_leg_retries:
@@ -4708,8 +5429,27 @@ class FleetSupervisor(Node):
                                     # morning) or was sent on a yield from
                                     # the wrong node (Alvik1 13->5 from entry
                                     # 118, ending in a collision).
+                                    #
+                                    # A WORKSTATION is banked only once the
+                                    # robot is at its centre (2026-11-03,
+                                    # operator). Alvik2 was guard-stopped
+                                    # 2.5in short of workstation 88 and
+                                    # banked; it did its drop half out of
+                                    # the bay, blocking the edges beside it,
+                                    # and the resolver sent Alvik4 and
+                                    # Alvik5 away instead. Not banked, the
+                                    # retry drives the rest of the way in,
+                                    # and robots pass on the bay's edges.
+                                    ws_short = (
+                                        is_workstation_node(
+                                            item_r.to_node, advisor.rows,
+                                            advisor.cols)
+                                        and not at_workstation_centre(
+                                            self.vision, name, item_r.to_node,
+                                            advisor.rows, advisor.cols))
                                     if (mine and mine[3] <= VISION_STALE_SEC
                                             and dest is not None
+                                            and not ws_short
                                             and math.hypot(mine[0] - dest[0],
                                                            mine[1] - dest[1])
                                             <= ARRIVAL_BANK_CELLS
@@ -5236,10 +5976,30 @@ class VisionLegWorker:
             err = abs((heading - pose.yaw + 180.0) % 360.0 - 180.0)
             if err <= self.nav.args.turn_tol_deg:
                 return True, "no rotation needed"
+        # Backing up for a neighbour's turn only where the robot has
+        # arrived (no deadline): a hold with a deadline fails into the retry
+        # path, which must find the robot where it was.
         return self.supervisor.await_rotation_clearance(
             self.name, label, timeout_sec=timeout_sec,
             cancelled=self._cancel.is_set, at_node=at_node,
-            idle=self._idle)
+            idle=self._idle,
+            nudge=self._nudge_back if timeout_sec is None else None,
+            drive_to=self._drive_back_to)
+
+    def _nudge_back(self, dist_in: float, label: str) -> bool:
+        """Back straight up `dist_in`, tail first, on the current heading."""
+        pose = self.nav.control_pose()
+        if pose is None:
+            return False
+        t = math.radians(pose.yaw)
+        tx, ty = pose.x - math.sin(t) * dist_in, pose.y + math.cos(t) * dist_in
+        return bool(self.nav.drive_leg(
+            tx, ty, f"{label}: backing up {dist_in:.1f}in for a neighbour's "
+            "turn", reverse=True))
+
+    def _drive_back_to(self, x: float, y: float, label: str) -> bool:
+        """Forward onto the spot it backed up from."""
+        return bool(self.nav.drive_leg(x, y, f"{label}: back onto the node"))
 
     def shutdown(self) -> None:
         self._stop.set()
