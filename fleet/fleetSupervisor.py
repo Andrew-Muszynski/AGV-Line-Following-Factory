@@ -2118,13 +2118,48 @@ class FleetSupervisor(Node):
                 res = adv.reservations.get(other)
                 if res is None:
                     continue
-                for seg in res.request.segments:
+                for seg in self._undriven_segments(
+                        other, res.request.segments):
                     a, b = str(seg[0]), str(seg[1])
                     if a != b and frozenset((a, b)) in edges:
                         return other, f"{a}->{b}"
         except RuntimeError:
             return "(advisor busy)", str(at_node)
         return None
+
+    def _undriven_segments(self, robot: str, segments) -> list:
+        """The part of a reservation `robot` has NOT driven yet.
+
+        A reservation stays granted until its whole item ends, turns
+        included, so a segment the robot drove long ago still reads as
+        "about to drive". 2026-11-09 (twice): Alvik6's yield return
+        11->19->122 was booked until its turn at 122 finished, and that turn
+        waited on Alvik1 -- whose square-up in ws 73 was held for "Alvik6 is
+        driving 11->19 beside workstation 73" with Alvik6 standing at 122.
+        Measured: the segment the robot is nearest is where it is; earlier
+        ones are done, and that one too once it is at its end."""
+        segs = list(segments or ())
+        vision = getattr(self, "vision", None)
+        p = vision.snapshot_in().get(robot) if vision is not None else None
+        adv = getattr(self, "advisor", None)
+        if p is None or p[3] > VISION_STALE_SEC or adv is None or not segs:
+            return segs
+        best = None
+        for i, seg in enumerate(segs):
+            try:
+                ax, ay = nav_node_to_world(seg[0], adv.rows, adv.cols)
+                bx, by = nav_node_to_world(seg[1], adv.rows, adv.cols)
+            except (ValueError, KeyError, TypeError):
+                return segs
+            dx, dy = bx - ax, by - ay
+            ll = dx * dx + dy * dy
+            t = (0.0 if ll <= 1e-9 else
+                 max(0.0, min(1.0, ((p[0] - ax) * dx + (p[1] - ay) * dy) / ll)))
+            d = math.hypot(p[0] - (ax + t * dx), p[1] - (ay + t * dy))
+            if best is None or d < best[0] - 1e-6:
+                best = (d, i, t)
+        _d, i, t = best
+        return segs[i + 1:] if t >= 0.9 else segs[i:]
 
     def entry_inbound_blocker(self, name: str, at_node):
         """At a bay entry: another robot already granted a move ONTO a node
@@ -2658,6 +2693,31 @@ class FleetSupervisor(Node):
         if math.hypot(p[0] - bx, p[1] - by) >= need:
             return False
         return time.monotonic() - since <= STANDOFF_RETURN_MAX_SEC
+
+    def _nearest_yield_node(self, advisor, name: str, y: dict):
+        """The node of this yield (home, the stand-aside spot, the middle
+        node) that `name` is measured nearest to, within
+        YIELD_START_TOL_IN * 2; None if unmeasured or between nodes."""
+        if self.vision is None:
+            return None
+        p = self.vision.snapshot_in().get(name)
+        if p is None or p[3] > VISION_STALE_SEC:
+            return None
+        cands = {str(y["home"]), str(y["out"].to_node),
+                 str(y["out"].from_node)}
+        best = None
+        for n in cands:
+            try:
+                nx, ny = nav_node_to_world(n, advisor.rows, advisor.cols)
+            except (ValueError, KeyError, TypeError):
+                continue
+            d = math.hypot(p[0] - nx, p[1] - ny)
+            if best is None or d < best[0]:
+                best = (d, n)
+        if best is None or best[0] > 2 * YIELD_START_TOL_IN:
+            return None
+        n = best[1]
+        return int(n) if n.isdigit() else n
 
     def _turning_circle_crowd(self, advisor, name: str, nodes) -> str | None:
         """Why a yield may not go home yet, or None.
@@ -4557,7 +4617,9 @@ class FleetSupervisor(Node):
                                 advisor, r),
                             drives_straight=lambda r, n, reverse=False:
                                 self._drives_straight(advisor, workers, r, n,
-                                                      reverse))
+                                                      reverse),
+                            can_rotate=lambda r:
+                                self.rotation_sweep_blocker(r) is None)
                     except Exception as exc:
                         yielded = None
                         self.get_logger().error(
@@ -4610,7 +4672,14 @@ class FleetSupervisor(Node):
                                 yielded.blocked_robot].current_node
                             yielding[yielded.robot] = {
                                 "stage": "out", "out": out_item,
-                                "back": back_item, "home": out_item.from_node,
+                                # HOME is where the way back ENDS. It was
+                                # out_item.from_node, which for a two-hop
+                                # yield is the MIDDLE node: 2026-11-09,
+                                # Alvik6 122->19->11 had "home" 19, so the
+                                # turning-circle check never looked at 122
+                                # (Alvik1 squaring up 5in away in ws 73),
+                                # and a finished return booked it at 19.
+                                "back": back_item, "home": back_item.to_node,
                                 "blocked": yielded.blocked_robot,
                                 "blocked_at": str(blocked_at),
                                 # Plan position of the robot being let
@@ -4765,6 +4834,18 @@ class FleetSupervisor(Node):
                                         conflict_id=y["conflict_id"],
                                         robot_id=name,
                                         details={"reason": "yield timed out"})
+                            # Book it where the camera SEES it. Abandoning
+                            # the yield left the advisor at the stand-aside
+                            # node while the robot had driven home: 2026-11-09
+                            # Alvik6 booked at 11, standing at 122, was
+                            # excluded as off-route and the run aborted.
+                            spot = self._nearest_yield_node(advisor, name, y)
+                            if spot is not None:
+                                advisor.finish_yield_leg(name, spot, now)
+                                advisor.end_yield(name, now)
+                                self.get_logger().warning(
+                                    f"[{name}] yield abandoned; booked at "
+                                    f"{spot}, where the camera sees it")
                             yielding.pop(name, None)
                             phase[name] = "waiting"
                             next_gate_at[name] = now + SUPERVISOR_WAIT_RECHECK_SEC

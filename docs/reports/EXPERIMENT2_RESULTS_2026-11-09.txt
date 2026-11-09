@@ -1,0 +1,95 @@
+EXPERIMENT 2 RESULTS -- JOINT vs SEQUENTIAL PLANNING ON THE TESTBED
+Prepared November 9, 2026. Plans: generated_plans/ALNS24_joint.json and
+generated_plans/ALNS24_seq.json (24 bays, 6 robots, capacity 2, 30 s
+processing, 2 s drop). Design, order and stopping rule fixed November 2,
+2026, before any counted run (docs/CHANGES_2026-10-30.txt).
+
+KEY RESULTS
+- Joint planning finished faster in 7 of 8 pairs.
+- Mean makespan: joint 341.8 s, sequential 364.2 s.
+- Paired difference (sequential minus joint): mean 22.4 s, median 15.8 s.
+  Sequential runs took 6.6% longer on average.
+- Hodges-Lehmann shift: 16.0 s, about 96% CI [4.5, 48.6] s.
+- Paired t-test (primary analysis in thesis Section 4.6.4): t(7) = -2.47,
+  p = 0.043; mean difference (I - S) -22.4 s, 95% CI -43.8 to -1.0 s.
+- Exact Wilcoxon signed-rank, two-sided (check): W = 1, p = 0.0156 (the
+  smallest p possible with 8 pairs is 0.0078). The differences are not
+  normal (Shapiro-Wilk p = 0.010, pair 5), so the check matters.
+- Sign test, as a check: 7 of 8, p = 0.070.
+- The planned makespans were almost equal (joint 306.98 s, sequential
+  306.07 s, from the plan files). The gap appears in EXECUTION: joint runs
+  overran their plan by 34.8 s on average (11.3%), sequential runs by
+  58.1 s (19.0%).
+- The dashboard and the metrics database show 290.98 s and 290.07 s: the
+  page leaves out the 2 s drop DWELL at each of the critical robot's 8
+  visits. The plan-file values are the right planned makespans.
+- No counted run had a collision. All 16 completed every job.
+
+PAIRED MAKESPANS (seconds; J = joint, S = sequential)
+  Pair  Order  Joint    Sequential  S - J    Day
+  1     J/S    322.1    352.2       +30.1    Nov 3
+  2     S/J    340.2    351.2       +11.0    Nov 3
+  3     S/J    324.9    341.5       +16.7    Nov 3
+  4     J/S    348.6    364.9       +16.4    Nov 3
+  5     S/J    326.2    407.0       +80.8    Nov 9
+  6     J/S    350.7    344.4        -6.3    Nov 9
+  7     S/J    332.6    347.9       +15.3    Nov 9
+  8     J/S    389.0    404.3       +15.3    Nov 9
+Attempt labels in the operator's sheet: joint J8-J11, J13, J15-J17;
+sequential S4-S6, S8-S12.
+
+FAILED ATTEMPTS (not counted; each rerun in its slot, per the protocol)
+- Sequential: 1 of 9 attempts failed (S7, November 3, 16:50). Alvik3
+  drifted toward Alvik5 in bay 1; the deadlock sidestep ended in a
+  reported 0.03 in overlap.
+- Joint: 2 of 10 attempts failed (J12 at 09:08 and J14 at 09:21, November
+  9). Both had the same cause at bay 9 (Alvik1 and Alvik6): an early yield
+  return, a stale reservation hold, and an off-route exclusion.
+- Attempt success rate: joint 8/10 (80%), sequential 8/9 (89%).
+
+SECONDARY MEASURES (per run, means over the 8 counted runs)
+- Deadlocks detected: joint 6 in total, sequential 8. All were resolved in
+  counted runs.
+- Fleet traffic delay (robot-seconds): joint 726.8, sequential 641.2.
+  Joint robots spent MORE time waiting in traffic, yet finished sooner.
+- Near misses and collisions: 0 in every counted run.
+
+ROBUSTNESS
+- Without pair 5 (the sequential run with Alvik3's 53 s guard-hold delay
+  at bay 1): 6 of 7 favor joint, mean -14.1 s (95% CI -24.0 to -4.1),
+  t-test p = 0.014, exact Wilcoxon p = 0.031. The result does not rest
+  on that one pair.
+- Day: the four Nov 3 differences (+11.0 to +30.1) and the four Nov 9
+  differences (-6.3 to +80.8) both favor joint. Pairs were never split
+  across days.
+- Order: joint ran first in pairs 1, 4, 6 and 8 (differences +30.1, +16.4,
+  -6.3, +15.3) and second in 2, 3, 5 and 7 (+11.0, +16.7, +80.8, +15.3).
+  No order effect is visible.
+
+LIMITATIONS
+- One plan per method. This shows that THESE two plans differ in execution.
+  The method-level claim rests on the ALNS screens over three seeds.
+- Rerun-until-success. A run that failed was redone in its slot, so the
+  counted joint runs are the ones that avoided the bay-9 recovery bug. Joint
+  failed more often (2 attempts) than sequential (1), so this selection, if
+  anything, flatters joint. Report the attempt success rates next to the
+  makespans.
+- Software: one supervisor version for all 16 counted runs (md5
+  a8954d443ef3111806ab07f11c1c0aa1). Known recovery bugs are logged and
+  deliberately NOT fixed during collection.
+- Recurring execution events: Alvik3's leftward drift at bay 1 hit the
+  sequential plan twice (one failure, one 53 s delay). It is tied to that
+  plan's routing past an occupied bay, so it is partly a plan effect and
+  partly a robot effect.
+
+INTERPRETATION
+The two plans are equally good on paper (within 1 s), but the jointly
+planned one ran 16-22 s faster on the real fleet in 7 of 8 matched pairs.
+The difference is significant under the test declared before collection.
+Joint plans finished sooner while accumulating more total traffic waiting.
+This suggests that planning routes together with the assignment keeps the
+critical path clear even when individual robots wait more. Breaking the
+makespan down per robot along the critical path would test that reading.
+The failure counts argue for reporting reliability alongside speed: on this
+testbed, joint was faster but failed one more attempt, both times through
+the same supervisor recovery bug, not through a planning conflict.

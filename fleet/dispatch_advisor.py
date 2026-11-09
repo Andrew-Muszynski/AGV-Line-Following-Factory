@@ -2881,7 +2881,7 @@ class DispatchAdvisor:
         return {name: makespan - sim.end_sec for name, sim in fleet.items()}
 
     def resolve_deadlock(self, cycle: list, now_sec: float, can_yield=None,
-                         drives_straight=None):
+                         drives_straight=None, can_rotate=None):
         """Pick ONE robot to step aside so a wait-for cycle unwinds.
 
         One is provably enough for any cycle length: a wait-for cycle is a
@@ -2904,6 +2904,10 @@ class DispatchAdvisor:
         where it stands may still leave straight ahead (see _yield_move).
         """
         self.__dict__["_drives_straight"] = drives_straight
+        # can_rotate(robot): the supervisor's MEASURED answer to "is there
+        # room to turn where it stands?" Reservations cannot see a robot
+        # parked off-centre in its bay; see _yield_move.
+        self.__dict__["_can_rotate"] = can_rotate
         members = [r for r in cycle if r in self.robots]
         if len(members) < 2:
             return None
@@ -3014,7 +3018,16 @@ class DispatchAdvisor:
         # workstation, which blocks nobody. Operator, 2026-10-30: such a pair
         # must be resolved, not left to the abort. Only if neither robot
         # faces anywhere free is the abort the answer.
-        straight_only = not can_turn_at(here)
+        # ...or a robot the camera sees inside the sweep, which the node
+        # check above cannot. 2026-11-09 08:59, ALNS24_seq: Alvik3 on node 9
+        # was 5.54in from Alvik5, parked off-centre in bay 1 (node 65, not
+        # an entry). can_turn_at(9) was True, so the resolver kept choosing
+        # the sidestep 9->17 with a 180deg turn; the rotation gate refused
+        # it six times, and only the guard hold timing out ended the 53s
+        # standoff. Alvik3's TAIL pointed at 17 -- it could have reversed.
+        rotate_ok = self.__dict__.get("_can_rotate")
+        straight_only = (not can_turn_at(here)
+                         or (rotate_ok is not None and not rotate_ok(robot)))
         reverse = bool(self.__dict__.get("_yield_reverse")) and straight_only
         if straight_only:
             drives = self.__dict__.get("_drives_straight")
